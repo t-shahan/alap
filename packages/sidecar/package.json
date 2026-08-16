@@ -7,7 +7,7 @@
     "dev": "node --watch src/server.ts",
     "zero:cache": "zero-cache-dev",
     "seed": "node src/seed.ts",
-    "smoke": "node src/smoke.ts"
+    "test": "node --test --env-file=../../.env \"src/test/*.test.ts\""
   },
   "dependencies": {
     "@mailapp/shared": "*",

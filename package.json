@@ -18,7 +18,8 @@
     "sidecar": "npm run dev --workspace=@mailapp/sidecar",
     "client:build": "npm run build --workspace=@mailapp/client",
     "dev": "./scripts/dev.sh",
-    "typecheck": "tsc --build --incremental"
+    "typecheck": "tsc --build --incremental",
+    "test": "npm test --workspace=@mailapp/sidecar"
   },
   "devDependencies": {
     "typescript": "^5.7.0"
