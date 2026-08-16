@@ -11,8 +11,10 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <string>
 
+#include "mailengine/gmail.hpp"
 #include "mailengine/keychain.hpp"
 #include "mailengine/oauth.hpp"
 #include "mailengine/version.hpp"
@@ -34,10 +36,76 @@ mailengine::OAuthConfig config_from_env() {
 
 int usage() {
   std::cerr << "usage: mailengined <command>\n\n"
-               "  auth <account-id>    authorize a Gmail account\n"
-               "  token <account-id>   mint an access token from the stored refresh token\n"
+               "  auth <account-id>     authorize a Gmail account\n"
+               "  token <account-id>    mint an access token from the stored refresh token\n"
+               "  profile <account-id>  show mailbox profile and history watermark\n"
+               "  labels <account-id>   list Gmail labels\n"
+               "  peek <account-id> [n] fetch and print the newest n messages\n"
                "  version\n";
   return 64;  // EX_USAGE
+}
+
+
+int cmd_profile(const std::string& account_id) {
+  auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
+  mailengine::GmailClient gmail(tokens);
+
+  auto profile = gmail.get_profile();
+  if (!profile) {
+    std::cerr << "error: " << profile.error().message << "\n";
+    return 1;
+  }
+  std::cout << "  address    " << profile->email_address << "\n"
+            << "  messages   " << profile->messages_total << "\n"
+            << "  historyId  " << profile->history_id << "\n";
+  return 0;
+}
+
+int cmd_labels(const std::string& account_id) {
+  auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
+  mailengine::GmailClient gmail(tokens);
+
+  auto labels = gmail.list_labels();
+  if (!labels) {
+    std::cerr << "error: " << labels.error().message << "\n";
+    return 1;
+  }
+  std::cout << labels->size() << " labels\n";
+  for (const auto& label : *labels) {
+    std::cout << "  " << (label.type == "system" ? "[sys] " : "      ") << label.name
+              << "  (" << label.id << ")\n";
+  }
+  return 0;
+}
+
+int cmd_peek(const std::string& account_id, int count) {
+  auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
+  mailengine::GmailClient gmail(tokens);
+
+  auto page = gmail.list_messages({}, "in:inbox", count);
+  if (!page) {
+    std::cerr << "error: " << page.error().message << "\n";
+    return 1;
+  }
+
+  std::cout << "newest " << page->message_ids.size() << " inbox messages\n\n";
+  for (const auto& id : page->message_ids) {
+    auto message = gmail.get_message(id);
+    if (!message) {
+      std::cerr << "  ! " << id << ": " << message.error().message << "\n";
+      continue;
+    }
+    const std::string who =
+        message->from.name.empty() ? message->from.email : message->from.name;
+    std::cout << (message->is_unread() ? "  * " : "    ") << who << "\n"
+              << "      " << message->subject << "\n"
+              << "      " << message->snippet.substr(0, 78) << "\n";
+    if (!message->attachments.empty()) {
+      std::cout << "      " << message->attachments.size() << " attachment(s)\n";
+    }
+    std::cout << "\n";
+  }
+  return 0;
 }
 
 int cmd_auth(const std::string& account_id) {
@@ -107,6 +175,18 @@ int main(int argc, char** argv) {
   if (command == "token") {
     if (argc < 3) return usage();
     return cmd_token(argv[2]);
+  }
+  if (command == "profile") {
+    if (argc < 3) return usage();
+    return cmd_profile(argv[2]);
+  }
+  if (command == "labels") {
+    if (argc < 3) return usage();
+    return cmd_labels(argv[2]);
+  }
+  if (command == "peek") {
+    if (argc < 3) return usage();
+    return cmd_peek(argv[2], argc > 3 ? std::atoi(argv[3]) : 5);
   }
 
   return usage();

@@ -60,6 +60,8 @@ add_library(mailengine_core
   src/crypto.cpp
   src/keychain.cpp
   src/oauth.cpp
+  src/mime.cpp
+  src/gmail.cpp
 )
 target_include_directories(mailengine_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -98,6 +100,8 @@ if(MAILENGINE_BUILD_TESTS)
     tests/test_crypto.cpp
     tests/test_oauth.cpp
     tests/test_http.cpp
+    tests/test_mime.cpp
+    tests/test_gmail.cpp
   )
   target_link_libraries(mailengine_tests PRIVATE mailengine_core GTest::gtest_main)
 

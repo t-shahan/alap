@@ -1,3 +1,7 @@
+# Personal reference docs — local only, per request
+docs/SETUP.md
+docs/COMMANDS.md
+
 # Secrets — never commit
 .env
 .env.local
