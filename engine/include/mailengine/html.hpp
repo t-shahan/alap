@@ -69,6 +69,13 @@ struct SanitizeResult {
 [[nodiscard]] SanitizeResult sanitize(const std::string& input,
                                       const SanitizeOptions& options = {});
 
+/// @brief Decodes HTML entities into their characters.
+///
+/// Gmail returns `snippet` HTML-escaped, so a subject line reaches us as
+/// "Next week&#39;s menu". Rendering that verbatim in a native list shows the
+/// raw entity, which looks broken. Decoding happens once on ingest.
+[[nodiscard]] std::string unescape_entities(const std::string& text);
+
 /// @brief Escapes text so it cannot be interpreted as markup.
 [[nodiscard]] std::string escape_text(const std::string& text);
 

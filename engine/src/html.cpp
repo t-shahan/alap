@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cctype>
 #include <string_view>
+#include <cstdlib>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -118,6 +120,77 @@ std::string normalise_scheme_prefix(const std::string& url) {
 }
 
 }  // namespace
+
+std::string unescape_entities(const std::string& text) {
+  static const std::unordered_map<std::string, std::string> named = {
+      {"amp", "&"},   {"lt", "<"},     {"gt", ">"},     {"quot", "\""},
+      {"apos", "'"},  {"nbsp", " "},   {"mdash", "—"},  {"ndash", "–"},
+      {"hellip", "…"},{"rsquo", "\u2019"}, {"lsquo", "\u2018"},
+      {"ldquo", "\u201C"}, {"rdquo", "\u201D"}, {"trade", "™"},
+      {"copy", "©"},  {"reg", "®"},    {"deg", "°"},    {"euro", "€"},
+      {"pound", "£"}, {"middot", "·"}, {"bull", "•"},
+  };
+
+  std::string out;
+  out.reserve(text.size());
+
+  for (size_t i = 0; i < text.size(); ++i) {
+    if (text[i] != '&') {
+      out += text[i];
+      continue;
+    }
+    const size_t semicolon = text.find(';', i + 1);
+    // Entities are short; a distant semicolon means this is just an ampersand.
+    if (semicolon == std::string::npos || semicolon - i > 10) {
+      out += text[i];
+      continue;
+    }
+    const std::string body = text.substr(i + 1, semicolon - i - 1);
+    if (body.empty()) {
+      out += text[i];
+      continue;
+    }
+
+    if (body[0] == '#') {
+      // Numeric reference, decimal or hex.
+      const bool hex = body.size() > 1 && (body[1] == 'x' || body[1] == 'X');
+      const std::string digits = body.substr(hex ? 2 : 1);
+      if (digits.empty() ||
+          digits.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
+        out += text[i];
+        continue;
+      }
+      const long code = std::strtol(digits.c_str(), nullptr, hex ? 16 : 10);
+      // Encode as UTF-8 so non-ASCII references survive.
+      if (code < 0x80) {
+        out += static_cast<char>(code);
+      } else if (code < 0x800) {
+        out += static_cast<char>(0xC0 | (code >> 6));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+      } else if (code < 0x10000) {
+        out += static_cast<char>(0xE0 | (code >> 12));
+        out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+      } else {
+        out += static_cast<char>(0xF0 | (code >> 18));
+        out += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+      }
+      i = semicolon;
+      continue;
+    }
+
+    const auto found = named.find(to_lower(body));
+    if (found != named.end()) {
+      out += found->second;
+      i = semicolon;
+    } else {
+      out += text[i];
+    }
+  }
+  return out;
+}
 
 std::string escape_text(const std::string& text) {
   std::string out;

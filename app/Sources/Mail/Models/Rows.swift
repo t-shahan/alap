@@ -181,6 +181,12 @@ struct MessageRow: Decodable, Identifiable, Hashable {
   /// True when the body simply has not been fetched yet.
   var isBodyMissing: Bool { body == nil }
 
+  /// True when there is sanitised HTML worth rendering.
+  ///
+  /// The engine sanitises on ingest, so anything here has already been through
+  /// the allowlist. The web view still assumes nothing — see `MessageWebView`.
+  var hasRenderableHTML: Bool { !(body?.htmlBody?.isEmpty ?? true) }
+
   /// Longest body rendered inline.
   ///
   /// A single `Text` holding hundreds of kilobytes with `textSelection` and

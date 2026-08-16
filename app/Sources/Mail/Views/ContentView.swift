@@ -27,10 +27,11 @@ struct ContentView: View {
     } detail: {
       ReadingPane(store: store)
     }
-    .task {
-      store.start()
-      listFocused = true
-    }
+    .task { store.start() }
+    // `.task` runs before the window becomes key, so assigning focus there is
+    // silently dropped and shortcuts do nothing until the user clicks a row.
+    // defaultFocus applies once the scene is ready.
+    .defaultFocus($listFocused, true)
     // Hosts the headless web view so WebKit actually schedules it. Zero size,
     // so it costs nothing visually.
     .background(BridgeHost(bridge: store.bridge).frame(width: 0, height: 0))
@@ -183,41 +184,50 @@ private struct ThreadRowView: View {
 
 private struct ReadingPane: View {
   @Bindable var store: MailStore
+  @Environment(\.colorScheme) private var colorScheme
 
   var body: some View {
     if let thread = store.selectedThread {
-      ScrollView {
-        VStack(alignment: .leading, spacing: Theme.Space.section) {
-          // The scale jump from the 13pt list is deliberate and large: it is
-          // the strongest signal that you have moved from scanning to reading.
-          Text(store.detail?.subject ?? thread.subject)
-            .font(Theme.Font.title)
-            .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
+      VStack(alignment: .leading, spacing: 0) {
+        // The subject stays in SwiftUI rather than moving into the document,
+        // so it keeps the app's type scale and does not scroll away with the
+        // body.
+        Text(store.detail?.subject ?? thread.subject)
+          .font(Theme.Font.title)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, Theme.Space.reading)
+          .padding(.top, Theme.Space.reading)
+          .padding(.bottom, Theme.Space.loose)
 
-          if let detail = store.detail, !detail.messages.isEmpty {
-            ForEach(detail.messages) { message in
-              MessageView(message: message)
-            }
-          } else if store.detailLoaded {
-            Text("This thread has no messages.")
-              .font(Theme.Font.body)
+        if let detail = store.detail, !detail.messages.isEmpty {
+          MessageWebView(
+            html: MessageDocument.build(
+              for: detail.messages,
+              isDark: colorScheme == .dark
+            )
+          )
+          .padding(.horizontal, Theme.Space.reading)
+        } else if store.detailLoaded {
+          Text("This thread has no messages.")
+            .font(Theme.Font.body)
+            .foregroundStyle(Theme.Palette.secondaryText)
+            .padding(.horizontal, Theme.Space.reading)
+          Spacer()
+        } else {
+          // Reads hit the local cache first, so this is usually a single frame.
+          HStack(spacing: Theme.Space.snug) {
+            ProgressView().controlSize(.small)
+            Text("Loading…")
+              .font(Theme.Font.small)
               .foregroundStyle(Theme.Palette.secondaryText)
-          } else {
-            // Reads hit the local cache first, so this is usually a single
-            // frame. It exists for the case where the body has not synced.
-            HStack(spacing: Theme.Space.snug) {
-              ProgressView().controlSize(.small)
-              Text("Loading…")
-                .font(Theme.Font.small)
-                .foregroundStyle(Theme.Palette.secondaryText)
-            }
           }
+          .padding(.horizontal, Theme.Space.reading)
+          Spacer()
         }
-        .padding(Theme.Space.reading)
-        .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .id(thread.id)  // reset scroll position when switching threads
+      .id(thread.id)  // rebuild when switching threads, resetting scroll
     } else {
       ContentUnavailableView("No message selected", systemImage: "envelope")
     }

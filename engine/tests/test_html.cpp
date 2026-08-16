@@ -241,3 +241,40 @@ TEST(Sanitize, NeverEmitsAngleBracketsFromAttributeValues) {
   const auto html = clean("<a href=\"https://x.com\" title=\"&quot;><script>\">t</a>");
   EXPECT_FALSE(contains(html, "<script"));
 }
+
+// MARK: - Entity decoding
+//
+// Gmail returns `snippet` HTML-escaped, so without this a list row shows
+// "Next week&#39;s menu" instead of an apostrophe.
+
+TEST(Unescape, DecodesNamedEntities) {
+  EXPECT_EQ(unescape_entities("a &amp; b"), "a & b");
+  EXPECT_EQ(unescape_entities("&lt;tag&gt;"), "<tag>");
+  EXPECT_EQ(unescape_entities("say &quot;hi&quot;"), "say \"hi\"");
+}
+
+TEST(Unescape, DecodesNumericReferences) {
+  EXPECT_EQ(unescape_entities("you&#39;d"), "you'd");
+  EXPECT_EQ(unescape_entities("week&#39;s"), "week's");
+  EXPECT_EQ(unescape_entities("&#x27;"), "'");
+}
+
+TEST(Unescape, DecodesNonAsciiAsUtf8) {
+  EXPECT_EQ(unescape_entities("caf&#233;"), "café");
+  EXPECT_EQ(unescape_entities("&#8212;"), "—");
+}
+
+TEST(Unescape, LeavesBareAmpersandsAlone) {
+  EXPECT_EQ(unescape_entities("Tom & Jerry"), "Tom & Jerry");
+  EXPECT_EQ(unescape_entities("a & b & c"), "a & b & c");
+  // A semicolon far away is not an entity terminator.
+  EXPECT_EQ(unescape_entities("A & B; C"), "A & B; C");
+}
+
+TEST(Unescape, LeavesUnknownEntitiesIntact) {
+  EXPECT_EQ(unescape_entities("&notarealentity;"), "&notarealentity;");
+}
+
+TEST(Unescape, HandlesEmptyInput) {
+  EXPECT_EQ(unescape_entities(""), "");
+}

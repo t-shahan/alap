@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "mailengine/crypto.hpp"
+#include "mailengine/html.hpp"
 #include "mailengine/keychain.hpp"
 
 namespace mailengine {
@@ -118,7 +119,9 @@ Result<GmailMessage> parse_message_json(const std::string& body) {
   GmailMessage message;
   message.id = root.value("id", "");
   message.thread_id = root.value("threadId", "");
-  message.snippet = root.value("snippet", "");
+  // Gmail HTML-escapes the snippet, so "Next week&#39;s menu" arrives verbatim
+  // and would render with the raw entity visible in a native list.
+  message.snippet = html::unescape_entities(root.value("snippet", ""));
   message.size_estimate = root.value("sizeEstimate", 0);
 
   if (message.id.empty()) {
