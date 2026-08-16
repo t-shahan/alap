@@ -15,8 +15,29 @@ import Observation
 @MainActor
 @Observable
 final class MailStore {
-  let bridge = ZeroBridge()
-  let search = SearchIndex()
+  let bridge: any MailBridge
+  let search: SearchIndex
+
+  /// Hands a downloaded file to the system.
+  ///
+  /// Injected rather than calling `NSWorkspace` directly so tests can assert
+  /// *which* file would be opened without actually launching Preview — a test
+  /// suite that opens windows is one nobody runs.
+  @ObservationIgnored private let openFile: (URL) -> Void
+
+  /// - Parameters:
+  ///   - bridge: Defaults to the real Zero bridge. Tests inject a fake so the
+  ///     store's logic runs without WebKit or a network.
+  ///   - openFile: Defaults to Launch Services.
+  init(
+    bridge: any MailBridge = ZeroBridge(),
+    search: SearchIndex = SearchIndex(),
+    openFile: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }
+  ) {
+    self.bridge = bridge
+    self.search = search
+    self.openFile = openFile
+  }
 
   /// Current search text. Empty means the normal label view.
   var searchText: String = "" {
@@ -485,12 +506,31 @@ final class MailStore {
   /// in Finder" and "Save a Copy" work against the same path.
   func openAttachment(_ attachment: AttachmentRow) async {
     if case .ready(let file) = state(of: attachment) {
-      NSWorkspace.shared.open(file)
+      openFile(file)
       return
     }
     guard attachment.canDownload else { return }
     openWhenDownloaded.insert(attachment.id)
     await downloadAttachment(attachment)
+  }
+
+  /// Whether a click is still waiting on this attachment's bytes.
+  ///
+  /// Exists so tests can assert on the arming of a one-click open without
+  /// reaching into private state or observing `NSWorkspace`.
+  func isAwaitingOpen(_ attachmentID: String) -> Bool {
+    openWhenDownloaded.contains(attachmentID)
+  }
+
+  /// Applies the debounced detail subscription immediately.
+  ///
+  /// The debounce exists so that holding an arrow key costs one body load
+  /// instead of one per row. Tests must not depend on wall-clock timing to get
+  /// past it, so they call this instead of sleeping.
+  func flushPendingSubscriptions() {
+    detailTask?.cancel()
+    searchTask?.cancel()
+    subscribeDetailNow()
   }
 
   /// Opens anything whose bytes have arrived since the last update.
@@ -508,7 +548,7 @@ final class MailStore {
       // Remove BEFORE opening: NSWorkspace.open is not synchronous, and a
       // second subscription update arriving first would launch it twice.
       openWhenDownloaded.remove(attachment.id)
-      NSWorkspace.shared.open(file)
+      openFile(file)
     }
   }
 

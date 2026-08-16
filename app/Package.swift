@@ -16,6 +16,12 @@ let package = Package(
         .copy("Web")
       ],
       swiftSettings: [.swiftLanguageMode(.v6)]
-    )
+    ),
+    .testTarget(
+      name: "MailTests",
+      dependencies: ["Mail"],
+      path: "Tests/MailTests",
+      swiftSettings: [.swiftLanguageMode(.v6)]
+    ),
   ]
 )

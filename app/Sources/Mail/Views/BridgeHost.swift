@@ -8,7 +8,7 @@ import WebKit
 /// page or running any JavaScript. Hosting it (invisibly) is what makes the
 /// headless client actually run.
 struct BridgeHost: NSViewRepresentable {
-  let bridge: ZeroBridge
+  let bridge: any MailBridge
 
   func makeNSView(context: Context) -> NSView {
     let container = NSView(frame: .zero)

@@ -338,11 +338,16 @@ func plainTextFromHTML(_ html: String) -> String {
   text = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
 
   // Decode the entities that actually appear in mail.
+  //
+  // `&amp;` MUST come last. Decoding it first turns "&amp;lt;" into "&lt;",
+  // which the very next iteration then decodes again into "<" — so text a
+  // sender deliberately escaped comes out as markup. Ordering it last means
+  // its output is never re-examined.
   for (entity, character) in [
-    ("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+    ("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"),
     ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"), ("&mdash;", "—"),
     ("&ndash;", "–"), ("&hellip;", "…"), ("&rsquo;", "'"), ("&lsquo;", "'"),
-    ("&ldquo;", "\""), ("&rdquo;", "\""),
+    ("&ldquo;", "\""), ("&rdquo;", "\""), ("&amp;", "&"),
   ] {
     text = text.replacingOccurrences(of: entity, with: character, options: .caseInsensitive)
   }

@@ -144,7 +144,10 @@ enum BridgeError: Error {
 ///
 /// Swift has no built-in `Any`-shaped `Encodable`, and pulling in a full JSON
 /// library for four cases would be overkill.
-enum JSONValue: Encodable {
+/// Equatable so tests can assert on the exact arguments a mutator was called
+/// with — which is the difference between "a reply was sent" and "a reply was
+/// sent to the right person".
+enum JSONValue: Encodable, Equatable {
   case string(String)
   case number(Double)
   case bool(Bool)
