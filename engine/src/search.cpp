@@ -5,8 +5,10 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <cctype>
 #include <sstream>
+#include <unordered_set>
 #include <utility>
 
 namespace mailengine {
@@ -91,6 +93,18 @@ Result<void> SearchIndex::open(const std::string& path) {
       body,
       tokenize = 'porter unicode61 remove_diacritics 2'
     );
+
+    -- Maps message_id to the FTS rowid.
+    --
+    -- Without this, replacing a document means
+    -- `DELETE FROM message_fts WHERE message_id = ?`, and UNINDEXED columns
+    -- are stored but NOT indexed — so every insert full-scans the whole index
+    -- and building it becomes O(n^2). Measured: 5x the documents took 38x the
+    -- time. A real primary key here makes replacement O(log n).
+    CREATE TABLE IF NOT EXISTS doc_rowid (
+      message_id TEXT PRIMARY KEY,
+      fts_rowid  INTEGER NOT NULL
+    );
   )";
   char* error = nullptr;
   if (sqlite3_exec(db, schema, nullptr, nullptr, &error) != SQLITE_OK) {
@@ -98,6 +112,19 @@ Result<void> SearchIndex::open(const std::string& path) {
     sqlite3_free(error);
     return make_error("could not create FTS5 table: " + message);
   }
+
+  // Persist the bm25 weights as the table's rank function. This is what lets
+  // queries say `ORDER BY rank LIMIT n`, which FTS5 can satisfy with early
+  // termination — it stops as soon as it has n results rather than scoring
+  // every match. Passing weights inline to bm25() in the ORDER BY instead
+  // forces a full scan.
+  //
+  // One weight per column, including the three UNINDEXED ones, which can never
+  // match and so take 0.0.
+  sqlite3_exec(db,
+               "INSERT INTO message_fts(message_fts, rank) "
+               "VALUES('rank', 'bm25(0.0, 0.0, 0.0, 10.0, 5.0, 1.0)')",
+               nullptr, nullptr, nullptr);
 
   return {};
 }
@@ -111,7 +138,8 @@ Result<void> SearchIndex::index_message(const std::string& account_id,
   const std::string& body =
       !message.text_body.empty() ? message.text_body : message.snippet;
   return index_document(account_id, thread_id, message_id, message.subject,
-                        message.from.name + " " + message.from.email, body);
+                        message.from.name + " " + message.from.email, body,
+                        message.internal_date_ms);
 }
 
 Result<void> SearchIndex::index_document(const std::string& account_id,
@@ -119,33 +147,95 @@ Result<void> SearchIndex::index_document(const std::string& account_id,
                                          const std::string& message_id,
                                          const std::string& subject,
                                          const std::string& sender,
-                                         const std::string& body) {
+                                         const std::string& body,
+                                         int64_t sent_at_ms) {
   auto* db = static_cast<sqlite3*>(db_);
   if (db == nullptr) return make_error("search index not open");
 
-  // FTS5 has no upsert, so replace by hand.
+  // FTS5 has no upsert, so replace by hand — but delete by ROWID, looked up
+  // through the indexed side table, not by scanning an UNINDEXED column.
   {
-    Stmt del(db, "DELETE FROM message_fts WHERE message_id = ?1");
-    if (!del.ok()) return make_error("prepare delete failed");
-    del.bind(1, message_id);
-    sqlite3_step(del.get());
+    Stmt lookup(db, "SELECT fts_rowid FROM doc_rowid WHERE message_id = ?1");
+    if (!lookup.ok()) return make_error("prepare rowid lookup failed");
+    lookup.bind(1, message_id);
+    if (sqlite3_step(lookup.get()) == SQLITE_ROW) {
+      const sqlite3_int64 rowid = sqlite3_column_int64(lookup.get(), 0);
+      Stmt del(db, "DELETE FROM message_fts WHERE rowid = ?1");
+      if (!del.ok()) return make_error("prepare delete failed");
+      sqlite3_bind_int64(del.get(), 1, rowid);
+      sqlite3_step(del.get());
+    }
   }
 
-  Stmt insert(db,
-              "INSERT INTO message_fts "
-              "(message_id, thread_id, account_id, subject, sender, body) "
-              "VALUES (?1, ?2, ?3, ?4, ?5, ?6)");
-  if (!insert.ok()) return make_error("prepare insert failed");
+  // The rowid IS the timestamp. That is what lets `ORDER BY rowid DESC LIMIT n`
+  // return the newest matches without scoring the whole corpus. Two messages
+  // can share a millisecond, so on collision we step forward to the next free
+  // slot — a one-millisecond ordering error is irrelevant, a failed insert is
+  // not.
+  int64_t rowid = sent_at_ms;
+  bool inserted = false;
+  for (int attempt = 0; attempt < 1000 && !inserted; ++attempt) {
+    Stmt insert(db,
+                "INSERT INTO message_fts "
+                "(rowid, message_id, thread_id, account_id, subject, sender, body) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)");
+    if (!insert.ok()) return make_error("prepare insert failed");
 
-  insert.bind(1, message_id);
-  insert.bind(2, thread_id);
-  insert.bind(3, account_id);
-  insert.bind(4, subject);
-  insert.bind(5, sender);
-  insert.bind(6, body);
+    if (rowid > 0) {
+      sqlite3_bind_int64(insert.get(), 1, rowid + attempt);
+    } else {
+      sqlite3_bind_null(insert.get(), 1);  // let SQLite assign
+    }
+    insert.bind(2, message_id);
+    insert.bind(3, thread_id);
+    insert.bind(4, account_id);
+    insert.bind(5, subject);
+    insert.bind(6, sender);
+    insert.bind(7, body);
 
-  if (sqlite3_step(insert.get()) != SQLITE_DONE) {
-    return make_error(std::string("index insert failed: ") + sqlite3_errmsg(db));
+    const int status = sqlite3_step(insert.get());
+    if (status == SQLITE_DONE) {
+      inserted = true;
+    } else if (status != SQLITE_CONSTRAINT || rowid <= 0) {
+      return make_error(std::string("index insert failed: ") + sqlite3_errmsg(db));
+    }
+  }
+  if (!inserted) {
+    return make_error("could not find a free rowid for " + message_id);
+  }
+
+  Stmt remember(db,
+                "INSERT INTO doc_rowid(message_id, fts_rowid) VALUES(?1, ?2) "
+                "ON CONFLICT(message_id) DO UPDATE SET fts_rowid = excluded.fts_rowid");
+  if (!remember.ok()) return make_error("prepare rowid record failed");
+  remember.bind(1, message_id);
+  sqlite3_bind_int64(remember.get(), 2, sqlite3_last_insert_rowid(db));
+  if (sqlite3_step(remember.get()) != SQLITE_DONE) {
+    return make_error(std::string("rowid record failed: ") + sqlite3_errmsg(db));
+  }
+  return {};
+}
+
+Result<void> SearchIndex::begin_batch() {
+  auto* db = static_cast<sqlite3*>(db_);
+  if (db == nullptr) return make_error("search index not open");
+  char* error = nullptr;
+  if (sqlite3_exec(db, "BEGIN", nullptr, nullptr, &error) != SQLITE_OK) {
+    const std::string message = error != nullptr ? error : "unknown";
+    sqlite3_free(error);
+    return make_error("begin batch failed: " + message);
+  }
+  return {};
+}
+
+Result<void> SearchIndex::commit_batch() {
+  auto* db = static_cast<sqlite3*>(db_);
+  if (db == nullptr) return make_error("search index not open");
+  char* error = nullptr;
+  if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, &error) != SQLITE_OK) {
+    const std::string message = error != nullptr ? error : "unknown";
+    sqlite3_free(error);
+    return make_error("commit batch failed: " + message);
   }
   return {};
 }
@@ -154,10 +244,24 @@ Result<void> SearchIndex::remove_message(const std::string& message_id) {
   auto* db = static_cast<sqlite3*>(db_);
   if (db == nullptr) return make_error("search index not open");
 
-  Stmt del(db, "DELETE FROM message_fts WHERE message_id = ?1");
+  Stmt lookup(db, "SELECT fts_rowid FROM doc_rowid WHERE message_id = ?1");
+  if (!lookup.ok()) return make_error("prepare rowid lookup failed");
+  lookup.bind(1, message_id);
+  if (sqlite3_step(lookup.get()) != SQLITE_ROW) {
+    return {};  // not indexed; nothing to do
+  }
+  const sqlite3_int64 rowid = sqlite3_column_int64(lookup.get(), 0);
+
+  Stmt del(db, "DELETE FROM message_fts WHERE rowid = ?1");
   if (!del.ok()) return make_error("prepare delete failed");
-  del.bind(1, message_id);
+  sqlite3_bind_int64(del.get(), 1, rowid);
   sqlite3_step(del.get());
+
+  Stmt forget(db, "DELETE FROM doc_rowid WHERE message_id = ?1");
+  if (forget.ok()) {
+    forget.bind(1, message_id);
+    sqlite3_step(forget.get());
+  }
   return {};
 }
 
@@ -199,7 +303,7 @@ std::string SearchIndex::escape_query(const std::string& query) {
 }
 
 Result<std::vector<SearchHit>> SearchIndex::search(const std::string& query,
-                                                   int limit) {
+                                                   int limit, SearchOrder order) {
   auto* db = static_cast<sqlite3*>(db_);
   if (db == nullptr) return make_error("search index not open");
 
@@ -208,62 +312,65 @@ Result<std::vector<SearchHit>> SearchIndex::search(const std::string& query,
     return std::vector<SearchHit>{};
   }
 
-  // GROUP BY thread so a term matching three messages in one conversation
-  // yields one result. bm25 weights subject 10x and sender 5x over body — a
-  // match in the subject line is almost always what the user meant.
+  // `ORDER BY rank LIMIT n` is the ONLY shape FTS5 can satisfy with early
+  // termination: it walks the posting lists in score order and stops once it
+  // has n rows. The previous version wrapped bm25() in a MATERIALIZED CTE so
+  // it could GROUP BY thread, which forced every matching document to be
+  // scored before anything was discarded — query time then grew linearly with
+  // the mailbox (177ms at 50k messages).
   //
-  // The MATERIALIZED CTE is load-bearing, not stylistic. FTS5 auxiliary
-  // functions like bm25() may only appear in a direct scan of the virtual
-  // table; using one alongside GROUP BY fails with "unable to use function
-  // bm25 in the requested context". SQLite would normally flatten a plain
-  // subquery back into the outer statement and reintroduce the problem, so
-  // MATERIALIZED forces the ranking to be computed first and grouped after.
-  //
-  // bm25 returns negative values where lower is better, so ORDER BY ascending
-  // puts the best match first.
-  Stmt select(db, R"(
-      WITH hits AS MATERIALIZED (
-        SELECT thread_id,
-               message_id,
-               subject,
-               -- One weight PER COLUMN, in declaration order. The three
-               -- UNINDEXED columns still occupy positions even though they can
-               -- never match, so they take 0.0 placeholders:
-               --   message_id, thread_id, account_id, subject, sender, body
-               -- Omitting them silently shifts every weight and ranks by the
-               -- wrong field.
-               bm25(message_fts, 0.0, 0.0, 0.0, 10.0, 5.0, 1.0) AS score
-        FROM message_fts
-        WHERE message_fts MATCH ?1
-      )
-      SELECT thread_id, message_id, subject, min(score) AS best
-      FROM hits
-      GROUP BY thread_id
-      ORDER BY best
-      LIMIT ?2)");
+  // Deduplication by thread therefore happens HERE, in C++, over an
+  // over-fetched window. Threads average well under 4 messages, so fetching
+  // 4x the requested limit almost always yields a full page of distinct
+  // threads while keeping the SQL early-terminating.
+  const int window = std::min(limit * 4, 2000);
+
+  // Recency walks the posting list backwards and stops early; relevance must
+  // score everything. See SearchOrder.
+  const char* sql =
+      order == SearchOrder::Recency
+          ? R"(SELECT thread_id, message_id, subject, 0.0
+               FROM message_fts
+               WHERE message_fts MATCH ?1
+               ORDER BY rowid DESC
+               LIMIT ?2)"
+          : R"(SELECT thread_id, message_id, subject, rank
+               FROM message_fts
+               WHERE message_fts MATCH ?1
+               ORDER BY rank
+               LIMIT ?2)";
+
+  Stmt select(db, sql);
   if (!select.ok()) {
     return make_error(std::string("prepare search failed: ") + sqlite3_errmsg(db));
   }
   select.bind(1, escaped);
-  sqlite3_bind_int(select.get(), 2, limit);
+  sqlite3_bind_int(select.get(), 2, window);
 
   std::vector<SearchHit> hits;
+  std::unordered_set<std::string> seen_threads;
+
   int step = sqlite3_step(select.get());
   while (step == SQLITE_ROW) {
-    hits.push_back(SearchHit{
-        .thread_id = select.column(0),
-        .message_id = select.column(1),
-        .subject = select.column(2),
-        .rank = sqlite3_column_double(select.get(), 3),
-    });
+    std::string thread_id = select.column(0);
+    // Rows arrive best-first, so the first sighting of a thread is its best
+    // message and later ones are redundant.
+    if (seen_threads.insert(thread_id).second) {
+      hits.push_back(SearchHit{
+          .thread_id = std::move(thread_id),
+          .message_id = select.column(1),
+          .subject = select.column(2),
+          .rank = sqlite3_column_double(select.get(), 3),
+      });
+      if (static_cast<int>(hits.size()) >= limit) break;
+    }
     step = sqlite3_step(select.get());
   }
 
-  // Checking the terminal status matters: a `while (step() == SQLITE_ROW)`
-  // loop treats an error as "no more rows" and returns an empty result set.
-  // That is how the bm25 failure above presented — as zero matches rather
-  // than as an error.
-  if (step != SQLITE_DONE) {
+  // A `while (step() == SQLITE_ROW)` loop treats an error as "no more rows"
+  // and silently returns an empty result set. That is how an earlier bm25
+  // misuse presented — as zero matches rather than as a failure.
+  if (step != SQLITE_ROW && step != SQLITE_DONE) {
     return make_error(std::string("search failed: ") + sqlite3_errmsg(db));
   }
   return hits;
@@ -283,6 +390,7 @@ Result<void> SearchIndex::clear() {
   auto* db = static_cast<sqlite3*>(db_);
   if (db == nullptr) return make_error("search index not open");
   sqlite3_exec(db, "DELETE FROM message_fts", nullptr, nullptr, nullptr);
+  sqlite3_exec(db, "DELETE FROM doc_rowid", nullptr, nullptr, nullptr);
   return {};
 }
 

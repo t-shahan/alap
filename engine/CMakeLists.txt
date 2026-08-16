@@ -66,6 +66,7 @@ add_library(mailengine_core
   src/sync.cpp
   src/outbox.cpp
   src/search.cpp
+  src/bench.cpp
 )
 target_include_directories(mailengine_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include

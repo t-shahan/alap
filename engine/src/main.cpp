@@ -21,6 +21,7 @@
 #include "mailengine/keychain.hpp"
 #include "mailengine/oauth.hpp"
 #include "mailengine/outbox.hpp"
+#include "mailengine/bench.hpp"
 #include "mailengine/search.hpp"
 #include "mailengine/store.hpp"
 #include "mailengine/sync.hpp"
@@ -55,6 +56,7 @@ int usage() {
                "  daemon <account-id> [seconds]  run both loops continuously\n"
                "  search <account-id> <query>    full-text search the local index\n"
                "  reindex <account-id>  rebuild the search index from Postgres\n"
+               "  bench-search [counts...]  measure search latency at scale\n"
                "  version\n";
   return 64;  // EX_USAGE
 }
@@ -417,6 +419,11 @@ int cmd_reindex(const std::string& account_id) {
     return 1;
   }
 
+  if (auto begun = index.begin_batch(); !begun) {
+    std::cerr << "error: " << begun.error().message << "\n";
+    return 1;
+  }
+
   int64_t indexed = 0;
   for (const auto& row : *rows) {
     if (row.size() < 6) continue;
@@ -428,7 +435,63 @@ int cmd_reindex(const std::string& account_id) {
     }
   }
 
+  if (auto committed = index.commit_batch(); !committed) {
+    std::cerr << "error: " << committed.error().message << "\n";
+    return 1;
+  }
+
   std::cout << "  indexed " << indexed << " messages\n";
+  return 0;
+}
+
+/// Measures search latency across corpus sizes.
+///
+/// Each size gets a throwaway on-disk index, because :memory: would understate
+/// real latency — the production index is a file and pays page-cache costs.
+int cmd_bench_search(const std::vector<int64_t>& sizes) {
+  const auto queries = mailengine::bench::sample_queries();
+  std::cout << "\n  " << queries.size() << " query shapes x 20 repetitions each\n\n";
+
+  for (const int64_t size : sizes) {
+    const std::string path = "/tmp/mailengine_bench_" + std::to_string(size) + ".db";
+    std::filesystem::remove(path);
+    std::filesystem::remove(path + "-wal");
+    std::filesystem::remove(path + "-shm");
+
+    mailengine::SearchIndex index;
+    if (auto opened = index.open(path); !opened) {
+      std::cerr << "error: " << opened.error().message << "\n";
+      return 1;
+    }
+
+    const auto build_began = std::chrono::steady_clock::now();
+    if (auto filled = mailengine::bench::populate(index, size); !filled) {
+      std::cerr << "error: " << filled.error().message << "\n";
+      return 1;
+    }
+    const auto build_ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - build_began)
+                              .count();
+
+    const auto recency = mailengine::bench::measure(index, queries, 20,
+                                                   mailengine::SearchOrder::Recency);
+    const auto relevance = mailengine::bench::measure(index, queries, 20,
+                                                     mailengine::SearchOrder::Relevance);
+    mailengine::bench::print(std::to_string(size) + " recency", recency);
+    mailengine::bench::print(std::to_string(size) + " relevance", relevance);
+
+    std::error_code ec;
+    const auto bytes = std::filesystem::file_size(path, ec);
+    std::cout << "                         index " << (ec ? 0 : bytes / 1024 / 1024)
+              << " MB, built in " << static_cast<int64_t>(build_ms) << " ms, "
+              << recency.total_hits / std::max<int64_t>(recency.queries, 1)
+              << " hits/query avg\n";
+
+    std::filesystem::remove(path);
+    std::filesystem::remove(path + "-wal");
+    std::filesystem::remove(path + "-shm");
+  }
+  std::cout << "\n";
   return 0;
 }
 
@@ -524,6 +587,12 @@ int main(int argc, char** argv) {
   if (command == "daemon") {
     if (argc < 3) return usage();
     return cmd_daemon(argv[2], argc > 3 ? std::atoi(argv[3]) : 15);
+  }
+  if (command == "bench-search") {
+    std::vector<int64_t> sizes;
+    for (int i = 2; i < argc; ++i) sizes.push_back(std::atoll(argv[i]));
+    if (sizes.empty()) sizes = {1000, 10000, 50000, 200000};
+    return cmd_bench_search(sizes);
   }
   if (command == "reindex") {
     if (argc < 3) return usage();

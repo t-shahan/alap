@@ -33,6 +33,25 @@
 
 namespace mailengine {
 
+/// @brief How results are ordered, which is also a performance decision.
+enum class SearchOrder {
+  /// Newest matching message first.
+  ///
+  /// O(results), NOT O(corpus): the FTS rowid is the message timestamp, so
+  /// SQLite walks the posting list backwards and stops as soon as it has
+  /// enough. This is the default because it is both what mail users normally
+  /// want and the only ordering that stays flat as the mailbox grows.
+  Recency,
+
+  /// Best bm25 score first.
+  ///
+  /// Requires scoring EVERY matching document — relevance ranking cannot know
+  /// the top n without examining all candidates. Cost therefore grows with the
+  /// number of matches, which for a common term means the whole mailbox. Use
+  /// deliberately, not by default.
+  Relevance,
+};
+
 /// @brief One search hit.
 struct SearchHit {
   std::string thread_id;   ///< our composite id, ready for ZQL
@@ -74,12 +93,29 @@ class SearchIndex {
   ///
   /// The entry point used when rebuilding from Postgres. `index_message` is a
   /// convenience wrapper over this for the ingest path.
+  /// @param sent_at_ms Message timestamp. Becomes the FTS rowid, which is what
+  ///        makes recency-ordered search early-terminating. Passing 0 falls
+  ///        back to an auto-assigned rowid, and such documents sort as oldest.
   [[nodiscard]] Result<void> index_document(const std::string& account_id,
                                             const std::string& thread_id,
                                             const std::string& message_id,
                                             const std::string& subject,
                                             const std::string& sender,
-                                            const std::string& body);
+                                            const std::string& body,
+                                            int64_t sent_at_ms = 0);
+
+  /// @brief Begins a bulk-indexing transaction.
+  ///
+  /// Without this, every `index_document` is its own implicit transaction and
+  /// pays a WAL fsync — two, since it deletes then inserts. That is fine for
+  /// the incremental path (a handful of messages) and catastrophic for a
+  /// 31,000-message reindex, where fsync latency dwarfs the actual work.
+  ///
+  /// Callers must pair this with `commit_batch`. Not reentrant.
+  [[nodiscard]] Result<void> begin_batch();
+
+  /// @brief Commits a bulk-indexing transaction.
+  [[nodiscard]] Result<void> commit_batch();
 
   /// @brief Removes a message from the index.
   [[nodiscard]] Result<void> remove_message(const std::string& message_id);
@@ -89,8 +125,9 @@ class SearchIndex {
   /// `query` is user input and is escaped before reaching FTS5 — see
   /// `escape_query`. Results are deduplicated by thread, since matching three
   /// messages in one conversation should surface one result, not three.
-  [[nodiscard]] Result<std::vector<SearchHit>> search(const std::string& query,
-                                                      int limit = 100);
+  [[nodiscard]] Result<std::vector<SearchHit>> search(
+      const std::string& query, int limit = 100,
+      SearchOrder order = SearchOrder::Recency);
 
   /// @brief Number of indexed messages.
   [[nodiscard]] Result<int64_t> count();
