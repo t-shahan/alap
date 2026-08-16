@@ -68,6 +68,7 @@ add_library(mailengine_core
   src/search.cpp
   src/bench.cpp
   src/html.cpp
+  src/compose.cpp
 )
 target_include_directories(mailengine_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -111,6 +112,7 @@ if(MAILENGINE_BUILD_TESTS)
     tests/test_outbox.cpp
     tests/test_search.cpp
     tests/test_html.cpp
+    tests/test_compose.cpp
   )
   target_link_libraries(mailengine_tests PRIVATE mailengine_core GTest::gtest_main)
 

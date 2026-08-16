@@ -10,6 +10,9 @@ import Foundation
 struct ThreadRow: Decodable, Identifiable, Hashable {
   let id: String
   let accountId: String
+  /// Gmail's own thread id, needed when sending so the reply joins the
+  /// existing conversation in Gmail's UI.
+  let remoteThreadId: String
   let subject: String
   let snippet: String
   let participants: [Participant]
@@ -35,7 +38,7 @@ struct ThreadRow: Decodable, Identifiable, Hashable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, accountId, subject, snippet, participants, lastMessageAt
+    case id, accountId, remoteThreadId, subject, snippet, participants, lastMessageAt
     case messageCount, unreadCount, hasAttachments, isStarred
   }
 
@@ -43,6 +46,7 @@ struct ThreadRow: Decodable, Identifiable, Hashable {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     id = try container.decode(String.self, forKey: .id)
     accountId = try container.decode(String.self, forKey: .accountId)
+    remoteThreadId = try container.decode(String.self, forKey: .remoteThreadId)
     subject = try container.decode(String.self, forKey: .subject)
     snippet = try container.decode(String.self, forKey: .snippet)
     participants = try container.decode([Participant].self, forKey: .participants)
@@ -154,6 +158,8 @@ struct MessageRow: Decodable, Identifiable, Hashable {
   let isRead: Bool
   let isStarred: Bool
   let hasAttachments: Bool
+  /// RFC 5322 Message-ID, without angle brackets. Needed to thread a reply.
+  let rfc822MessageId: String?
   let body: MessageBodyRow?
   let attachments: [AttachmentRow]
 
@@ -198,7 +204,7 @@ struct MessageRow: Decodable, Identifiable, Hashable {
   private enum CodingKeys: String, CodingKey {
     case id, threadId, fromName, fromEmail, toRecipients, ccRecipients
     case subject, snippet, sentAt, isRead, isStarred, hasAttachments
-    case body, attachments
+    case rfc822MessageId, body, attachments
   }
 
   init(from decoder: any Decoder) throws {
@@ -215,6 +221,7 @@ struct MessageRow: Decodable, Identifiable, Hashable {
     isRead = try container.decode(Bool.self, forKey: .isRead)
     isStarred = try container.decode(Bool.self, forKey: .isStarred)
     hasAttachments = try container.decode(Bool.self, forKey: .hasAttachments)
+    rfc822MessageId = try container.decodeIfPresent(String.self, forKey: .rfc822MessageId)
     body = try container.decodeIfPresent(MessageBodyRow.self, forKey: .body)
     attachments = try container.decode([AttachmentRow].self, forKey: .attachments)
 

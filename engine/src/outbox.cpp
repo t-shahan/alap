@@ -4,6 +4,8 @@
 #include "mailengine/outbox.hpp"
 
 #include <nlohmann/json.hpp>
+
+#include "mailengine/compose.hpp"
 #include <utility>
 
 namespace mailengine {
@@ -50,8 +52,10 @@ OutboxDisposition classify_attempt(bool succeeded, int error_code, int attempts,
 }
 
 OutboxDrainer::OutboxDrainer(LabelWriter& gmail, PostgresStore& store,
-                             std::string account_id, int max_attempts)
+                             std::string account_id, int max_attempts,
+                             MessageSender* sender)
     : gmail_(gmail),
+      sender_(sender),
       store_(store),
       account_id_(std::move(account_id)),
       max_attempts_(max_attempts) {}
@@ -79,7 +83,35 @@ Result<void> OutboxDrainer::apply(const PostgresStore::OutboxItem& item) {
   }
 
   if (item.op == "send") {
-    return make_error("send is not implemented yet", 501);
+    if (sender_ == nullptr) {
+      return make_error("no sender configured", 501);
+    }
+
+    compose::Draft draft;
+    draft.from = mime::Address{payload.value("fromName", ""),
+                               payload.value("fromEmail", "")};
+    for (const auto& address : string_array(payload, "to")) {
+      draft.to.push_back(mime::parse_address(address));
+    }
+    for (const auto& address : string_array(payload, "cc")) {
+      draft.cc.push_back(mime::parse_address(address));
+    }
+    draft.subject = payload.value("subject", "");
+    draft.body = payload.value("body", "");
+    draft.in_reply_to = payload.value("inReplyTo", "");
+    draft.references = string_array(payload, "references");
+
+    auto raw = compose::build(draft);
+    if (!raw) {
+      // A draft that cannot be built will never build; fail permanently.
+      return make_error("compose failed: " + raw.error().message, 400);
+    }
+
+    auto sent = sender_->send_message(*raw, payload.value("threadId", ""));
+    if (!sent) {
+      return sent.error();
+    }
+    return Result<void>{};
   }
   if (item.op == "delete_forever") {
     return make_error("delete_forever is not implemented yet", 501);

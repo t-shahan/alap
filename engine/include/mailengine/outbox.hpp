@@ -63,8 +63,10 @@ class OutboxDrainer {
   /// @param max_attempts Attempts before a row is considered permanently
   ///        failed. Five with exponential backoff spans a few minutes, which
   ///        comfortably covers a transient network outage.
+  /// @param sender Optional. When absent, `send` operations fail as
+  ///        unimplemented rather than silently succeeding.
   OutboxDrainer(LabelWriter& gmail, PostgresStore& store, std::string account_id,
-                int max_attempts = 5);
+                int max_attempts = 5, MessageSender* sender = nullptr);
 
   /// @brief Claims and applies up to `limit` pending operations.
   ///
@@ -80,6 +82,7 @@ class OutboxDrainer {
 
  private:
   LabelWriter& gmail_;
+  MessageSender* sender_;
   PostgresStore& store_;
   std::string account_id_;
   int max_attempts_;

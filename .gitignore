@@ -28,3 +28,7 @@ DerivedData/
 
 # macOS
 .DS_Store
+
+# Swift build output
+app/.build/
+app/.swiftpm/

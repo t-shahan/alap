@@ -11,6 +11,9 @@
 namespace mailengine::crypto {
 namespace {
 
+constexpr std::string_view kBase64Alphabet =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
 constexpr std::string_view kBase64UrlAlphabet =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
@@ -73,6 +76,39 @@ std::string base64url_encode(const std::vector<uint8_t>& bytes) {
     out += kBase64UrlAlphabet[(triple >> 6) & 0x3F];
   }
 
+  return out;
+}
+
+std::string base64_encode(const std::vector<uint8_t>& bytes) {
+  std::string out;
+  out.reserve((bytes.size() + 2) / 3 * 4);
+
+  size_t i = 0;
+  for (; i + 2 < bytes.size(); i += 3) {
+    const uint32_t triple = (static_cast<uint32_t>(bytes[i]) << 16) |
+                            (static_cast<uint32_t>(bytes[i + 1]) << 8) |
+                            static_cast<uint32_t>(bytes[i + 2]);
+    out += kBase64Alphabet[(triple >> 18) & 0x3F];
+    out += kBase64Alphabet[(triple >> 12) & 0x3F];
+    out += kBase64Alphabet[(triple >> 6) & 0x3F];
+    out += kBase64Alphabet[triple & 0x3F];
+  }
+
+  // Unlike base64url, the tail IS padded — decoders of MIME bodies expect it.
+  const size_t remaining = bytes.size() - i;
+  if (remaining == 1) {
+    const uint32_t triple = static_cast<uint32_t>(bytes[i]) << 16;
+    out += kBase64Alphabet[(triple >> 18) & 0x3F];
+    out += kBase64Alphabet[(triple >> 12) & 0x3F];
+    out += "==";
+  } else if (remaining == 2) {
+    const uint32_t triple = (static_cast<uint32_t>(bytes[i]) << 16) |
+                            (static_cast<uint32_t>(bytes[i + 1]) << 8);
+    out += kBase64Alphabet[(triple >> 18) & 0x3F];
+    out += kBase64Alphabet[(triple >> 12) & 0x3F];
+    out += kBase64Alphabet[(triple >> 6) & 0x3F];
+    out += '=';
+  }
   return out;
 }
 

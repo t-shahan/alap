@@ -262,6 +262,33 @@ Result<void> GmailClient::batch_modify(
   return Result<void>{};
 }
 
+Result<std::string> GmailClient::send_message(const std::string& raw_message,
+                                              const std::string& thread_id) {
+  if (raw_message.empty()) {
+    return make_error("cannot send an empty message");
+  }
+
+  json request;
+  // Gmail wants the whole message base64URL encoded — the URL-safe alphabet,
+  // even though the message's own MIME bodies use standard base64.
+  const std::vector<uint8_t> bytes(raw_message.begin(), raw_message.end());
+  request["raw"] = crypto::base64url_encode(bytes);
+  if (!thread_id.empty()) {
+    request["threadId"] = thread_id;
+  }
+
+  auto response = api_post("/messages/send", request.dump());
+  if (!response) {
+    return response.error();
+  }
+
+  const auto root = json::parse(*response, nullptr, false);
+  if (root.is_discarded()) {
+    return make_error("send response was not valid JSON");
+  }
+  return root.value("id", std::string{});
+}
+
 Result<std::string> GmailClient::api_get(const std::string& path) {
   for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
     auto token = tokens_.access_token();

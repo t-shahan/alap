@@ -359,7 +359,7 @@ int cmd_drain(const std::string& account_id) {
   mailengine::PostgresStore store;
   if (!connect_store(store)) return 1;
 
-  mailengine::OutboxDrainer drainer(gmail, store, account_id);
+  mailengine::OutboxDrainer drainer(gmail, store, account_id, 5, &gmail);
   auto stats = drainer.drain_once();
   if (!stats) {
     std::cerr << "error: " << stats.error().message << "\n";
@@ -387,7 +387,7 @@ int cmd_daemon(const std::string& account_id, int interval_seconds) {
   mailengine::SearchIndex index;
   const bool indexing = open_search(index);
   mailengine::Syncer syncer(gmail, store, account_id, indexing ? &index : nullptr);
-  mailengine::OutboxDrainer drainer(gmail, store, account_id);
+  mailengine::OutboxDrainer drainer(gmail, store, account_id, 5, &gmail);
 
   std::cout << "daemon started for " << account_id << "  (every "
             << interval_seconds << "s, Ctrl-C to stop)\n";

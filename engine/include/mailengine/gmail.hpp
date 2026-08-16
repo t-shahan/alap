@@ -138,6 +138,17 @@ class LabelWriter {
       const std::vector<std::string>& remove_label_ids) = 0;
 };
 
+/// @brief Sending, extracted for the same dependency-inversion reason as
+/// `LabelWriter` — so the drainer's send path can be tested without a network.
+class MessageSender {
+ public:
+  virtual ~MessageSender() = default;
+
+  /// @see GmailClient::send_message
+  [[nodiscard]] virtual Result<std::string> send_message(
+      const std::string& raw_message, const std::string& thread_id) = 0;
+};
+
 /// @brief Read-side Gmail API surface.
 ///
 /// ## Rate limits
@@ -146,7 +157,7 @@ class LabelWriter {
 /// `messages.list` is 5, `history.list` is 2, against a 250 unit/second budget.
 /// A 429 or 403 rateLimitExceeded is retried with exponential backoff, which
 /// is a normal part of a large backfill rather than an error.
-class GmailClient : public LabelWriter {
+class GmailClient : public LabelWriter, public MessageSender {
  public:
   GmailClient(TokenProvider& tokens);
 
@@ -187,6 +198,17 @@ class GmailClient : public LabelWriter {
       const std::vector<std::string>& remote_message_ids,
       const std::vector<std::string>& add_label_ids,
       const std::vector<std::string>& remove_label_ids) override;
+
+  /// @brief Sends a raw RFC 5322 message.
+  ///
+  /// @param raw_message A complete message as built by `compose::build`.
+  /// @param thread_id Gmail thread to attach to. Supplying it is what makes a
+  ///        reply appear inside the existing conversation in Gmail's own UI;
+  ///        the In-Reply-To and References headers handle threading for every
+  ///        OTHER client, so both are needed.
+  /// @return The id of the created message.
+  [[nodiscard]] Result<std::string> send_message(const std::string& raw_message,
+                                                 const std::string& thread_id = {}) override;
 
   /// @brief Lists changes since `start_history_id`.
   ///

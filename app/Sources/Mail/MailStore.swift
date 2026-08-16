@@ -349,6 +349,63 @@ final class MailStore {
     selectedThreadID = successor
   }
 
+  /// Queues a reply to the selected thread.
+  ///
+  /// Threading headers are assembled here because the client already holds the
+  /// conversation; making the engine re-fetch the parent purely to read its
+  /// Message-ID would be a wasted round trip.
+  ///
+  /// Nothing is inserted locally. The sent message arrives from Gmail on the
+  /// next poll as a real message — inserting an optimistic copy would either
+  /// duplicate it or strand an orphan if the send failed.
+  func sendReply(body: String) async throws {
+    guard let thread = selectedThread,
+          let parent = detail?.messages.last,
+          let account = accounts.first(where: { $0.id == thread.accountId })
+    else { return }
+
+    let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+
+    // Reply to the sender, unless that is us — in which case reply to whoever
+    // the parent was addressed to, so replying to your own sent mail works.
+    let recipients: [String] =
+      parent.fromEmail.caseInsensitiveCompare(account.emailAddress) == .orderedSame
+      ? parent.toRecipients.map(\.email)
+      : [parent.fromEmail]
+    guard !recipients.isEmpty else { return }
+
+    // References is the ancestry: the parent's own chain plus the parent.
+    var references: [String] = []
+    if let parentId = parent.rfc822MessageId, !parentId.isEmpty {
+      references.append(parentId)
+    }
+
+    try await bridge.mutate(
+      "compose.reply",
+      args: [
+        "accountId": .string(thread.accountId),
+        "threadId": .string(thread.id),
+        "remoteThreadId": .string(thread.remoteThreadId),
+        "fromName": .string(account.displayName),
+        "fromEmail": .string(account.emailAddress),
+        "to": .array(recipients.map { .string($0) }),
+        "cc": .array([]),
+        "subject": .string(Self.replySubject(parent.subject)),
+        "body": .string(trimmed),
+        "inReplyTo": .string(parent.rfc822MessageId ?? ""),
+        "references": .array(references.map { .string($0) }),
+        "idempotencyKey": .string(UUID().uuidString.lowercased()),
+      ]
+    )
+  }
+
+  /// Mirrors the engine's `compose::reply_subject` — adds `Re:` only when it is
+  /// absent, so round trips do not stack prefixes.
+  private static func replySubject(_ original: String) -> String {
+    original.lowercased().hasPrefix("re:") ? original : "Re: \(original)"
+  }
+
   func toggleStarOnSelection() async {
     guard let thread = selectedThread else { return }
     await toggleStar(thread)

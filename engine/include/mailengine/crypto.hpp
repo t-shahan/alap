@@ -27,6 +27,14 @@ namespace mailengine::crypto {
 /// trailing `=` is stripped. Plain base64 will be rejected by Google.
 [[nodiscard]] std::string base64url_encode(const std::vector<uint8_t>& bytes);
 
+/// @brief Encodes bytes as STANDARD base64 with padding (RFC 4648 §4).
+///
+/// Distinct from `base64url_encode`: MIME bodies and RFC 2047 encoded-words use
+/// the `+/` alphabet and require `=` padding, while OAuth requires the URL-safe
+/// unpadded form. Using the wrong one produces mail that other clients cannot
+/// decode.
+[[nodiscard]] std::string base64_encode(const std::vector<uint8_t>& bytes);
+
 /// @brief Decodes base64url, tolerating missing padding.
 ///
 /// Also accepts standard base64 (`+` and `/`), because Gmail message bodies

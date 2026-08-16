@@ -196,6 +196,63 @@ export const mutators = defineMutators({
     ),
   },
 
+  compose: {
+    /**
+     * Queues a reply to a thread.
+     *
+     * Writes ONLY an outbox row — no local message is inserted. A sent message
+     * comes back from Gmail on the next poll as a real message with a real id,
+     * and inserting an optimistic copy first would duplicate it or leave an
+     * orphan if the send failed. The trade is a short delay before the reply
+     * appears in the thread, which is honest.
+     *
+     * Threading headers are supplied by the CLIENT because it already has the
+     * thread loaded; the engine would otherwise have to re-fetch the parent
+     * message purely to read its Message-ID.
+     */
+    reply: defineMutator(
+      z.object({
+        ...outboxArgs,
+        threadId: z.string(),
+        /** Gmail's thread id, so the reply lands in the same conversation. */
+        remoteThreadId: z.string(),
+        fromName: z.string(),
+        fromEmail: z.string().email(),
+        to: z.array(z.string()).min(1),
+        cc: z.array(z.string()).default([]),
+        subject: z.string(),
+        body: z.string().min(1),
+        /** Parent's RFC 5322 Message-ID, without angle brackets. */
+        inReplyTo: z.string().default(''),
+        references: z.array(z.string()).default([]),
+      }),
+      async ({tx, args}) => {
+        const {accountId, idempotencyKey, ...draft} = args
+
+        await tx.mutate.outbox.insert({
+          id: idempotencyKey,
+          accountId,
+          op: 'send',
+          payload: {
+            threadId: draft.remoteThreadId,
+            fromName: draft.fromName,
+            fromEmail: draft.fromEmail,
+            to: draft.to,
+            cc: draft.cc,
+            subject: draft.subject,
+            body: draft.body,
+            inReplyTo: draft.inReplyTo,
+            references: draft.references,
+          },
+          status: 'pending',
+          attempts: 0,
+          idempotencyKey,
+          ...timestamps(),
+        })
+      },
+    ),
+  },
+
   outbox: {
     /**
      * Retry a permanently-failed operation.
