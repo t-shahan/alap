@@ -37,6 +37,11 @@ final class MailStore {
   private(set) var labels: [LabelRow] = []
   /// Queued and failed remote operations, mirrored from the outbox.
   private(set) var unresolvedOutbox: [OutboxRow] = []
+  /// Attachments to open as soon as their bytes arrive.
+  ///
+  /// Not observed by the UI — this is intent, not state. The chip's appearance
+  /// comes from `state(of:)`, which reads the outbox and the disk.
+  @ObservationIgnored private var openWhenDownloaded: Set<String> = []
   private(set) var threads: [ThreadRow] = []
   private(set) var threadsLoaded = false
 
@@ -121,6 +126,9 @@ final class MailStore {
     bridge.subscribe(id: "outbox", query: "outbox.unresolved", as: OutboxRow.self) {
       [weak self] rows, _ in
       self?.unresolvedOutbox = rows
+      // A download that failed must disarm its pending open, or the request
+      // would sit armed and fire later against a stale click.
+      self?.cancelOpensForFailedDownloads()
     }
 
     resubscribeThreads()
@@ -178,6 +186,8 @@ final class MailStore {
       // pane showing "Loading…" forever.
       self?.detail = row
       self?.detailLoaded = true
+      // The bytes of a requested attachment may have just landed.
+      self?.openAnyArrivedAttachments()
     }
   }
 
@@ -464,17 +474,51 @@ final class MailStore {
     )
   }
 
-  /// Opens an attachment, downloading it first if necessary.
+  /// Opens an attachment, downloading it first if it is not already here.
   ///
-  /// Nothing is ever opened straight from the network — the file is on disk
-  /// before it is handed to Launch Services, which is also what lets Quick
-  /// Look and "Reveal in Finder" work on the same path.
+  /// One click, not two. The download is asynchronous and lands via the Zero
+  /// subscription rather than by returning here, so the intent is recorded and
+  /// `openAnyArrivedAttachments` fires it when the bytes actually appear.
+  ///
+  /// Nothing is ever opened straight from the network: the file is on disk
+  /// before it is handed to Launch Services, which is also what lets "Reveal
+  /// in Finder" and "Save a Copy" work against the same path.
   func openAttachment(_ attachment: AttachmentRow) async {
     if case .ready(let file) = state(of: attachment) {
       NSWorkspace.shared.open(file)
       return
     }
+    guard attachment.canDownload else { return }
+    openWhenDownloaded.insert(attachment.id)
     await downloadAttachment(attachment)
+  }
+
+  /// Opens anything whose bytes have arrived since the last update.
+  ///
+  /// Driven by the detail subscription rather than by polling: when the engine
+  /// records `local_path`, that row replicates back and re-renders the pane,
+  /// which is the same signal that turns the chip blue.
+  private func openAnyArrivedAttachments() {
+    guard !openWhenDownloaded.isEmpty, let detail else { return }
+
+    for attachment in detail.messages.flatMap(\.attachments) {
+      guard openWhenDownloaded.contains(attachment.id),
+            let file = attachment.readyFile
+      else { continue }
+      // Remove BEFORE opening: NSWorkspace.open is not synchronous, and a
+      // second subscription update arriving first would launch it twice.
+      openWhenDownloaded.remove(attachment.id)
+      NSWorkspace.shared.open(file)
+    }
+  }
+
+  /// Disarms pending opens whose download failed for good.
+  private func cancelOpensForFailedDownloads() {
+    guard !openWhenDownloaded.isEmpty else { return }
+    for row in unresolvedOutbox where row.status == "failed" {
+      guard row.id.hasPrefix("download|") else { continue }
+      openWhenDownloaded.remove(String(row.id.dropFirst("download|".count)))
+    }
   }
 
   func toggleStarOnSelection() async {
