@@ -56,6 +56,10 @@ FetchContent_MakeAvailable(json)
 # ─────────────────────────────────────────────────────────────────────────────
 add_library(mailengine_core
   src/version.cpp
+  src/http.cpp
+  src/crypto.cpp
+  src/keychain.cpp
+  src/oauth.cpp
 )
 target_include_directories(mailengine_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -63,6 +67,15 @@ target_include_directories(mailengine_core
 target_link_libraries(mailengine_core
   PRIVATE CURL::libcurl SQLite3::SQLite3 PkgConfig::LIBPQ nlohmann_json::nlohmann_json
 )
+
+# Security supplies SecRandomCopyBytes and the Keychain item API; CoreFoundation
+# supplies the CFString/CFDictionary types those calls are expressed in.
+# CommonCrypto (SHA-256) is part of libSystem and needs no explicit link.
+if(APPLE)
+  target_link_libraries(mailengine_core
+    PRIVATE "-framework Security" "-framework CoreFoundation"
+  )
+endif()
 target_compile_options(mailengine_core PRIVATE -Wall -Wextra -Wpedantic)
 
 # Standalone daemon: drains the Gmail sync queue and the IMAP command outbox.
@@ -80,7 +93,11 @@ if(MAILENGINE_BUILD_TESTS)
   FetchContent_MakeAvailable(googletest)
 
   enable_testing()
-  add_executable(mailengine_tests tests/test_version.cpp)
+  add_executable(mailengine_tests
+    tests/test_version.cpp
+    tests/test_crypto.cpp
+    tests/test_oauth.cpp
+  )
   target_link_libraries(mailengine_tests PRIVATE mailengine_core GTest::gtest_main)
 
   include(GoogleTest)
