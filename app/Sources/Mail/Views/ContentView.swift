@@ -289,6 +289,10 @@ private struct MessageListPane: View {
   private func row(for thread: ThreadRow) -> some View {
     ThreadListRow(thread: thread, accountTint: store.tint(forAccount: thread.accountId))
       .tag(thread.id)
+      // List is lazy, so a row appearing IS the viewport reaching it. That
+      // makes this the cheapest possible scroll signal — no offset tracking,
+      // no content-height measurement per frame.
+      .onAppear { store.growThreadsIfNeeded(reaching: thread.id) }
       .listRowInsets(EdgeInsets())
       .listRowBackground(background(for: thread))
       .contextMenu { menu(for: thread) }

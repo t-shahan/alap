@@ -415,6 +415,15 @@ Result<MessagePage> GmailClient::list_messages(const std::string& page_token,
                                                const std::string& query,
                                                int max_results) {
   std::string path = "/messages?maxResults=" + std::to_string(max_results);
+  // Gmail EXCLUDES spam and trash from messages.list unless asked. Leaving it
+  // off meant the Trash mailbox was permanently empty and trashing a message
+  // moved it somewhere the user could not look at or recover it from — the app
+  // showed a Trash folder it could never populate.
+  //
+  // The labels themselves are already synced per message, so including these
+  // costs one flag rather than any new plumbing: a message carrying TRASH
+  // simply lands in the Trash mailbox like any other label.
+  path += "&includeSpamTrash=true";
   if (!page_token.empty()) {
     path += "&pageToken=" + HttpClient::url_encode(page_token);
   }

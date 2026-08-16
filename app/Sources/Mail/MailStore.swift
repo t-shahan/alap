@@ -48,6 +48,10 @@ final class MailStore {
       searchTask = Task { [weak self] in
         try? await Task.sleep(for: MailStore.searchDebounce)
         guard !Task.isCancelled else { return }
+        // Each new search is a fresh result set; keeping a grown limit would
+        // ask for thousands of rows to show a handful of matches.
+        self?.threadLimit = MailStore.threadPageSize
+        self?.isGrowingThreads = false
         self?.resubscribeThreads()
       }
     }
@@ -76,6 +80,10 @@ final class MailStore {
     didSet {
       guard selectedMailbox != oldValue else { return }
       selectedThreadID = nil
+      // A limit earned by scrolling a large mailbox must not carry into a
+      // small one, or switching pays for rows that do not exist.
+      threadLimit = MailStore.threadPageSize
+      isGrowingThreads = false
       resubscribeThreads()
     }
   }
@@ -99,6 +107,34 @@ final class MailStore {
   /// The fully-hydrated thread behind the reading pane.
   private(set) var detail: ThreadDetailRow?
   private(set) var detailLoaded = false
+
+  /// How many threads the list currently holds.
+  ///
+  /// There is no pagination. The list grows as it is scrolled, so this is a
+  /// high-water mark rather than a page number: growing it re-subscribes with a
+  /// larger limit and Zero extends the existing result rather than re-fetching.
+  ///
+  /// It starts well above a screenful so the first growth is never visible, and
+  /// it resets when the mailbox changes — otherwise switching to a small
+  /// mailbox would keep paying for a limit earned in a large one.
+  private(set) var threadLimit = MailStore.threadPageSize
+
+  /// Rows fetched initially, and added per growth.
+  ///
+  /// 200 rather than 100: two screenfuls means the first growth happens while
+  /// there is still material to scroll, so the list never visibly stalls at the
+  /// bottom waiting for more.
+  static let threadPageSize = 200
+
+  /// Rows from the end at which more are requested.
+  ///
+  /// Far enough ahead that the fetch completes before the user arrives, close
+  /// enough that a flick to the bottom does not request several pages at once.
+  private static let growthTrigger = 40
+
+  /// True between asking for more and receiving it, so a burst of row
+  /// appearances cannot queue several growths for the same scroll.
+  @ObservationIgnored private var isGrowingThreads = false
 
   private let threadSubscriptionID = "threads"
   private let detailSubscriptionID = "detail"
@@ -252,7 +288,7 @@ final class MailStore {
 
     // Every mailbox resolves to a registered query name; two of them need an
     // argument.
-    var args: [String: JSONValue] = [:]
+    var args: [String: JSONValue] = ["limit": .number(Double(threadLimit))]
     switch selectedMailbox {
     case .label(let remoteId):
       // The PROVIDER id, not a row id. Every account has its own row for the
@@ -286,10 +322,36 @@ final class MailStore {
       // gating on it left the UI saying "Loading…" permanently.
       self?.threads = rows
       self?.threadsLoaded = true
+      self?.isGrowingThreads = false
       self?.reconcileSelection()
       self?.selectFirstIfNeeded()
     }
   }
+
+  /// Asks for more threads when a row near the end comes on screen.
+  ///
+  /// Called from the row itself rather than from a scroll offset: `List` is
+  /// lazy, so a row appearing IS the signal that the viewport reached it, and
+  /// it costs nothing to observe. Watching scroll offsets would mean measuring
+  /// content height on every frame.
+  func growThreadsIfNeeded(reaching threadID: String) {
+    guard !isGrowingThreads else { return }
+    // A short list is the whole result, not a truncated one — asking for more
+    // would re-subscribe forever against a mailbox that has nothing further.
+    guard threads.count >= threadLimit else { return }
+    guard threadLimit < MailStore.maxThreadLimit else { return }
+    guard let index = threads.firstIndex(where: { $0.id == threadID }),
+          index >= threads.count - MailStore.growthTrigger
+    else { return }
+
+    isGrowingThreads = true
+    threadLimit += MailStore.threadPageSize
+    resubscribeThreads()
+  }
+
+  /// Must match `MAX_THREAD_LIMIT` in queries.ts, which rejects anything above
+  /// it — exceeding it would fail the query rather than return fewer rows.
+  static let maxThreadLimit = 50_000
 
   /// Selects the first thread when a mailbox loads with nothing selected.
   ///

@@ -16,6 +16,17 @@ import {zql} from './schema.ts'
 /** Default page size for the thread list. */
 const THREAD_PAGE_SIZE = 100
 
+/**
+ * Ceiling on how far the thread list may be grown.
+ *
+ * The list has no pagination — it grows as you scroll — so this is not a page
+ * size, it is a stop. Roughly 456 bytes of JSON per thread means 50,000 rows is
+ * ~23MB decoded into Swift structs, which is past the point where the array
+ * itself is the cost rather than the query. A mailbox larger than this needs a
+ * windowed query that drops rows above the viewport, not a bigger number here.
+ */
+const MAX_THREAD_LIMIT = 50_000
+
 export const queries = defineQueries({
   accounts: {
     /** Every connected account, for the sidebar and account badges. */
@@ -63,7 +74,7 @@ export const queries = defineQueries({
          * of that label — the same reasoning as `unifiedInbox`.
          */
         remoteId: z.string(),
-        limit: z.number().int().positive().max(1000).optional(),
+        limit: z.number().int().positive().max(MAX_THREAD_LIMIT).optional(),
       }),
       ({args: {remoteId, limit}}) =>
         zql.thread
@@ -85,7 +96,7 @@ export const queries = defineQueries({
      * provider-side name.
      */
     unifiedInbox: defineQuery(
-      z.object({limit: z.number().int().positive().max(1000).optional()}),
+      z.object({limit: z.number().int().positive().max(MAX_THREAD_LIMIT).optional()}),
       ({args: {limit}}) =>
         zql.thread
           .whereExists('messages', m =>
@@ -111,7 +122,7 @@ export const queries = defineQueries({
     forAccount: defineQuery(
       z.object({
         accountId: z.string(),
-        limit: z.number().int().positive().max(1000).optional(),
+        limit: z.number().int().positive().max(MAX_THREAD_LIMIT).optional(),
       }),
       ({args: {accountId, limit}}) =>
         zql.thread
@@ -152,7 +163,7 @@ export const queries = defineQueries({
      * and spam are excluded so the mailbox means "filed", not "everything".
      */
     archived: defineQuery(
-      z.object({limit: z.number().int().positive().max(1000).optional()}),
+      z.object({limit: z.number().int().positive().max(MAX_THREAD_LIMIT).optional()}),
       ({args: {limit}}) =>
         zql.thread
           .where(({not, exists}) =>
@@ -176,7 +187,7 @@ export const queries = defineQueries({
      * cheaper than an existence check across messages.
      */
     unread: defineQuery(
-      z.object({limit: z.number().int().positive().max(1000).optional()}),
+      z.object({limit: z.number().int().positive().max(MAX_THREAD_LIMIT).optional()}),
       ({args: {limit}}) =>
         zql.thread
           .where('unreadCount', '>', 0)
@@ -186,7 +197,7 @@ export const queries = defineQueries({
 
     /** Threads carrying at least one attachment. */
     withAttachments: defineQuery(
-      z.object({limit: z.number().int().positive().max(1000).optional()}),
+      z.object({limit: z.number().int().positive().max(MAX_THREAD_LIMIT).optional()}),
       ({args: {limit}}) =>
         zql.thread
           .where('hasAttachments', true)
