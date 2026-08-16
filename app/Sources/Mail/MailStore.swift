@@ -19,7 +19,15 @@ final class MailStore {
 
   /// Current search text. Empty means the normal label view.
   var searchText: String = "" {
-    didSet { resubscribeThreads() }
+    didSet {
+      guard searchText != oldValue else { return }
+      searchTask?.cancel()
+      searchTask = Task { [weak self] in
+        try? await Task.sleep(for: MailStore.searchDebounce)
+        guard !Task.isCancelled else { return }
+        self?.resubscribeThreads()
+      }
+    }
   }
 
   var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -34,9 +42,21 @@ final class MailStore {
     didSet { resubscribeThreads() }
   }
 
-  var selectedThread: ThreadRow? {
-    didSet { resubscribeDetail() }
+  /// Selection is stored as an ID, not a whole row.
+  ///
+  /// `List(selection:)` hashes and compares its selection value constantly. A
+  /// `ThreadRow` hashes every field including the participants array, so
+  /// binding the struct made arrow-key navigation quadratic in row size. A
+  /// String is a single cheap comparison.
+  var selectedThreadID: String? {
+    didSet {
+      guard selectedThreadID != oldValue else { return }
+      selectedThread = threads.first { $0.id == selectedThreadID }
+      scheduleDetailSubscription()
+    }
   }
+
+  private(set) var selectedThread: ThreadRow?
 
   /// The fully-hydrated thread behind the reading pane.
   private(set) var detail: ThreadDetailRow?
@@ -44,6 +64,24 @@ final class MailStore {
 
   private let threadSubscriptionID = "threads"
   private let detailSubscriptionID = "detail"
+
+  /// Pending detail subscription, cancelled when selection moves again.
+  @ObservationIgnored private var detailTask: Task<Void, Never>?
+  /// Pending search re-query, cancelled on each keystroke.
+  @ObservationIgnored private var searchTask: Task<Void, Never>?
+
+  /// How long selection must settle before the reading pane loads.
+  ///
+  /// Holding an arrow key generates selections far faster than a body can be
+  /// fetched, and each one previously issued a subscribe across the bridge
+  /// that pulled full message bodies. Debouncing means a held key costs ONE
+  /// load at the end rather than one per row, while still feeling immediate
+  /// for a deliberate click.
+  private static let detailDebounce = Duration.milliseconds(180)
+
+  /// Search re-queries hit FTS5 plus a Zero subscription, so they wait for a
+  /// typing pause rather than firing per character.
+  private static let searchDebounce = Duration.milliseconds(150)
 
   func start() {
     bridge.start()
@@ -66,21 +104,41 @@ final class MailStore {
   /// subscription id means selecting a different thread tears down the
   /// previous view rather than accumulating one per click — otherwise every
   /// message you ever opened would stay synced for the session.
-  private func resubscribeDetail() {
-    guard let thread = selectedThread else {
+  /// Debounces the reading-pane load. See `detailDebounce`.
+  private func scheduleDetailSubscription() {
+    detailTask?.cancel()
+
+    guard selectedThread != nil else {
       bridge.unsubscribe(id: detailSubscriptionID)
       detail = nil
       detailLoaded = false
       return
     }
 
+    // Clear immediately so the pane never shows the PREVIOUS message's body
+    // while the new one loads.
+    detail = nil
     detailLoaded = false
+
+    detailTask = Task { [weak self] in
+      try? await Task.sleep(for: MailStore.detailDebounce)
+      guard !Task.isCancelled else { return }
+      self?.subscribeDetailNow()
+    }
+  }
+
+  private func subscribeDetailNow() {
+    guard let thread = selectedThread else { return }
+
     bridge.subscribeOne(
       id: detailSubscriptionID,
       query: "threads.detail",
       args: ["threadId": .string(thread.id)],
       as: ThreadDetailRow.self
     ) { [weak self] row, isComplete in
+      // A late reply from a subscription the user has already moved past must
+      // not overwrite the current pane.
+      guard self?.selectedThreadID == thread.id else { return }
       self?.detail = row
       if isComplete { self?.detailLoaded = true }
     }
@@ -129,6 +187,7 @@ final class MailStore {
         as: ThreadRow.self
       ) { [weak self] rows, isComplete in
         self?.threads = rows
+        self?.reconcileSelection()
         if isComplete { self?.threadsLoaded = true }
       }
     } else {
@@ -138,9 +197,17 @@ final class MailStore {
         as: ThreadRow.self
       ) { [weak self] rows, isComplete in
         self?.threads = rows
+        self?.reconcileSelection()
         if isComplete { self?.threadsLoaded = true }
       }
     }
+  }
+
+  /// Keeps `selectedThread` pointing at a row that still exists after the list
+  /// refreshes — archiving the selected thread, for instance.
+  private func reconcileSelection() {
+    guard let id = selectedThreadID else { return }
+    selectedThread = threads.first { $0.id == id }
   }
 
   // MARK: - Actions

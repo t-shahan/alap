@@ -91,9 +91,10 @@ private struct ThreadList: View {
             : "This mailbox is empty.")
         )
       } else {
-        List(store.threads, selection: $store.selectedThread) { thread in
+        // Selection binds to the ID, not the row. See MailStore.selectedThreadID.
+        List(store.threads, selection: $store.selectedThreadID) { thread in
           ThreadRowView(thread: thread)
-            .tag(thread)
+            .tag(thread.id)
             .listRowInsets(EdgeInsets(
               top: Theme.Space.snug + 2, leading: Theme.Space.loose - 2,
               bottom: Theme.Space.snug + 2, trailing: Theme.Space.loose - 2))
@@ -114,7 +115,9 @@ private struct ThreadList: View {
             }
         }
         .listStyle(.inset)
-        .animation(Theme.Motion.standard, value: store.threads)
+        // No list-wide animation. Animating on `store.threads` re-diffed and
+        // re-animated all 100 rows whenever any field changed, which is every
+        // time a thread is read, starred or archived.
       }
     }
     .navigationTitle(store.isSearching ? "Search" : (store.selectedLabel?.name ?? "All Inboxes"))
@@ -147,7 +150,7 @@ private struct ThreadRowView: View {
               .font(.system(size: 9))
               .foregroundStyle(Theme.Palette.star)
           }
-          Text(RelativeTime.short(thread.lastMessageDate))
+          Text(thread.displayTime)
             .font(Theme.Font.caption)
             .foregroundStyle(Theme.Palette.secondaryText)
             .monospacedDigit()
@@ -234,6 +237,12 @@ private struct MessageView: View {
           .lineSpacing(4)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
+
+        if message.isTruncated {
+          Text("Message truncated for display")
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.secondaryText)
+        }
       }
 
       if !message.attachments.isEmpty {

@@ -22,10 +22,36 @@ struct ThreadRow: Decodable, Identifiable, Hashable {
   var isUnread: Bool { unreadCount > 0 }
   var lastMessageDate: Date { Date(timeIntervalSince1970: lastMessageAt / 1000) }
 
+  /// Formatted once per row rather than per render.
+  ///
+  /// SwiftUI rebuilds every visible row's body whenever the list's selection
+  /// changes, so anything computed inside `body` runs on each keypress.
+  let displayTime: String
+
   /// Who to show in the list row. Falls back to the subject line's absence
   /// rather than rendering an empty cell.
   var displayName: String {
     participants.first.map { $0.name.isEmpty ? $0.email : $0.name } ?? "Unknown"
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, accountId, subject, snippet, participants, lastMessageAt
+    case messageCount, unreadCount, hasAttachments, isStarred
+  }
+
+  init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(String.self, forKey: .id)
+    accountId = try container.decode(String.self, forKey: .accountId)
+    subject = try container.decode(String.self, forKey: .subject)
+    snippet = try container.decode(String.self, forKey: .snippet)
+    participants = try container.decode([Participant].self, forKey: .participants)
+    lastMessageAt = try container.decode(Double.self, forKey: .lastMessageAt)
+    messageCount = try container.decode(Int.self, forKey: .messageCount)
+    unreadCount = try container.decode(Int.self, forKey: .unreadCount)
+    hasAttachments = try container.decode(Bool.self, forKey: .hasAttachments)
+    isStarred = try container.decode(Bool.self, forKey: .isStarred)
+    displayTime = RelativeTime.short(Date(timeIntervalSince1970: lastMessageAt / 1000))
   }
 }
 
@@ -70,16 +96,40 @@ struct AccountRow: Decodable, Identifiable, Hashable {
 // MARK: - Formatting
 
 enum RelativeTime {
+  /// Reused formatters.
+  ///
+  /// `Date.formatted(.dateTime...)` builds a new FormatStyle on every call, and
+  /// a list row calls it on every render. With 100 rows re-rendering as the
+  /// selection moves, that allocation dominated scrolling. A cached
+  /// DateFormatter is roughly an order of magnitude cheaper.
+  private static let timeOnly: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "h:mm a"
+    return formatter
+  }()
+
+  private static let weekday: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "EEE"
+    return formatter
+  }()
+
+  private static let monthDay: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "MMM d"
+    return formatter
+  }()
+
   /// Mail-style timestamp: time for today, weekday within the week, date beyond.
   static func short(_ date: Date, now: Date = .now) -> String {
     let calendar = Calendar.current
     if calendar.isDateInToday(date) {
-      return date.formatted(.dateTime.hour().minute())
+      return timeOnly.string(from: date)
     }
     if let days = calendar.dateComponents([.day], from: date, to: now).day, days < 7 {
-      return date.formatted(.dateTime.weekday(.abbreviated))
+      return weekday.string(from: date)
     }
-    return date.formatted(.dateTime.month(.abbreviated).day())
+    return monthDay.string(from: date)
   }
 }
 
@@ -110,25 +160,80 @@ struct MessageRow: Decodable, Identifiable, Hashable {
   var sentDate: Date { Date(timeIntervalSince1970: sentAt / 1000) }
   var displayName: String { fromName.isEmpty ? fromEmail : fromName }
 
-  /// Best available rendering of the message.
+  /// Best available rendering of the message, computed ONCE at decode.
+  ///
+  /// This must not be a computed property. SwiftUI reads it inside `body`, and
+  /// `plainTextFromHTML` runs several full-string regex passes — so a 100KB
+  /// newsletter was being re-parsed on every render, on the main thread.
   ///
   /// Prefers `text_body`. HTML is converted to text rather than rendered,
   /// because the schema promises sanitised HTML and the C++ engine does not
   /// sanitise yet — rendering unsanitised remote HTML would be an XSS and
   /// tracking-pixel vector. See `plainTextFromHTML`.
-  var displayBody: String {
-    if let text = body?.textBody, !text.isEmpty { return text }
-    if let html = body?.htmlBody, !html.isEmpty { return plainTextFromHTML(html) }
-    return snippet
-  }
+  let displayBody: String
+
+  /// True when `displayBody` was truncated for rendering.
+  let isTruncated: Bool
 
   /// True when we are showing a downgraded rendering of an HTML-only message.
-  var isDowngradedFromHTML: Bool {
-    (body?.textBody?.isEmpty ?? true) && !(body?.htmlBody?.isEmpty ?? true)
-  }
+  let isDowngradedFromHTML: Bool
 
   /// True when the body simply has not been fetched yet.
   var isBodyMissing: Bool { body == nil }
+
+  /// Longest body rendered inline.
+  ///
+  /// A single `Text` holding hundreds of kilobytes with `textSelection` and
+  /// `fixedSize` forces SwiftUI to lay out the whole string synchronously.
+  /// Mail like that exists — machine-generated reports, long digests — and it
+  /// stalls the pane.
+  private static let maxRenderedCharacters = 20_000
+
+  private enum CodingKeys: String, CodingKey {
+    case id, threadId, fromName, fromEmail, toRecipients, ccRecipients
+    case subject, snippet, sentAt, isRead, isStarred, hasAttachments
+    case body, attachments
+  }
+
+  init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(String.self, forKey: .id)
+    threadId = try container.decode(String.self, forKey: .threadId)
+    fromName = try container.decode(String.self, forKey: .fromName)
+    fromEmail = try container.decode(String.self, forKey: .fromEmail)
+    toRecipients = try container.decode([Participant].self, forKey: .toRecipients)
+    ccRecipients = try container.decode([Participant].self, forKey: .ccRecipients)
+    subject = try container.decode(String.self, forKey: .subject)
+    snippet = try container.decode(String.self, forKey: .snippet)
+    sentAt = try container.decode(Double.self, forKey: .sentAt)
+    isRead = try container.decode(Bool.self, forKey: .isRead)
+    isStarred = try container.decode(Bool.self, forKey: .isStarred)
+    hasAttachments = try container.decode(Bool.self, forKey: .hasAttachments)
+    body = try container.decodeIfPresent(MessageBodyRow.self, forKey: .body)
+    attachments = try container.decode([AttachmentRow].self, forKey: .attachments)
+
+    // Resolve the rendered text once, here, rather than on every render.
+    let text = body?.textBody ?? ""
+    let html = body?.htmlBody ?? ""
+    isDowngradedFromHTML = text.isEmpty && !html.isEmpty
+
+    let resolved: String
+    if !text.isEmpty {
+      resolved = text
+    } else if !html.isEmpty {
+      resolved = plainTextFromHTML(html)
+    } else {
+      resolved = snippet
+    }
+
+    if resolved.count > Self.maxRenderedCharacters {
+      displayBody = String(resolved.prefix(Self.maxRenderedCharacters))
+      isTruncated = true
+    } else {
+      displayBody = resolved
+      isTruncated = false
+    }
+  }
 }
 
 struct MessageBodyRow: Decodable, Hashable {
