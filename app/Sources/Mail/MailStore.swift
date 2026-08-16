@@ -26,9 +26,16 @@ final class MailStore {
     didSet { resubscribeThreads() }
   }
 
-  var selectedThread: ThreadRow?
+  var selectedThread: ThreadRow? {
+    didSet { resubscribeDetail() }
+  }
+
+  /// The fully-hydrated thread behind the reading pane.
+  private(set) var detail: ThreadDetailRow?
+  private(set) var detailLoaded = false
 
   private let threadSubscriptionID = "threads"
+  private let detailSubscriptionID = "detail"
 
   func start() {
     bridge.start()
@@ -43,6 +50,32 @@ final class MailStore {
     }
 
     resubscribeThreads()
+  }
+
+  /// Subscribes the reading pane to the selected thread.
+  ///
+  /// This is the ONLY query that pulls `message_body`. Reusing one
+  /// subscription id means selecting a different thread tears down the
+  /// previous view rather than accumulating one per click — otherwise every
+  /// message you ever opened would stay synced for the session.
+  private func resubscribeDetail() {
+    guard let thread = selectedThread else {
+      bridge.unsubscribe(id: detailSubscriptionID)
+      detail = nil
+      detailLoaded = false
+      return
+    }
+
+    detailLoaded = false
+    bridge.subscribeOne(
+      id: detailSubscriptionID,
+      query: "threads.detail",
+      args: ["threadId": .string(thread.id)],
+      as: ThreadDetailRow.self
+    ) { [weak self] row, isComplete in
+      self?.detail = row
+      if isComplete { self?.detailLoaded = true }
+    }
   }
 
   /// Swaps the thread-list query when the selected label changes.

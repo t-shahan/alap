@@ -2,10 +2,8 @@ import SwiftUI
 
 /// Three-pane mail layout.
 ///
-/// Visual direction is restrained-editorial rather than dense-utility: the
-/// problem statement is visual clutter, so hierarchy comes from type scale and
-/// whitespace instead of borders and chrome. Unread is signalled by weight and
-/// a single accent dot, not by a filled row background.
+/// Every size, colour and spacing value comes from `Theme` — see that file for
+/// the visual direction and the reasoning behind each token. No literals here.
 struct ContentView: View {
   @State private var store = MailStore()
 
@@ -21,7 +19,7 @@ struct ContentView: View {
       ThreadList(store: store)
         .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 520)
     } detail: {
-      ReadingPane(thread: store.selectedThread)
+      ReadingPane(store: store)
     }
     .task { store.start() }
     // Hosts the headless web view so WebKit actually schedules it. Zero size,
@@ -47,6 +45,7 @@ private struct Sidebar: View {
     )) {
       Section {
         Label("All Inboxes", systemImage: "tray.2")
+          .font(Theme.Font.body)
           .badge(store.labels.filter { $0.remoteId == "INBOX" }.reduce(0) { $0 + $1.unreadCount })
           .tag(String?.none)
       }
@@ -55,18 +54,19 @@ private struct Sidebar: View {
         Section {
           ForEach(store.labels.filter { $0.accountId == account.id }) { label in
             Label(label.name, systemImage: label.systemImage)
+              .font(Theme.Font.body)
               // Reads the trigger-maintained column — not a live COUNT.
               .badge(label.unreadCount)
               .tag(String?.some(label.id))
           }
         } header: {
-          HStack(spacing: 6) {
+          HStack(spacing: Theme.Space.snug - 2) {
             Circle()
               .fill(Color(hex: account.color))
               .frame(width: 7, height: 7)
             Text(account.emailAddress)
-              .font(.caption)
-              .foregroundStyle(.secondary)
+              .font(Theme.Font.caption)
+              .foregroundStyle(Theme.Palette.secondaryText)
           }
         }
       }
@@ -92,12 +92,14 @@ private struct ThreadList: View {
         List(store.threads, selection: $store.selectedThread) { thread in
           ThreadRowView(thread: thread)
             .tag(thread)
-            .listRowInsets(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
+            .listRowInsets(EdgeInsets(
+              top: Theme.Space.snug + 2, leading: Theme.Space.loose - 2,
+              bottom: Theme.Space.snug + 2, trailing: Theme.Space.loose - 2))
             .swipeActions(edge: .trailing) {
               Button("Archive", systemImage: "archivebox") {
                 Task { await store.archive(thread) }
               }
-              .tint(.accentColor)
+              .tint(Theme.Palette.accent)
             }
             .contextMenu {
               Button("Archive") { Task { await store.archive(thread) } }
@@ -110,6 +112,7 @@ private struct ThreadList: View {
             }
         }
         .listStyle(.inset)
+        .animation(Theme.Motion.standard, value: store.threads)
       }
     }
     .navigationTitle(store.selectedLabel?.name ?? "All Inboxes")
@@ -120,40 +123,41 @@ private struct ThreadRowView: View {
   let thread: ThreadRow
 
   var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      // Unread marker. A 6pt dot carries the signal so the row itself can stay
-      // visually quiet — the anti-clutter goal in miniature.
+    HStack(alignment: .top, spacing: Theme.Space.snug + 2) {
+      // A 6pt dot carries the unread signal so the row itself stays visually
+      // quiet — the anti-clutter goal in miniature.
       Circle()
-        .fill(thread.isUnread ? Color.accentColor : .clear)
-        .frame(width: 6, height: 6)
+        .fill(thread.isUnread ? Theme.Palette.accent : .clear)
+        .frame(width: Theme.unreadDot, height: Theme.unreadDot)
         .padding(.top, 5)
 
-      VStack(alignment: .leading, spacing: 3) {
+      VStack(alignment: .leading, spacing: Theme.Space.tight - 1) {
         HStack(alignment: .firstTextBaseline) {
           Text(thread.displayName)
-            .font(.system(size: 13, weight: thread.isUnread ? .semibold : .regular))
+            .font(thread.isUnread ? Theme.Font.bodyEmphasis : Theme.Font.body)
             .lineLimit(1)
 
-          Spacer(minLength: 8)
+          Spacer(minLength: Theme.Space.snug)
 
           if thread.isStarred {
             Image(systemName: "star.fill")
               .font(.system(size: 9))
-              .foregroundStyle(.orange)
+              .foregroundStyle(Theme.Palette.star)
           }
           Text(RelativeTime.short(thread.lastMessageDate))
-            .font(.system(size: 11))
-            .foregroundStyle(.secondary)
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.secondaryText)
             .monospacedDigit()
         }
 
         Text(thread.subject)
-          .font(.system(size: 12.5, weight: thread.isUnread ? .medium : .regular))
+          .font(Theme.Font.small)
+          .fontWeight(thread.isUnread ? .medium : .regular)
           .lineLimit(1)
 
         Text(thread.snippet)
-          .font(.system(size: 11.5))
-          .foregroundStyle(.secondary)
+          .font(Theme.Font.small)
+          .foregroundStyle(Theme.Palette.secondaryText)
           .lineLimit(2)
       }
     }
@@ -163,46 +167,115 @@ private struct ThreadRowView: View {
 // MARK: - Reading pane
 
 private struct ReadingPane: View {
-  let thread: ThreadRow?
+  @Bindable var store: MailStore
 
   var body: some View {
-    if let thread {
+    if let thread = store.selectedThread {
       ScrollView {
-        VStack(alignment: .leading, spacing: 18) {
-          Text(thread.subject)
-            // Deliberate scale jump from the 13pt list — hierarchy through
-            // contrast rather than through rules and boxes.
-            .font(.system(size: 24, weight: .semibold))
+        VStack(alignment: .leading, spacing: Theme.Space.section) {
+          // The scale jump from the 13pt list is deliberate and large: it is
+          // the strongest signal that you have moved from scanning to reading.
+          Text(store.detail?.subject ?? thread.subject)
+            .font(Theme.Font.title)
             .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
 
-          HStack(spacing: 8) {
-            Text(thread.displayName).font(.system(size: 13, weight: .medium))
-            Text(thread.participants.first?.email ?? "")
-              .font(.system(size: 12))
-              .foregroundStyle(.secondary)
-            Spacer()
-            Text(thread.lastMessageDate.formatted(date: .abbreviated, time: .shortened))
-              .font(.system(size: 12))
-              .foregroundStyle(.secondary)
+          if let detail = store.detail, !detail.messages.isEmpty {
+            ForEach(detail.messages) { message in
+              MessageView(message: message)
+            }
+          } else if store.detailLoaded {
+            Text("This thread has no messages.")
+              .font(Theme.Font.body)
+              .foregroundStyle(Theme.Palette.secondaryText)
+          } else {
+            // Reads hit the local cache first, so this is usually a single
+            // frame. It exists for the case where the body has not synced.
+            HStack(spacing: Theme.Space.snug) {
+              ProgressView().controlSize(.small)
+              Text("Loading…")
+                .font(Theme.Font.small)
+                .foregroundStyle(Theme.Palette.secondaryText)
+            }
           }
-
-          Divider()
-
-          // Bodies live in a separate table and are pulled by the detail
-          // query. Wiring that is the next step.
-          Text(thread.snippet)
-            .font(.system(size: 13.5))
-            .lineSpacing(4)
-            .textSelection(.enabled)
-
-          Spacer()
         }
-        .padding(28)
+        .padding(Theme.Space.reading)
         .frame(maxWidth: .infinity, alignment: .leading)
       }
+      .id(thread.id)  // reset scroll position when switching threads
     } else {
       ContentUnavailableView("No message selected", systemImage: "envelope")
     }
+  }
+}
+
+private struct MessageView: View {
+  let message: MessageRow
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: Theme.Space.base) {
+      header
+
+      Divider().overlay(Theme.Palette.divider)
+
+      if message.isBodyMissing {
+        Label("Body not downloaded yet", systemImage: "arrow.down.circle")
+          .font(Theme.Font.small)
+          .foregroundStyle(Theme.Palette.secondaryText)
+      } else {
+        Text(message.displayBody)
+          // Plain-text mail carries its own wrapping, so a monospaced face
+          // keeps signatures and quoted blocks aligned. Converted HTML has no
+          // such structure and reads better proportionally.
+          .font(message.isDowngradedFromHTML ? Theme.Font.reading : Theme.Font.monospacedBody)
+          .lineSpacing(4)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      if !message.attachments.isEmpty {
+        attachments
+      }
+    }
+  }
+
+  private var header: some View {
+    HStack(alignment: .firstTextBaseline, spacing: Theme.Space.snug) {
+      Text(message.displayName).font(Theme.Font.bodyEmphasis)
+      Text(message.fromEmail)
+        .font(Theme.Font.small)
+        .foregroundStyle(Theme.Palette.secondaryText)
+        .lineLimit(1)
+
+      Spacer(minLength: Theme.Space.base)
+
+      if message.isStarred {
+        Image(systemName: "star.fill")
+          .font(.system(size: 10))
+          .foregroundStyle(Theme.Palette.star)
+      }
+      Text(message.sentDate.formatted(date: .abbreviated, time: .shortened))
+        .font(Theme.Font.caption)
+        .foregroundStyle(Theme.Palette.secondaryText)
+        .monospacedDigit()
+    }
+  }
+
+  private var attachments: some View {
+    VStack(alignment: .leading, spacing: Theme.Space.tight) {
+      ForEach(message.attachments.filter { !$0.isInline }) { attachment in
+        HStack(spacing: Theme.Space.snug) {
+          Image(systemName: "paperclip")
+            .font(.system(size: 10))
+            .foregroundStyle(Theme.Palette.secondaryText)
+          Text(attachment.filename).font(Theme.Font.small)
+          Text(attachment.displaySize)
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.secondaryText)
+        }
+      }
+    }
+    .padding(.top, Theme.Space.tight)
   }
 }
 
@@ -212,15 +285,24 @@ private struct ConnectionIndicator: View {
   let state: ConnectionState
 
   var body: some View {
-    HStack(spacing: 5) {
+    HStack(spacing: Theme.Space.tight + 1) {
       Circle()
-        .fill(state == .connected ? Color.green : state.acceptsWrites ? .yellow : .red)
-        .frame(width: 6, height: 6)
+        .fill(indicatorColor)
+        .frame(width: Theme.unreadDot, height: Theme.unreadDot)
       Text(state.label)
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
+        .font(Theme.Font.caption)
+        .foregroundStyle(Theme.Palette.secondaryText)
     }
     .help("Zero sync status")
+    .animation(Theme.Motion.quick, value: state)
+  }
+
+  private var indicatorColor: Color {
+    switch state {
+    case .connected: Theme.Palette.ok
+    case .connecting: Theme.Palette.star
+    default: Theme.Palette.alert
+    }
   }
 }
 
