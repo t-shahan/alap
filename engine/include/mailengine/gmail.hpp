@@ -113,6 +113,24 @@ class TokenProvider {
   TokenSet cached_;
 };
 
+/// @brief The single write operation the outbox drainer needs.
+///
+/// Extracted as an interface purely for dependency inversion: it lets the
+/// drainer's failure-classification logic be tested against a fake that
+/// returns programmed errors, with no network and no account. That logic
+/// decides whether a user's archive is retried or permanently abandoned, so it
+/// deserves real coverage.
+class LabelWriter {
+ public:
+  virtual ~LabelWriter() = default;
+
+  /// @see GmailClient::batch_modify
+  [[nodiscard]] virtual Result<void> batch_modify(
+      const std::vector<std::string>& remote_message_ids,
+      const std::vector<std::string>& add_label_ids,
+      const std::vector<std::string>& remove_label_ids) = 0;
+};
+
 /// @brief Read-side Gmail API surface.
 ///
 /// ## Rate limits
@@ -121,7 +139,7 @@ class TokenProvider {
 /// `messages.list` is 5, `history.list` is 2, against a 250 unit/second budget.
 /// A 429 or 403 rateLimitExceeded is retried with exponential backoff, which
 /// is a normal part of a large backfill rather than an error.
-class GmailClient {
+class GmailClient : public LabelWriter {
  public:
   GmailClient(TokenProvider& tokens);
 
@@ -154,7 +172,7 @@ class GmailClient {
   [[nodiscard]] Result<void> batch_modify(
       const std::vector<std::string>& remote_message_ids,
       const std::vector<std::string>& add_label_ids,
-      const std::vector<std::string>& remove_label_ids);
+      const std::vector<std::string>& remove_label_ids) override;
 
   /// @brief Lists changes since `start_history_id`.
   ///

@@ -105,6 +105,7 @@ if(MAILENGINE_BUILD_TESTS)
     tests/test_http.cpp
     tests/test_mime.cpp
     tests/test_gmail.cpp
+    tests/test_outbox.cpp
   )
   target_link_libraries(mailengine_tests PRIVATE mailengine_core GTest::gtest_main)
 

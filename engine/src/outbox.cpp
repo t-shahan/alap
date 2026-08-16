@@ -27,7 +27,29 @@ std::vector<std::string> string_array(const json& root, const char* key) {
 
 }  // namespace
 
-OutboxDrainer::OutboxDrainer(GmailClient& gmail, PostgresStore& store,
+OutboxDisposition classify_attempt(bool succeeded, int error_code, int attempts,
+                                   int max_attempts) {
+  if (succeeded) {
+    return OutboxDisposition::Applied;
+  }
+  // Gmail rejected the request itself; another identical attempt fails the
+  // same way. 429 is excluded — it is a rate limit, not a bad request.
+  const bool client_error =
+      error_code >= 400 && error_code < 500 && error_code != 429;
+
+  // Not all 5xx are transient. 501 Not Implemented and 505 HTTP Version Not
+  // Supported describe a capability the server will never have, so retrying is
+  // pointless. `apply` also uses 501 for ops we have not built yet, and
+  // without this those rows would bounce through every attempt before failing.
+  const bool permanent_server_error = error_code == 501 || error_code == 505;
+
+  if (client_error || permanent_server_error || attempts >= max_attempts) {
+    return OutboxDisposition::Failed;
+  }
+  return OutboxDisposition::Retry;
+}
+
+OutboxDrainer::OutboxDrainer(LabelWriter& gmail, PostgresStore& store,
                              std::string account_id, int max_attempts)
     : gmail_(gmail),
       store_(store),
@@ -85,13 +107,9 @@ Result<DrainStats> OutboxDrainer::drain_once(int limit) {
       continue;
     }
 
-    // 4xx below 429 means Gmail rejected the request itself — a bad label id,
-    // a deleted message, an unimplemented op. Retrying cannot help, so fail
-    // immediately rather than burning five attempts.
-    const int code = applied.error().code;
-    const bool client_error = code >= 400 && code < 500 && code != 429;
-    const bool exhausted = item.attempts >= max_attempts_;
-    const bool permanent = client_error || exhausted;
+    const bool permanent =
+        classify_attempt(false, applied.error().code, item.attempts, max_attempts_) ==
+        OutboxDisposition::Failed;
 
     if (auto recorded =
             store_.fail_outbox(item.id, applied.error().message, permanent);
