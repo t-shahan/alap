@@ -115,3 +115,32 @@ wrong.
 5. **Search is FTS5, not ZQL.** ZQL has no text search. C++ owns a SQLite FTS5
    index; it returns thread IDs, which are then fed into a reactive ZQL
    `where('id', 'IN', ids)` so results still update live.
+
+## Running the app
+
+```bash
+npm run dev              # postgres + sidecar (:3000) + zero-cache (:4848)
+npm run seed --workspace=@mailapp/sidecar
+./scripts/build-app.sh && open build/Mail.app
+```
+
+### App gotchas
+
+**A WKWebView that is not in a window may never run.** The Zero client is
+hosted in a headless web view. WebKit does not reliably schedule a view that
+was never added to a window — it sits forever without loading the page or
+executing any JavaScript, with no error. `BridgeHost` mounts it at zero size
+so it is hosted but invisible. Symptom when this regresses: the app launches
+fine, shows no data, and no client group appears in `zero_0/cvr.instances`.
+
+**The web view is created in `ZeroBridge.init`, not `start()`.** SwiftUI mounts
+`BridgeHost` during layout, which happens before `.task` runs. If creation were
+deferred, the host would attach nothing.
+
+**file:// pages need explicit permission to reach localhost.** The bundle loads
+from a file URL, whose origin is opaque, so `allowFileAccessFromFileURLs` and
+`allowUniversalAccessFromFileURLs` are set via KVC. `index.html` carries a CSP
+restricting `connect-src` to zero-cache to contain that.
+
+**A three-column NavigationSplitView hides the sidebar by default on macOS.**
+Pinned open with an explicit `NavigationSplitViewVisibility.all`.
