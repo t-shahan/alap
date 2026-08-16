@@ -5,7 +5,12 @@ import SwiftUI
 /// Every size, colour and spacing value comes from `Theme` — see that file for
 /// the visual direction and the reasoning behind each token. No literals here.
 struct ContentView: View {
-  @State private var store = MailStore()
+  /// Owned by MailApp so the menu commands act on the same store.
+  @Bindable var store: MailStore
+
+  /// Focus lives here so the thread list can claim it on launch — otherwise
+  /// bare-letter shortcuts do nothing until the user clicks a row.
+  @FocusState private var listFocused: Bool
 
   /// A three-column NavigationSplitView hides the sidebar by default on macOS.
   /// The sidebar carries the unread badges, so it is pinned open.
@@ -18,10 +23,14 @@ struct ContentView: View {
     } content: {
       ThreadList(store: store)
         .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 520)
+        .triageShortcuts(store: store, listFocused: $listFocused)
     } detail: {
       ReadingPane(store: store)
     }
-    .task { store.start() }
+    .task {
+      store.start()
+      listFocused = true
+    }
     // Hosts the headless web view so WebKit actually schedules it. Zero size,
     // so it costs nothing visually.
     .background(BridgeHost(bridge: store.bridge).frame(width: 0, height: 0))

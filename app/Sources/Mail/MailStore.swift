@@ -219,7 +219,58 @@ final class MailStore {
     selectedThread = threads.first { $0.id == id }
   }
 
+  // MARK: - Keyboard navigation
+
+  /// Index of the current selection, if any.
+  private var selectedIndex: Int? {
+    guard let id = selectedThreadID else { return nil }
+    return threads.firstIndex { $0.id == id }
+  }
+
+  /// Moves the selection by `offset`, clamped to the list.
+  ///
+  /// Selecting the first row when nothing is selected is what makes `J` work
+  /// immediately after launch without a click.
+  func moveSelection(by offset: Int) {
+    guard !threads.isEmpty else { return }
+    guard let current = selectedIndex else {
+      selectedThreadID = threads.first?.id
+      return
+    }
+    let next = min(max(current + offset, 0), threads.count - 1)
+    selectedThreadID = threads[next].id
+  }
+
   // MARK: - Actions
+
+  /// Archives the selection and moves to the next thread.
+  ///
+  /// Advancing is the whole point: it turns archiving into a repeatable triage
+  /// loop rather than an action that leaves you with nothing selected. The
+  /// successor is chosen BEFORE the mutation, because the archived row
+  /// disappears from the reactive list as soon as the local write lands and
+  /// its index is then meaningless.
+  func archiveSelectedAndAdvance() async {
+    guard let thread = selectedThread, let index = selectedIndex else { return }
+
+    // Prefer the row below; fall back to the one above when archiving the last.
+    let successor: String? =
+      index + 1 < threads.count ? threads[index + 1].id
+      : (index > 0 ? threads[index - 1].id : nil)
+
+    await archive(thread)
+    selectedThreadID = successor
+  }
+
+  func toggleReadOnSelection() async {
+    guard let thread = selectedThread else { return }
+    await setRead(thread, isRead: thread.isUnread)
+  }
+
+  func toggleStarOnSelection() async {
+    guard let thread = selectedThread else { return }
+    await toggleStar(thread)
+  }
 
   /// Archives a thread — which in Gmail's model means removing INBOX.
   ///
