@@ -68,6 +68,18 @@ if [[ -d "$BIN/Mail_Mail.bundle" ]]; then
 PLIST
 fi
 
+# The engine ships INSIDE the bundle. The app spawns `mailengined connect` to
+# add a mailbox, because OAuth, the Keychain and every network call belong to
+# the engine — duplicating them in the app would also mean putting Google
+# credentials somewhere anyone can crack open with unzip.
+if [[ -x engine/build/mailengined ]]; then
+  echo "▸ embedding engine"
+  mkdir -p "$CONTENTS/Helpers"
+  cp engine/build/mailengined "$CONTENTS/Helpers/mailengined"
+else
+  echo "  (engine not built; the app will fall back to a development path)"
+fi
+
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -109,6 +121,11 @@ PLIST
 # happily reported a valid ad-hoc signature while this script was exiting 1 and
 # taking `&& open` down with it.
 echo "▸ signing (ad-hoc)"
+# The embedded engine is nested CODE, not a resource, so it must carry its own
+# signature before the outer seal is computed over it.
+if [[ -x "$CONTENTS/Helpers/mailengined" ]]; then
+  codesign --force --sign - --timestamp=none "$CONTENTS/Helpers/mailengined"
+fi
 if [[ -d "$RESOURCE_BUNDLE" ]]; then
   codesign --force --sign - --timestamp=none "$RESOURCE_BUNDLE"
 fi

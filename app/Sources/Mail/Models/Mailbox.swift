@@ -18,6 +18,8 @@ enum Mailbox: Hashable, Identifiable {
   case archived
   case unread
   case attachments
+  /// Everything in one account, for when unified is not what you want.
+  case account(id: String)
 
   var id: String {
     switch self {
@@ -26,6 +28,7 @@ enum Mailbox: Hashable, Identifiable {
     case .archived: "archived"
     case .unread: "unread"
     case .attachments: "attachments"
+    case .account(let id): "account:\(id)"
     }
   }
 
@@ -37,6 +40,7 @@ enum Mailbox: Hashable, Identifiable {
     case .archived: "threads.archived"
     case .unread: "threads.unread"
     case .attachments: "threads.withAttachments"
+    case .account: "threads.forAccount"
     }
   }
 
@@ -47,6 +51,7 @@ enum Mailbox: Hashable, Identifiable {
     case .archived: "Archive"
     case .unread: "Unread"
     case .attachments: "Attachments"
+    case .account: "Account"
     }
   }
 
@@ -58,6 +63,7 @@ enum Mailbox: Hashable, Identifiable {
     case .archived: "archivebox"
     case .unread: "circle.slash"
     case .attachments: "paperclip"
+    case .account: "person.crop.circle"
     }
   }
 

@@ -139,6 +139,13 @@ class PostgresStore {
       const std::string& attachment_id, const std::string& content_hash,
       const std::string& local_path, int64_t size_bytes);
 
+  /// @brief Every connected account, in sidebar order.
+  ///
+  /// Disconnected accounts are excluded: `disconnected_at` marks an account
+  /// the user removed, and syncing it would silently re-populate a mailbox
+  /// they deliberately took away.
+  [[nodiscard]] Result<std::vector<StoredAccount>> list_accounts();
+
   /// @brief Subscribes to a Postgres NOTIFY channel.
   ///
   /// The daemon otherwise learns about new work only when its poll interval

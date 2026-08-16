@@ -37,6 +37,7 @@ struct ContentView: View {
 
 private struct Sidebar: View {
   @Bindable var store: MailStore
+  @State private var connector = AccountConnector()
 
   var body: some View {
     VStack(alignment: .leading, spacing: Theme.Space.wide) {
@@ -46,13 +47,25 @@ private struct Sidebar: View {
 
       newMessageButton
 
-      section("MAILBOXES", Mailbox.standard)
-      section("SMART FILTERS", Mailbox.smartFilters)
+      ScrollView {
+        VStack(alignment: .leading, spacing: Theme.Space.wide) {
+          // Unified first. The whole point of the labels-not-folders model is
+          // that "Inbox" means every account's INBOX at once, so per-account
+          // sections are the exception below, not the primary navigation.
+          section("MAILBOXES", Mailbox.standard)
+          section("SMART FILTERS", Mailbox.smartFilters)
+          accountsSection
+        }
+      }
+      .scrollIndicators(.never)
 
-      Spacer()
+      Spacer(minLength: 0)
 
       ConnectionIndicator(state: store.bridge.connection)
         .padding(.horizontal, Theme.Space.loose)
+    }
+    .sheet(isPresented: .constant(connector.phase != .idle)) {
+      ConnectAccountSheet(connector: connector)
     }
     .padding(.horizontal, Theme.Space.cosy)
     .padding(.top, Theme.Space.loose)
@@ -80,6 +93,48 @@ private struct Sidebar: View {
     )
     .opacity(0.45)
     .help("Composing is not implemented yet")
+  }
+
+  /// One row per connected mailbox, plus the way to add another.
+  ///
+  /// The colour dot is the whole point: once two accounts are unified into one
+  /// inbox, the only cheap way to tell whose mail you are looking at is a
+  /// consistent colour, and it has to be the SAME colour here and in the list.
+  private var accountsSection: some View {
+    VStack(alignment: .leading, spacing: Theme.Space.tight) {
+      Text("ACCOUNTS")
+        .font(Theme.Font.caption)
+        .foregroundStyle(Theme.Ink.tertiary)
+        .padding(.horizontal, Theme.Space.loose)
+
+      ForEach(store.accounts) { account in
+        AccountRowView(
+          account: account,
+          unread: store.unreadCount(forAccount: account.id),
+          isSelected: store.selectedMailbox == .account(id: account.id)
+        ) {
+          store.selectedMailbox = .account(id: account.id)
+        }
+      }
+
+      Button {
+        connector.connect()
+      } label: {
+        HStack(spacing: Theme.Space.base) {
+          Image(systemName: "plus.circle")
+            .font(.system(size: Theme.Size.smallIcon))
+          Text("Add Account").font(Theme.Font.body)
+          Spacer()
+        }
+        .foregroundStyle(Theme.Ink.secondary)
+        .padding(.horizontal, Theme.Space.loose)
+        .frame(height: 30)
+        .contentShape(.rect)
+      }
+      .buttonStyle(.plain)
+      .disabled(connector.isRunning)
+      .help("Authorize another Gmail mailbox")
+    }
   }
 
   private func section(_ title: String, _ mailboxes: [Mailbox]) -> some View {
@@ -226,7 +281,7 @@ private struct MessageListPane: View {
   /// Extracted from `threadList` because the combined modifier chain exceeded
   /// the type-checker's budget.
   private func row(for thread: ThreadRow) -> some View {
-    ThreadListRow(thread: thread)
+    ThreadListRow(thread: thread, accountTint: store.tint(forAccount: thread.accountId))
       .tag(thread.id)
       .listRowInsets(EdgeInsets())
       .listRowBackground(background(for: thread))
@@ -290,8 +345,28 @@ private struct MessageListPane: View {
 
 private struct ThreadListRow: View {
   let thread: ThreadRow
+  /// The owning account's colour, or nil when only one account is connected.
+  ///
+  /// Nil is not the same as "no colour": with a single mailbox the stripe is
+  /// pure noise, and every row carrying it would be a decoration that means
+  /// nothing. It appears exactly when it starts carrying information.
+  let accountTint: Color?
 
   var body: some View {
+    HStack(spacing: 0) {
+      // A 2pt edge stripe rather than another dot. The row already has an
+      // unread dot and a flag; a third circle would compete with both, whereas
+      // an edge marker reads as "which pile is this from" at a glance.
+      Rectangle()
+        .fill(accountTint ?? .clear)
+        .frame(width: 2)
+        .padding(.vertical, Theme.Space.tight)
+
+      rowContent
+    }
+  }
+
+  private var rowContent: some View {
     VStack(alignment: .leading, spacing: Theme.Space.snug) {
       HStack(spacing: Theme.Space.base) {
         // 8pt unread dot, always occupying its slot so names stay aligned.

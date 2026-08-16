@@ -12,10 +12,15 @@
 #include <cstdlib>
 #include <iostream>
 #include <algorithm>
+#include <array>
+#include "mailengine/crypto.hpp"
+#include <nlohmann/json.hpp>
 #include <chrono>
 #include <filesystem>
 #include <iomanip>
 #include <optional>
+#include <mutex>
+#include <sstream>
 #include <thread>
 #include <string>
 
@@ -48,7 +53,9 @@ mailengine::OAuthConfig config_from_env() {
 
 int usage() {
   std::cerr << "usage: mailengined <command>\n\n"
-               "  auth <account-id>     authorize a Gmail account\n"
+               "  connect [max]         authorize a NEW mailbox, register it and backfill\n"
+               "                        (emits JSON progress; this is what the app spawns)\n"
+               "  auth <account-id>     re-authorize an EXISTING account id\n"
                "  token <account-id>    mint an access token from the stored refresh token\n"
                "  profile <account-id>  show mailbox profile and history watermark\n"
                "  labels <account-id>   list Gmail labels\n"
@@ -57,7 +64,7 @@ int usage() {
                "  sync <account-id> [query] [max] [workers]  backfill into Postgres\n"
                "  poll <account-id>     apply changes since the stored watermark\n"
                "  drain <account-id>    push queued local changes to Gmail\n"
-               "  daemon <account-id> [seconds]  run both loops continuously\n"
+               "  daemon [seconds]      supervise every connected account\n"
                "  search <account-id> <query>    full-text search the local index\n"
                "  reindex <account-id>  rebuild the search index from Postgres\n"
                "  resanitize <account-id>  sanitize HTML bodies stored before sanitising existed\n"
@@ -384,7 +391,80 @@ int cmd_drain(const std::string& account_id) {
 /// The outbox is drained BEFORE polling, so a change the user just made
 /// reaches Gmail before we ask Gmail what changed. Reversing the order would
 /// briefly show the pre-mutation state coming back from the server.
-int cmd_daemon(const std::string& account_id, int interval_seconds) {
+/// A per-account output stream that never interleaves with another worker's.
+///
+/// Several threads writing to std::cout shear their lines together — a
+/// half-written "sync: 12 written" ends up spliced into another account's
+/// line, and the log becomes unreadable exactly when something has gone wrong
+/// and you need to read it.
+///
+/// Buffers until a newline, then takes the mutex and emits the whole line at
+/// once, prefixed with the account it came from.
+class LabelledStream : public std::ostream {
+ public:
+  LabelledStream(std::mutex& mutex, std::string label)
+      : std::ostream(&buffer_), buffer_(mutex, std::move(label)) {
+    // Without unitbuf, sync() runs only when the buffer is destroyed — and the
+    // account loops never return, so nothing would ever be printed. Flushing
+    // per insertion is fine because sync() holds back partial lines.
+    setf(std::ios::unitbuf);
+  }
+
+ private:
+  class Buffer : public std::stringbuf {
+   public:
+    Buffer(std::mutex& mutex, std::string label)
+        : mutex_(mutex), label_(std::move(label)) {}
+
+    int sync() override {
+      const std::string text = str();
+      // Emit only through the last newline. A line assembled from several <<
+      // operations must not be torn apart and labelled twice, so anything
+      // after the final newline stays buffered until its newline arrives.
+      const size_t last = text.rfind('\n');
+      if (last == std::string::npos) {
+        return 0;
+      }
+
+      {
+        const std::lock_guard<std::mutex> guard(mutex_);
+        // Prefix every line, not just the first: a multi-line burst from one
+        // account is otherwise indistinguishable from another account's.
+        size_t start = 0;
+        while (start <= last) {
+          const size_t newline = text.find('\n', start);
+          std::cout << "[" << label_ << "] "
+                    << text.substr(start, newline - start) << "\n";
+          start = newline + 1;
+        }
+        std::cout.flush();
+      }
+
+      str(text.substr(last + 1));
+      // Keep writing at the end of the retained remainder.
+      pubseekoff(0, std::ios::end, std::ios::out);
+      return 0;
+    }
+
+   private:
+    std::mutex& mutex_;
+    std::string label_;
+  };
+
+  Buffer buffer_;
+};
+
+/// Runs one account's sync and outbox loops until the process ends.
+///
+/// Each account gets its own thread, and therefore its own PGconn, GmailClient
+/// and curl handle — `PostgresStore` is explicitly one connection per thread,
+/// and a CURL* may only be used by one thread at a time. Sharing either would
+/// be a data race rather than a slowdown.
+///
+/// The alternative, round-robin over accounts in a single loop, means one
+/// account with a slow backfill stalls every other account's mail.
+int run_account_loop(const std::string& account_id, int interval_seconds,
+                     std::ostream& out) {
   auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
   mailengine::GmailClient gmail(tokens);
   mailengine::PostgresStore store;
@@ -403,10 +483,10 @@ int cmd_daemon(const std::string& account_id, int interval_seconds) {
   // starting up cannot slip through the gap between the two.
   const bool live = store.listen("outbox").has_value();
   if (!live) {
-    std::cerr << "warning: NOTIFY unavailable; falling back to polling only\n";
+    out << "warning: NOTIFY unavailable; falling back to polling only\n";
   }
 
-  std::cout << "daemon started for " << account_id << "  (poll every "
+  out << "daemon started for " << account_id << "  (poll every "
             << interval_seconds << "s"
             << (live ? ", waking instantly on new work" : "")
             << ", Ctrl-C to stop)\n";
@@ -419,11 +499,11 @@ int cmd_daemon(const std::string& account_id, int interval_seconds) {
   while (true) {
     if (auto drained = drainer.drain_once(); drained) {
       if (drained->applied > 0 || drained->failed > 0) {
-        std::cout << "  outbox: applied " << drained->applied << ", failed "
+        out << "  outbox: applied " << drained->applied << ", failed "
                   << drained->failed << "\n";
       }
     } else {
-      std::cerr << "  outbox error: " << drained.error().message << "\n";
+      out << "  outbox error: " << drained.error().message << "\n";
     }
 
     const auto now = std::chrono::steady_clock::now();
@@ -432,15 +512,15 @@ int cmd_daemon(const std::string& account_id, int interval_seconds) {
 
       if (auto polled = syncer.incremental(); polled) {
         if (polled->written > 0 || polled->deleted > 0) {
-          std::cout << "  sync: " << polled->written << " written, "
+          out << "  sync: " << polled->written << " written, "
                     << polled->deleted << " deleted\n";
         }
       } else if (mailengine::Syncer::needs_full_resync(polled.error())) {
-        std::cerr << "  watermark expired; run `mailengined sync " << account_id
+        out << "  watermark expired; run `mailengined sync " << account_id
                   << "`\n";
         return 2;
       } else {
-        std::cerr << "  sync error: " << polled.error().message << "\n";
+        out << "  sync error: " << polled.error().message << "\n";
       }
     }
 
@@ -458,7 +538,7 @@ int cmd_daemon(const std::string& account_id, int interval_seconds) {
     }
 
     if (auto woke = store.wait_for_notification(timeout_ms); !woke) {
-      std::cerr << "  notify error: " << woke.error().message << "\n";
+      out << "  notify error: " << woke.error().message << "\n";
       // Do not spin on a broken connection.
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
@@ -707,6 +787,167 @@ int cmd_attachment(const std::string& account_id, const std::string& attachment_
   return 0;
 }
 
+/// A stable account id derived from the mailbox address.
+///
+/// Deterministic on purpose: connecting the same Gmail twice must land on the
+/// same row rather than duplicating the entire mailbox. `upsert_account`
+/// already refuses to reset `last_history_id`, so a reconnect resumes instead
+/// of triggering a full backfill.
+///
+/// Hashed rather than using the address itself because this id is a prefix of
+/// every message, attachment and label id in the system — it ends up in the
+/// search index, in logs, and in outbox payloads. There is no reason for the
+/// user's address to travel through all of that.
+std::string account_id_for(const std::string& email_address) {
+  std::string normalised;
+  normalised.reserve(email_address.size());
+  for (const char c : email_address) {
+    normalised += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  const auto digest = mailengine::crypto::hex_encode(
+      mailengine::crypto::sha256(normalised));
+  return "acct_" + digest.substr(0, 12);
+}
+
+/// Colours new accounts get, in order. Taken from the design's accent ramp so
+/// a second mailbox is distinguishable at a glance in the list.
+constexpr std::array<const char*, 6> kAccountColours = {
+    "#0a84ff", "#30d158", "#ff9f0a", "#bf5af2", "#ff453a", "#64d2ff",
+};
+
+/// Emits one JSON line of progress.
+///
+/// The app spawns this command and reads stdout, so progress is structured
+/// rather than prose: a half-parsed human sentence is how a connect flow ends
+/// up silently reporting success for a mailbox that never synced.
+void emit(const nlohmann::json& event) {
+  std::cout << event.dump() << std::endl;
+}
+
+/// Connects a new mailbox: authorise, register, and backfill.
+int cmd_connect(int64_t max_messages) {
+  const mailengine::OAuthClient client(config_from_env());
+
+  emit({{"event", "authorizing"}});
+  auto authorized = client.authorize_interactively();
+  if (!authorized) {
+    emit({{"event", "error"}, {"message", authorized.error().message}});
+    return 1;
+  }
+
+  const std::string email = authorized->email_address;
+  const std::string account_id = account_id_for(email);
+  emit({{"event", "authorized"}, {"email", email}, {"accountId", account_id}});
+
+  // The refresh token goes to the Keychain and NEVER to Postgres: anything in
+  // Postgres replicates to every client through zero-cache.
+  const mailengine::Keychain keychain;
+  if (auto stored = keychain.store(account_id, authorized->tokens.refresh_token);
+      !stored) {
+    emit({{"event", "error"}, {"message", stored.error().message}});
+    return 1;
+  }
+
+  mailengine::PostgresStore store;
+  if (!connect_store(store)) {
+    emit({{"event", "error"}, {"message", "could not connect to postgres"}});
+    return 1;
+  }
+
+  auto existing = store.list_accounts();
+  if (!existing) {
+    emit({{"event", "error"}, {"message", existing.error().message}});
+    return 1;
+  }
+  const char* colour = kAccountColours[existing->size() % kAccountColours.size()];
+
+  if (auto account = store.upsert_account(account_id, email, colour); !account) {
+    emit({{"event", "error"}, {"message", account.error().message}});
+    return 1;
+  }
+
+  emit({{"event", "syncing"}, {"accountId", account_id}});
+
+  mailengine::TokenProvider tokens(config_from_env(), account_id);
+  mailengine::GmailClient gmail(tokens);
+  mailengine::SearchIndex index;
+  const bool indexing = open_search(index);
+  mailengine::Syncer syncer(gmail, store, account_id, indexing ? &index : nullptr);
+
+  // Progress is streamed rather than reported at the end: a first backfill of
+  // a real mailbox takes minutes, and a connect flow that shows nothing for
+  // that long is indistinguishable from one that has hung.
+  auto stats = syncer.backfill(
+      /*query=*/"", max_messages, /*write_bodies=*/true,
+      [](int64_t done, int64_t total) {
+        emit({{"event", "progress"}, {"done", done}, {"total", total}});
+      },
+      /*fetch_workers=*/16);
+  if (!stats) {
+    // The account row and Keychain entry are deliberately left in place. The
+    // mailbox IS connected; only the first backfill failed, and the daemon
+    // will resume it. Tearing everything down would turn a network blip into
+    // "please authorise again".
+    emit({{"event", "error"},
+          {"message", stats.error().message},
+          {"accountId", account_id},
+          {"recoverable", true}});
+    return 1;
+  }
+
+  emit({{"event", "done"},
+        {"accountId", account_id},
+        {"email", email},
+        {"messages", stats->written}});
+  return 0;
+}
+
+/// Supervises every connected account.
+///
+/// Accounts are discovered from Postgres rather than passed on the command
+/// line, so connecting a new mailbox does not require restarting the daemon —
+/// it is picked up on the next supervision sweep.
+int cmd_daemon(int interval_seconds) {
+  mailengine::PostgresStore directory;
+  if (!connect_store(directory)) return 1;
+
+  auto accounts = directory.list_accounts();
+  if (!accounts) {
+    std::cerr << "error: " << accounts.error().message << "\n";
+    return 1;
+  }
+  if (accounts->empty()) {
+    std::cerr << "no accounts connected. Run `mailengined connect` first.\n";
+    return 1;
+  }
+
+  std::cout << "daemon supervising " << accounts->size() << " account"
+            << (accounts->size() == 1 ? "" : "s") << ":\n";
+  for (const auto& account : *accounts) {
+    std::cout << "  " << account.id << "  " << account.email_address << "\n";
+  }
+
+  // Output from several threads interleaves into one terminal, so each worker
+  // buffers a full line and takes a mutex to emit it. Writing directly to
+  // std::cout would shear lines together and make the log unreadable.
+  std::mutex output_mutex;
+  std::vector<std::thread> workers;
+  workers.reserve(accounts->size());
+
+  for (const auto& account : *accounts) {
+    workers.emplace_back([&output_mutex, id = account.id,
+                          email = account.email_address, interval_seconds] {
+      LabelledStream out(output_mutex, email);
+      run_account_loop(id, interval_seconds, out);
+    });
+  }
+
+  for (auto& worker : workers) {
+    worker.join();
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -749,9 +990,13 @@ int main(int argc, char** argv) {
     if (argc < 3) return usage();
     return cmd_drain(argv[2]);
   }
+  if (command == "connect") {
+    return cmd_connect(argc > 2 ? std::atoll(argv[2]) : 0);
+  }
   if (command == "daemon") {
-    if (argc < 3) return usage();
-    return cmd_daemon(argv[2], argc > 3 ? std::atoi(argv[3]) : 15);
+    // No account argument: the daemon supervises every connected account.
+    // A bare number is still accepted as the poll interval.
+    return cmd_daemon(argc > 2 ? std::atoi(argv[2]) : 15);
   }
   if (command == "attachment") {
     if (argc < 4) return usage();

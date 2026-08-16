@@ -90,7 +90,11 @@ target_compile_options(mailengine_core PRIVATE -Wall -Wextra -Wpedantic)
 
 # Standalone daemon: drains the Gmail sync queue and the IMAP command outbox.
 add_executable(mailengined src/main.cpp)
-target_link_libraries(mailengined PRIVATE mailengine_core)
+# nlohmann is header-only and PRIVATE to the core library, so the executable
+# needs it declared explicitly — main.cpp emits JSON progress lines that the
+# app parses, and hand-rolling that escaping is how an error message
+# containing a quote turns into an unparseable line.
+target_link_libraries(mailengined PRIVATE mailengine_core nlohmann_json::nlohmann_json)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tests (opt-in so the app build doesn't pay for GoogleTest)

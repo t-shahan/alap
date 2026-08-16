@@ -95,6 +95,18 @@ struct AccountRow: Decodable, Identifiable, Hashable {
   let provider: String
   let color: String
   let sortOrder: Int
+
+  /// What to show in a 220pt sidebar.
+  ///
+  /// `display_name` defaults to the address on first sync, so preferring it
+  /// blindly gives a column full of truncated addresses. The local part is
+  /// almost always enough to tell two of your own mailboxes apart.
+  var shortName: String {
+    if !displayName.isEmpty, displayName != emailAddress {
+      return displayName
+    }
+    return String(emailAddress.prefix(while: { $0 != "@" }))
+  }
 }
 
 // MARK: - Formatting

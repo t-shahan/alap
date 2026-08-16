@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import Observation
 
 /// The app's reactive view of Zero.
@@ -247,18 +248,28 @@ final class MailStore {
       return
     }
 
-    // Every mailbox resolves to a registered query name; only `label` needs an
-    // argument, and it has to be the composite row id rather than the Gmail id.
+    // Every mailbox resolves to a registered query name; two of them need an
+    // argument.
     var args: [String: JSONValue] = [:]
-    if case .label(let remoteId) = selectedMailbox {
-      guard let row = labels.first(where: { $0.remoteId == remoteId }) else {
+    switch selectedMailbox {
+    case .label(let remoteId):
+      // The PROVIDER id, not a row id. Every account has its own row for the
+      // same label, so passing one row id would show a single mailbox's mail
+      // under a sidebar entry that claims to cover all of them.
+      guard labels.contains(where: { $0.remoteId == remoteId }) else {
         // The label has not synced yet. Show nothing rather than every thread.
         threads = []
         threadsLoaded = true
         bridge.unsubscribe(id: threadSubscriptionID)
         return
       }
-      args["labelId"] = .string(row.id)
+      args["remoteId"] = .string(remoteId)
+
+    case .account(let id):
+      args["accountId"] = .string(id)
+
+    default:
+      break
     }
 
     bridge.subscribe(
@@ -303,9 +314,35 @@ final class MailStore {
     case .unread:
       let count = labels.filter { $0.remoteId == "UNREAD" }.reduce(0) { $0 + $1.totalCount }
       return count > 0 ? count : nil
+    case .account(let id):
+      return unreadCount(forAccount: id)
     case .archived, .attachments:
       return nil
     }
+  }
+
+  /// The colour marking mail from this account in a unified list.
+  ///
+  /// Nil while a single account is connected. The stripe exists to answer
+  /// "whose mailbox did this arrive in", and with one mailbox that question
+  /// has no content — showing it anyway would be decoration pretending to be
+  /// information.
+  func tint(forAccount accountId: String) -> Color? {
+    guard accounts.count > 1,
+          let account = accounts.first(where: { $0.id == accountId })
+    else { return nil }
+    return Color(hex: account.color)
+  }
+
+  /// Unread messages in one account's inbox.
+  ///
+  /// Read from the label row's trigger-maintained counter rather than counted
+  /// here: ZQL has no aggregates, and the synced thread list is only the first
+  /// page, so counting locally would under-report on any real mailbox.
+  func unreadCount(forAccount accountId: String) -> Int {
+    labels
+      .filter { $0.accountId == accountId && $0.remoteId == "INBOX" }
+      .reduce(0) { $0 + $1.unreadCount }
   }
 
   /// Keeps `selectedThread` pointing at a row that still exists after the list

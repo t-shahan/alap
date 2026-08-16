@@ -52,15 +52,27 @@ export const queries = defineQueries({
      */
     inLabel: defineQuery(
       z.object({
-        labelId: z.string(),
+        /**
+         * The PROVIDER-side label name (`INBOX`, `STARRED`), not a row id.
+         *
+         * This used to take a composite row id like `acct_1|STARRED`, which
+         * quietly broke the moment a second account existed: each account has
+         * its own row for the same label, so a single id could only ever match
+         * one mailbox and "Starred" would show half your mail. Matching on
+         * remoteId is what makes one sidebar entry mean every account's copy
+         * of that label — the same reasoning as `unifiedInbox`.
+         */
+        remoteId: z.string(),
         limit: z.number().int().positive().max(1000).optional(),
       }),
-      ({args: {labelId, limit}}) =>
+      ({args: {remoteId, limit}}) =>
         zql.thread
           // thread → messages → labels. Threads have no direct label link
           // because labels are per-message in Gmail: a thread is "in the
           // inbox" if *any* of its messages still carries INBOX.
-          .whereExists('messages', m => m.whereExists('labels', l => l.where('id', labelId)))
+          .whereExists('messages', m =>
+            m.whereExists('labels', l => l.where('remoteId', remoteId)),
+          )
           .orderBy('lastMessageAt', 'desc')
           .limit(limit ?? THREAD_PAGE_SIZE),
     ),
@@ -76,6 +88,34 @@ export const queries = defineQueries({
       z.object({limit: z.number().int().positive().max(1000).optional()}),
       ({args: {limit}}) =>
         zql.thread
+          .whereExists('messages', m =>
+            m.whereExists('labels', l => l.where('remoteId', 'INBOX')),
+          )
+          .orderBy('lastMessageAt', 'desc')
+          .limit(limit ?? THREAD_PAGE_SIZE),
+    ),
+
+    /**
+     * One account's inbox.
+     *
+     * The unified inbox is the primary way to read mail here — the whole point
+     * of modelling labels rather than folders is that "Inbox" can mean every
+     * account at once. This exists for the times that is not what you want:
+     * checking what actually arrived on your work address, or confirming a
+     * newly-connected mailbox synced.
+     *
+     * Still filtered to INBOX rather than returning everything, so it matches
+     * what the unified view would show for that account and does not quietly
+     * become an "all mail" list.
+     */
+    forAccount: defineQuery(
+      z.object({
+        accountId: z.string(),
+        limit: z.number().int().positive().max(1000).optional(),
+      }),
+      ({args: {accountId, limit}}) =>
+        zql.thread
+          .where('accountId', accountId)
           .whereExists('messages', m =>
             m.whereExists('labels', l => l.where('remoteId', 'INBOX')),
           )

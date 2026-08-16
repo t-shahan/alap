@@ -387,6 +387,25 @@ Result<std::vector<std::vector<std::string>>> PostgresStore::query(
   return rows;
 }
 
+Result<std::vector<StoredAccount>> PostgresStore::list_accounts() {
+  auto rows = query(
+      R"(SELECT id, email_address, COALESCE(last_history_id, '')
+         FROM account
+         WHERE disconnected_at IS NULL
+         ORDER BY sort_order, created_at)",
+      {});
+  if (!rows) return rows.error();
+
+  std::vector<StoredAccount> accounts;
+  accounts.reserve(rows->size());
+  for (const auto& row : *rows) {
+    if (row.size() < 3) continue;
+    accounts.push_back(StoredAccount{
+        .id = row[0], .email_address = row[1], .last_history_id = row[2]});
+  }
+  return accounts;
+}
+
 Result<void> PostgresStore::listen(const std::string& channel) {
   // The channel name cannot be parameterised — LISTEN takes an identifier, not
   // a value — so it is restricted to a conservative character set rather than
