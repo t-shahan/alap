@@ -1,98 +1,149 @@
 import SwiftUI
 
-/// Design tokens.
+/// Design tokens, taken from the `email-app-dark` Figma frame.
 ///
-/// ## Direction
+/// ## Source of truth
 ///
-/// Quiet editorial. The product problem is visual clutter during triage, so
-/// hierarchy comes from **type scale and whitespace**, not from borders, fills
-/// and chrome. Almost everything is monochrome; colour is reserved for meaning
-/// — unread, starred, account identity, sync failure — so that when something
-/// is coloured, it is worth looking at.
+/// Values here are transcribed from Figma node `3:4`. When the design changes,
+/// change them here — nothing else in the app should contain a raw colour or
+/// size.
 ///
-/// ## Why this file exists
+/// ## Dark-first
 ///
-/// Previously every size and colour was an inline literal scattered across
-/// three view structs, and the palette was whatever macOS happened to supply.
-/// That is a default, not a decision. These tokens are chosen, defined for
-/// both appearances, and referenced by name.
+/// The design is dark-only, and its palette is specific: four near-black
+/// surfaces separated by a few points of lightness, which is what gives the
+/// panes their sense of depth without any borders. Light values are derived
+/// counterparts so the app does not break in a light appearance, but dark is
+/// the designed one.
 enum Theme {
 
-  // MARK: - Type scale
+  // MARK: - Surfaces
   //
-  // A 1.25 ratio anchored at 13pt, macOS's natural body size. The jump from
-  // list (13) to reading pane (25) is deliberate and large: it is the single
-  // strongest signal that you have moved from scanning to reading.
+  // Four levels, deliberately close together. The separation between panes is
+  // carried by these steps rather than by dividers, which is what keeps the
+  // interface quiet.
+
+  enum Surface {
+    /// App background and the message list. Figma #161617.
+    static let base = Color(light: .init(hex: 0xFFFFFF), dark: .init(hex: 0x161617))
+    /// Sidebar and quick-reply pane. Figma #1e1e20.
+    static let sunken = Color(light: .init(hex: 0xF2F2F4), dark: .init(hex: 0x1E1E20))
+    /// Reading pane. Figma #212124.
+    static let raised = Color(light: .init(hex: 0xFAFAFB), dark: .init(hex: 0x212124))
+    /// Controls: New Message, selected sidebar item, attachment chips. #2c2c2e.
+    static let control = Color(light: .init(hex: 0xE8E8EA), dark: .init(hex: 0x2C2C2E))
+    /// Selected message row. Figma #1f2c3f — a desaturated blue, not the accent.
+    static let selection = Color(light: .init(hex: 0xD8E6FA), dark: .init(hex: 0x1F2C3F))
+    /// Control border. Figma #3a3a3c.
+    static let border = Color(light: .init(hex: 0xD4D4D8), dark: .init(hex: 0x3A3A3C))
+  }
+
+  // MARK: - Text
+  //
+  // Three levels via opacity on a single near-white, which is how the design
+  // keeps hierarchy without introducing more hues.
+
+  enum Ink {
+    static let primary = Color(light: .init(hex: 0x111114), dark: .init(hex: 0xFFFFFF))
+    /// Figma rgba(235,235,245,0.6).
+    static let secondary = Color(
+      light: .init(white: 0, opacity: 0.55), dark: .init(hex: 0xEBEBF5, alpha: 0.6))
+    /// Figma rgba(235,235,245,0.3) — section headers, timestamps in the pane.
+    static let tertiary = Color(
+      light: .init(white: 0, opacity: 0.35), dark: .init(hex: 0xEBEBF5, alpha: 0.3))
+  }
+
+  // MARK: - Accents
+  //
+  // Colour is scarce and each one means something.
+
+  enum Accent {
+    /// Primary action and selection. Figma #0a84ff.
+    static let blue = Color(light: .init(hex: 0x0A6FE8), dark: .init(hex: 0x0A84FF))
+    /// Destructive. Figma #ff453a.
+    static let red = Color(light: .init(hex: 0xD70015), dark: .init(hex: 0xFF453A))
+    /// Flag / starred. Figma uses orange for the row flag.
+    static let flag = Color(light: .init(hex: 0xE8912D), dark: .init(hex: 0xFF9F0A))
+    /// Neutral chip colour used for badges, the avatar and secondary buttons.
+    /// Figma #6b7280.
+    static let muted = Color(light: .init(hex: 0x6B7280), dark: .init(hex: 0x6B7280))
+    /// 13% muted — avatar and secondary button fills.
+    static let mutedFill = Color(light: .init(hex: 0x6B7280, alpha: 0.13),
+                                 dark: .init(hex: 0x6B7280, alpha: 0.13))
+    static let ok = Color(light: .init(hex: 0x2E8B4F), dark: .init(hex: 0x4CB06E))
+  }
+
+  // MARK: - Type
+  //
+  // The design specifies Inter. Inter is not a system font on macOS, so this
+  // resolves to it when installed and falls back to the system face otherwise —
+  // which is very close at these sizes and avoids shipping a font binary.
 
   enum Font {
-    /// Sidebar section headers, timestamps, metadata.
-    static let caption = SwiftUI.Font.system(size: 11, weight: .regular)
-    /// Snippets and secondary lines.
-    static let small = SwiftUI.Font.system(size: 12, weight: .regular)
-    /// Default body size — list rows, sidebar labels.
-    static let body = SwiftUI.Font.system(size: 13, weight: .regular)
-    /// Sender names and other emphasised list content.
-    static let bodyEmphasis = SwiftUI.Font.system(size: 13, weight: .semibold)
-    /// Message body in the reading pane. Slightly larger, for sustained reading.
-    static let reading = SwiftUI.Font.system(size: 14, weight: .regular)
-    /// Reading-pane subject.
-    static let title = SwiftUI.Font.system(size: 25, weight: .semibold)
+    /// Badges and attachment sizes. 10pt.
+    static let micro = font(10, .semibold)
+    /// Section headers (MAILBOXES), timestamps, "Select All". 11pt.
+    static let caption = font(11, .semibold)
+    /// Row subject and snippet. 12pt.
+    static let small = font(12, .regular)
+    static let smallEmphasis = font(12, .semibold)
+    /// Default UI: sidebar items, sender names, buttons. 13pt.
+    static let body = font(13, .medium)
+    static let bodyEmphasis = font(13, .semibold)
+    static let bodyStrong = font(13, .bold)
+    /// Message body and avatar initials. 14pt.
+    static let reading = font(14, .regular)
+    /// Reading-pane subject. 20pt.
+    static let title = font(20, .bold)
 
-    /// Message bodies that arrived as plain text keep their own wrapping and
-    /// alignment, so they need a monospaced face to stay legible.
-    static let monospacedBody = SwiftUI.Font.system(size: 13, design: .monospaced)
+    private static func font(_ size: CGFloat, _ weight: SwiftUI.Font.Weight) -> SwiftUI.Font {
+      .custom("Inter", size: size).weight(weight)
+    }
   }
 
   // MARK: - Spacing
   //
-  // A 4pt grid. Rhythm is intentionally uneven: tight within a row, generous
-  // between regions. Uniform padding everywhere reads as a template.
+  // The design sits on a 4pt grid, with pane padding at 12/16/24.
 
   enum Space {
     static let hair: CGFloat = 2
     static let tight: CGFloat = 4
-    static let snug: CGFloat = 8
-    static let base: CGFloat = 12
-    static let loose: CGFloat = 16
-    static let section: CGFloat = 24
-    /// Reading-pane margins. Deliberately larger than anything else in the app.
-    static let reading: CGFloat = 32
+    static let snug: CGFloat = 6
+    static let base: CGFloat = 8
+    static let cosy: CGFloat = 10
+    static let loose: CGFloat = 12
+    static let wide: CGFloat = 16
+    static let section: CGFloat = 20
+    static let pane: CGFloat = 24
+    /// Row text is indented past the dot and checkbox. Figma pl-[30px].
+    static let rowIndent: CGFloat = 30
   }
 
-  // MARK: - Colour
-  //
-  // Defined for both appearances rather than inherited. Each has a stated job;
-  // anything decorative would undermine the ones that carry meaning.
-
-  enum Palette {
-    /// Unread, selection, primary action.
-    static let accent = Color.accentColor
-    /// Starred. The one warm colour in the app.
-    static let star = Color(light: .init(hex: 0xE8912D), dark: .init(hex: 0xF0A94A))
-    /// Sync failure, permanently failed outbox rows.
-    static let alert = Color(light: .init(hex: 0xC5372C), dark: .init(hex: 0xE05A4E))
-    /// Healthy sync.
-    static let ok = Color(light: .init(hex: 0x2E8B4F), dark: .init(hex: 0x4CB06E))
-
-    static let primaryText = Color.primary
-    static let secondaryText = Color.secondary
-    /// Hairlines. Barely visible on purpose — structure without weight.
-    static let divider = Color(light: .init(white: 0, opacity: 0.08),
-                               dark: .init(white: 1, opacity: 0.10))
+  enum Radius {
+    static let checkbox: CGFloat = 3
+    static let control: CGFloat = 6
+    static let panel: CGFloat = 8
+    static let badge: CGFloat = 10
+    static let window: CGFloat = 12
+    static let avatar: CGFloat = 18
   }
 
-  // MARK: - Motion
-  //
-  // Motion clarifies where things went; it never decorates. Anything longer
-  // than ~250ms during triage feels like latency.
+  enum Size {
+    static let sidebar: CGFloat = 220
+    static let list: CGFloat = 380
+    static let icon: CGFloat = 16
+    static let smallIcon: CGFloat = 14
+    static let unreadDot: CGFloat = 8
+    static let flagIcon: CGFloat = 12
+    static let avatar: CGFloat = 36
+    static let rowHeight: CGFloat = 32
+    static let toolbar: CGFloat = 48
+  }
 
   enum Motion {
     static let quick = Animation.easeOut(duration: 0.12)
     static let standard = Animation.easeOut(duration: 0.2)
   }
-
-  /// Unread indicator dot. Small enough to stay quiet, present enough to scan.
-  static let unreadDot: CGFloat = 6
 }
 
 // MARK: - Appearance-aware colour
@@ -100,9 +151,8 @@ enum Theme {
 extension Color {
   /// Builds a colour that differs by appearance.
   ///
-  /// SwiftUI has no built-in light/dark literal on macOS, so this drops to
-  /// `NSColor`'s dynamic provider. Defining both means neither appearance is
-  /// an accident.
+  /// SwiftUI has no light/dark literal on macOS, so this drops to `NSColor`'s
+  /// dynamic provider. Defining both means neither appearance is an accident.
   init(light: NSColor, dark: NSColor) {
     self.init(nsColor: NSColor(name: nil) { appearance in
       appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
@@ -111,13 +161,13 @@ extension Color {
 }
 
 extension NSColor {
-  /// `0xRRGGBB`.
-  convenience init(hex: UInt32) {
+  /// `0xRRGGBB`, with optional alpha.
+  convenience init(hex: UInt32, alpha: CGFloat = 1) {
     self.init(
       srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
       green: CGFloat((hex >> 8) & 0xFF) / 255,
       blue: CGFloat(hex & 0xFF) / 255,
-      alpha: 1
+      alpha: alpha
     )
   }
 

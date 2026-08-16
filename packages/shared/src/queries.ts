@@ -105,6 +105,56 @@ export const queries = defineQueries({
     ),
 
     /**
+     * Archived mail — the design's "Archive" mailbox.
+     *
+     * Gmail has NO archive label. Archiving is the REMOVAL of INBOX, so this
+     * is a negation: threads none of whose messages still carry INBOX. Trash
+     * and spam are excluded so the mailbox means "filed", not "everything".
+     */
+    archived: defineQuery(
+      z.object({limit: z.number().int().positive().max(1000).optional()}),
+      ({args: {limit}}) =>
+        zql.thread
+          .where(({not, exists}) =>
+            not(
+              exists('messages', m =>
+                m.whereExists('labels', l =>
+                  l.where('remoteId', 'IN', ['INBOX', 'TRASH', 'SPAM']),
+                ),
+              ),
+            ),
+          )
+          .orderBy('lastMessageAt', 'desc')
+          .limit(limit ?? THREAD_PAGE_SIZE),
+    ),
+
+    /**
+     * Unread smart filter.
+     *
+     * Reads the denormalised `unreadCount` rather than joining to the UNREAD
+     * label — the column is maintained by the Postgres trigger and is far
+     * cheaper than an existence check across messages.
+     */
+    unread: defineQuery(
+      z.object({limit: z.number().int().positive().max(1000).optional()}),
+      ({args: {limit}}) =>
+        zql.thread
+          .where('unreadCount', '>', 0)
+          .orderBy('lastMessageAt', 'desc')
+          .limit(limit ?? THREAD_PAGE_SIZE),
+    ),
+
+    /** Threads carrying at least one attachment. */
+    withAttachments: defineQuery(
+      z.object({limit: z.number().int().positive().max(1000).optional()}),
+      ({args: {limit}}) =>
+        zql.thread
+          .where('hasAttachments', true)
+          .orderBy('lastMessageAt', 'desc')
+          .limit(limit ?? THREAD_PAGE_SIZE),
+    ),
+
+    /**
      * PRELOAD — what makes opening a thread instant.
      *
      * `threads.detail` is a *new* query every time the selection moves, so it

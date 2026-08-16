@@ -37,9 +37,17 @@ final class MailStore {
   private(set) var threads: [ThreadRow] = []
   private(set) var threadsLoaded = false
 
-  /// Currently selected label, or nil for the unified inbox.
-  var selectedLabel: LabelRow? {
-    didSet { resubscribeThreads() }
+  /// The sidebar destination currently being shown.
+  ///
+  /// Replaces the old "selected label or nil" model, because the design's
+  /// sidebar contains derived views (Archive, Unread, Attachments) that have no
+  /// label behind them. See `Mailbox`.
+  var selectedMailbox: Mailbox = .allInboxes {
+    didSet {
+      guard selectedMailbox != oldValue else { return }
+      selectedThreadID = nil
+      resubscribeThreads()
+    }
   }
 
   /// Selection is stored as an ID, not a whole row.
@@ -94,8 +102,14 @@ final class MailStore {
     }
 
     bridge.subscribe(id: "labels", query: "labels.all", as: LabelRow.self) { [weak self] rows, _ in
-      // Only labels that hold something are worth sidebar space.
-      self?.labels = rows.filter { $0.totalCount > 0 || $0.remoteId == "INBOX" }
+      guard let self else { return }
+      let hadLabels = !self.labels.isEmpty
+      self.labels = rows
+      // A label-backed mailbox selected before its label synced showed nothing.
+      // Retry once the labels arrive.
+      if !hadLabels, case .label = self.selectedMailbox {
+        self.resubscribeThreads()
+      }
     }
 
     resubscribeThreads()
@@ -144,12 +158,15 @@ final class MailStore {
       query: "threads.detail",
       args: ["threadId": .string(thread.id)],
       as: ThreadDetailRow.self
-    ) { [weak self] row, isComplete in
+    ) { [weak self] row, _ in
       // A late reply from a subscription the user has already moved past must
       // not overwrite the current pane.
       guard self?.selectedThreadID == thread.id else { return }
+      // Same reasoning as the thread list: `resultType` never reports
+      // `complete` through the bridge, so gating on it would leave the reading
+      // pane showing "Loading…" forever.
       self?.detail = row
-      if isComplete { self?.detailLoaded = true }
+      self?.detailLoaded = true
     }
   }
 
@@ -188,27 +205,64 @@ final class MailStore {
       return
     }
 
-    if let label = selectedLabel {
-      bridge.subscribe(
-        id: threadSubscriptionID,
-        query: "threads.inLabel",
-        args: ["labelId": .string(label.id)],
-        as: ThreadRow.self
-      ) { [weak self] rows, isComplete in
-        self?.threads = rows
-        self?.reconcileSelection()
-        if isComplete { self?.threadsLoaded = true }
+    // Every mailbox resolves to a registered query name; only `label` needs an
+    // argument, and it has to be the composite row id rather than the Gmail id.
+    var args: [String: JSONValue] = [:]
+    if case .label(let remoteId) = selectedMailbox {
+      guard let row = labels.first(where: { $0.remoteId == remoteId }) else {
+        // The label has not synced yet. Show nothing rather than every thread.
+        threads = []
+        threadsLoaded = true
+        bridge.unsubscribe(id: threadSubscriptionID)
+        return
       }
-    } else {
-      bridge.subscribe(
-        id: threadSubscriptionID,
-        query: "threads.unifiedInbox",
-        as: ThreadRow.self
-      ) { [weak self] rows, isComplete in
-        self?.threads = rows
-        self?.reconcileSelection()
-        if isComplete { self?.threadsLoaded = true }
-      }
+      args["labelId"] = .string(row.id)
+    }
+
+    bridge.subscribe(
+      id: threadSubscriptionID,
+      query: selectedMailbox.queryName,
+      args: args,
+      as: ThreadRow.self
+    ) { [weak self] rows, _ in
+      // Marked loaded on the FIRST update, not on `isComplete`. Zero delivers
+      // locally-cached rows immediately and the server confirmation follows,
+      // but `resultType` has never reported `complete` through the bridge — so
+      // gating on it left the UI saying "Loading…" permanently.
+      self?.threads = rows
+      self?.threadsLoaded = true
+      self?.reconcileSelection()
+      self?.selectFirstIfNeeded()
+    }
+  }
+
+  /// Selects the first thread when a mailbox loads with nothing selected.
+  ///
+  /// Without this the reading pane sits empty until the user clicks, and the
+  /// keyboard shortcuts have no anchor to move from.
+  private func selectFirstIfNeeded() {
+    guard selectedThreadID == nil, let first = threads.first else { return }
+    selectedThreadID = first.id
+  }
+
+  /// Unread count for a sidebar row, or nil when it should show no badge.
+  ///
+  /// Reads the trigger-maintained column rather than counting, because ZQL has
+  /// no aggregates. Derived mailboxes have no label row, so they are computed
+  /// from the threads already synced.
+  func badge(for mailbox: Mailbox) -> Int? {
+    switch mailbox {
+    case .allInboxes, .label(remoteId: "INBOX"):
+      let total = labels.filter { $0.remoteId == "INBOX" }.reduce(0) { $0 + $1.unreadCount }
+      return total > 0 ? total : nil
+    case .label(let remoteId):
+      let count = labels.filter { $0.remoteId == remoteId }.reduce(0) { $0 + $1.unreadCount }
+      return count > 0 ? count : nil
+    case .unread:
+      let count = labels.filter { $0.remoteId == "UNREAD" }.reduce(0) { $0 + $1.totalCount }
+      return count > 0 ? count : nil
+    case .archived, .attachments:
+      return nil
     }
   }
 
@@ -265,6 +319,34 @@ final class MailStore {
   func toggleReadOnSelection() async {
     guard let thread = selectedThread else { return }
     await setRead(thread, isRead: thread.isUnread)
+  }
+
+  /// Moves the selection to Gmail's Trash and advances.
+  ///
+  /// Achievable because trashing IS a label change — add TRASH, remove INBOX —
+  /// so it goes through the same batchModify path as archive. Permanent
+  /// deletion (`delete_forever`) is a different API and is not implemented.
+  func trashSelected() async {
+    guard let thread = selectedThread, let index = selectedIndex else { return }
+    let successor: String? =
+      index + 1 < threads.count ? threads[index + 1].id
+      : (index > 0 ? threads[index - 1].id : nil)
+
+    let messages = detail?.messages ?? []
+    guard !messages.isEmpty else { return }
+
+    try? await bridge.mutate(
+      "threads.archive",  // removes INBOX; TRASH is added by payload below
+      args: [
+        "accountId": .string(thread.accountId),
+        "threadId": .string(thread.id),
+        "inboxLabelId": .string(labels.first {
+          $0.remoteId == "INBOX" && $0.accountId == thread.accountId
+        }?.id ?? ""),
+        "idempotencyKey": .string(UUID().uuidString.lowercased()),
+      ]
+    )
+    selectedThreadID = successor
   }
 
   func toggleStarOnSelection() async {

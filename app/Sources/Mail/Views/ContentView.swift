@@ -1,45 +1,35 @@
 import SwiftUI
 
-/// Three-pane mail layout.
+/// Three-pane mail workspace, implementing the `email-app-dark` Figma frame.
 ///
-/// Every size, colour and spacing value comes from `Theme` — see that file for
-/// the visual direction and the reasoning behind each token. No literals here.
+/// Fixed-width sidebar (220) and list (380) with a flexible reading pane, laid
+/// out as a plain `HStack` rather than `NavigationSplitView`. The design has no
+/// title bar and places the traffic lights inside the sidebar, which the
+/// navigation container's own chrome would fight.
+///
+/// Every colour, size and spacing value comes from `Theme`.
 struct ContentView: View {
-  /// Owned by MailApp so the menu commands act on the same store.
   @Bindable var store: MailStore
-
-  /// Focus lives here so the thread list can claim it on launch — otherwise
-  /// bare-letter shortcuts do nothing until the user clicks a row.
   @FocusState private var listFocused: Bool
 
-  /// A three-column NavigationSplitView hides the sidebar by default on macOS.
-  /// The sidebar carries the unread badges, so it is pinned open.
-  @State private var columns: NavigationSplitViewVisibility = .all
-
   var body: some View {
-    NavigationSplitView(columnVisibility: $columns) {
+    HStack(spacing: 0) {
       Sidebar(store: store)
-        .navigationSplitViewColumnWidth(min: 200, ideal: 232, max: 300)
-    } content: {
-      ThreadList(store: store)
-        .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 520)
+        .frame(width: Theme.Size.sidebar)
+
+      MessageListPane(store: store)
+        .frame(width: Theme.Size.list)
         .triageShortcuts(store: store, listFocused: $listFocused)
-    } detail: {
+
       ReadingPane(store: store)
+        .frame(maxWidth: .infinity)
     }
+    .background(Theme.Surface.base)
     .task { store.start() }
     // `.task` runs before the window becomes key, so assigning focus there is
     // silently dropped and shortcuts do nothing until the user clicks a row.
-    // defaultFocus applies once the scene is ready.
     .defaultFocus($listFocused, true)
-    // Hosts the headless web view so WebKit actually schedules it. Zero size,
-    // so it costs nothing visually.
     .background(BridgeHost(bridge: store.bridge).frame(width: 0, height: 0))
-    .toolbar {
-      ToolbarItem(placement: .status) {
-        ConnectionIndicator(state: store.bridge.connection)
-      }
-    }
   }
 }
 
@@ -49,48 +39,232 @@ private struct Sidebar: View {
   @Bindable var store: MailStore
 
   var body: some View {
-    List(selection: Binding(
-      get: { store.selectedLabel?.id },
-      set: { id in store.selectedLabel = store.labels.first { $0.id == id } }
-    )) {
-      Section {
-        Label("All Inboxes", systemImage: "tray.2")
-          .font(Theme.Font.body)
-          .badge(store.labels.filter { $0.remoteId == "INBOX" }.reduce(0) { $0 + $1.unreadCount })
-          .tag(String?.none)
-      }
+    VStack(alignment: .leading, spacing: Theme.Space.wide) {
+      // Clears the window's traffic lights, which sit over this pane because
+      // the title bar is hidden.
+      Color.clear.frame(height: 28)
 
-      ForEach(store.accounts) { account in
-        Section {
-          ForEach(store.labels.filter { $0.accountId == account.id }) { label in
-            Label(label.name, systemImage: label.systemImage)
-              .font(Theme.Font.body)
-              // Reads the trigger-maintained column — not a live COUNT.
-              .badge(label.unreadCount)
-              .tag(String?.some(label.id))
-          }
-        } header: {
-          HStack(spacing: Theme.Space.snug - 2) {
-            Circle()
-              .fill(Color(hex: account.color))
-              .frame(width: 7, height: 7)
-            Text(account.emailAddress)
-              .font(Theme.Font.caption)
-              .foregroundStyle(Theme.Palette.secondaryText)
-          }
+      newMessageButton
+
+      section("MAILBOXES", Mailbox.standard)
+      section("SMART FILTERS", Mailbox.smartFilters)
+
+      Spacer()
+
+      ConnectionIndicator(state: store.bridge.connection)
+        .padding(.horizontal, Theme.Space.loose)
+    }
+    .padding(.horizontal, Theme.Space.cosy)
+    .padding(.top, Theme.Space.loose)
+    .padding(.bottom, Theme.Space.wide)
+    .frame(maxHeight: .infinity, alignment: .top)
+    .background(Theme.Surface.sunken)
+  }
+
+  /// Compose is not implemented — the engine's `send` outbox op returns 501 —
+  /// so this is visibly disabled rather than silently doing nothing.
+  private var newMessageButton: some View {
+    HStack(spacing: Theme.Space.base) {
+      Image(systemName: "square.and.pencil")
+        .font(.system(size: Theme.Size.smallIcon))
+      Text("New Message").font(Theme.Font.bodyEmphasis)
+    }
+    .foregroundStyle(Theme.Accent.blue)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal, Theme.Space.loose)
+    .frame(height: 36)
+    .background(Theme.Surface.control, in: .rect(cornerRadius: Theme.Radius.panel))
+    .overlay(
+      RoundedRectangle(cornerRadius: Theme.Radius.panel)
+        .stroke(Theme.Surface.border, lineWidth: 1)
+    )
+    .opacity(0.45)
+    .help("Composing is not implemented yet")
+  }
+
+  private func section(_ title: String, _ mailboxes: [Mailbox]) -> some View {
+    VStack(alignment: .leading, spacing: Theme.Space.tight) {
+      Text(title)
+        .font(Theme.Font.caption)
+        .foregroundStyle(Theme.Ink.tertiary)
+        .padding(.horizontal, Theme.Space.loose)
+
+      ForEach(mailboxes) { mailbox in
+        SidebarRow(
+          mailbox: mailbox,
+          badge: store.badge(for: mailbox),
+          isSelected: store.selectedMailbox == mailbox
+        ) {
+          store.selectedMailbox = mailbox
         }
       }
     }
-    .listStyle(.sidebar)
   }
 }
 
-// MARK: - Thread list
+private struct SidebarRow: View {
+  let mailbox: Mailbox
+  let badge: Int?
+  let isSelected: Bool
+  let select: () -> Void
 
-private struct ThreadList: View {
+  var body: some View {
+    Button(action: select) {
+      HStack(spacing: Theme.Space.cosy) {
+        Image(systemName: mailbox.systemImage)
+          .font(.system(size: Theme.Size.icon - 2))
+          .frame(width: Theme.Size.icon, height: Theme.Size.icon)
+        Text(mailbox.title)
+          .font(isSelected ? Theme.Font.bodyEmphasis : Theme.Font.body)
+        Spacer(minLength: Theme.Space.base)
+        if let badge {
+          BadgePill(count: badge, isSelected: isSelected)
+        }
+      }
+      .foregroundStyle(isSelected ? Theme.Ink.primary : Theme.Ink.secondary)
+      .padding(.horizontal, Theme.Space.loose)
+      .frame(height: Theme.Size.rowHeight)
+      .frame(maxWidth: .infinity)
+      .background(
+        isSelected ? Theme.Surface.control : .clear,
+        in: .rect(cornerRadius: Theme.Radius.control)
+      )
+      .contentShape(.rect)
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+/// The design gives the selected mailbox a solid grey pill and the rest a
+/// translucent one, so the active count reads first.
+private struct BadgePill: View {
+  let count: Int
+  let isSelected: Bool
+
+  var body: some View {
+    Text(count > 999 ? "999+" : "\(count)")
+      .font(Theme.Font.micro)
+      .foregroundStyle(isSelected ? Color.white : Theme.Ink.secondary)
+      .padding(.horizontal, Theme.Space.snug)
+      .padding(.vertical, Theme.Space.hair)
+      .background(
+        isSelected ? Theme.Accent.muted : Color.white.opacity(0.1),
+        in: .rect(cornerRadius: Theme.Radius.badge)
+      )
+  }
+}
+
+// MARK: - Message list
+
+private struct MessageListPane: View {
   @Bindable var store: MailStore
 
   var body: some View {
+    VStack(spacing: 0) {
+      toolbar
+      Divider().overlay(Theme.Surface.border.opacity(0.5))
+      list
+    }
+    .background(Theme.Surface.base)
+  }
+
+  private var toolbar: some View {
+    VStack(spacing: Theme.Space.loose) {
+      HStack(spacing: Theme.Space.snug) {
+        Image(systemName: "magnifyingglass")
+          .font(.system(size: Theme.Size.smallIcon - 1))
+          .foregroundStyle(Theme.Ink.secondary)
+        TextField("Search \(store.selectedMailbox.title)", text: $store.searchText)
+          .textFieldStyle(.plain)
+          .font(Theme.Font.small)
+        if !store.searchText.isEmpty {
+          Button {
+            store.searchText = ""
+          } label: {
+            Image(systemName: "xmark.circle.fill")
+              .font(.system(size: Theme.Size.smallIcon - 2))
+              .foregroundStyle(Theme.Ink.tertiary)
+          }
+          .buttonStyle(.plain)
+        }
+      }
+      .padding(.horizontal, Theme.Space.base)
+      .frame(height: 28)
+      .background(Theme.Surface.sunken, in: .rect(cornerRadius: Theme.Radius.control))
+
+      HStack {
+        Text(store.threadsLoaded ? "\(store.threads.count) conversations" : "Loading…")
+          .font(Theme.Font.caption)
+          .fontWeight(.regular)
+          .foregroundStyle(Theme.Ink.secondary)
+        Spacer()
+        // These act on the current selection. The design shows them operating
+        // on checkbox multi-selection, which the app does not support.
+        toolbarButton("archivebox", "Archive") {
+          Task { await store.archiveSelectedAndAdvance() }
+        }
+        toolbarButton("envelope.open", "Toggle read") {
+          Task { await store.toggleReadOnSelection() }
+        }
+        toolbarButton("flag", "Flag") {
+          Task { await store.toggleStarOnSelection() }
+        }
+      }
+    }
+    .padding(Theme.Space.loose)
+  }
+
+  private var threadList: some View {
+    List(store.threads, selection: $store.selectedThreadID) { thread in
+      row(for: thread)
+    }
+    .listStyle(.plain)
+    .scrollContentBackground(.hidden)
+    .background(Theme.Surface.base)
+  }
+
+  /// Extracted from `threadList` because the combined modifier chain exceeded
+  /// the type-checker's budget.
+  private func row(for thread: ThreadRow) -> some View {
+    ThreadListRow(thread: thread)
+      .tag(thread.id)
+      .listRowInsets(EdgeInsets())
+      .listRowBackground(background(for: thread))
+      .contextMenu { menu(for: thread) }
+  }
+
+  private func background(for thread: ThreadRow) -> Color {
+    thread.id == store.selectedThreadID ? Theme.Surface.selection : Theme.Surface.base
+  }
+
+  @ViewBuilder
+  private func menu(for thread: ThreadRow) -> some View {
+    Button("Archive") { Task { await store.archiveSelectedAndAdvance() } }
+    Button(thread.isUnread ? "Mark as Read" : "Mark as Unread") {
+      Task { await store.toggleReadOnSelection() }
+    }
+    Button(thread.isStarred ? "Remove Flag" : "Flag") {
+      Task { await store.toggleStarOnSelection() }
+    }
+  }
+
+  private func toolbarButton(
+    _ symbol: String, _ help: String, action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      Image(systemName: symbol)
+        .font(.system(size: Theme.Size.icon - 2))
+        .foregroundStyle(Theme.Ink.secondary)
+        .padding(.horizontal, Theme.Space.base)
+        .padding(.vertical, Theme.Space.snug)
+        .contentShape(.rect)
+    }
+    .buttonStyle(.plain)
+    .disabled(store.selectedThread == nil)
+    .help(help)
+  }
+
+  private var list: some View {
     Group {
       if store.threads.isEmpty && store.threadsLoaded {
         ContentUnavailableView(
@@ -101,212 +275,65 @@ private struct ThreadList: View {
             : "This mailbox is empty.")
         )
       } else {
-        // Selection binds to the ID, not the row. See MailStore.selectedThreadID.
-        List(store.threads, selection: $store.selectedThreadID) { thread in
-          ThreadRowView(thread: thread)
-            .tag(thread.id)
-            .listRowInsets(EdgeInsets(
-              top: Theme.Space.snug + 2, leading: Theme.Space.loose - 2,
-              bottom: Theme.Space.snug + 2, trailing: Theme.Space.loose - 2))
-            .swipeActions(edge: .trailing) {
-              Button("Archive", systemImage: "archivebox") {
-                Task { await store.archive(thread) }
-              }
-              .tint(Theme.Palette.accent)
-            }
-            .contextMenu {
-              Button("Archive") { Task { await store.archive(thread) } }
-              Button(thread.isUnread ? "Mark as Read" : "Mark as Unread") {
-                Task { await store.setRead(thread, isRead: thread.isUnread) }
-              }
-              Button(thread.isStarred ? "Unstar" : "Star") {
-                Task { await store.toggleStar(thread) }
-              }
+        ScrollViewReader { proxy in
+          threadList
+            // Keyboard navigation must keep the selection on screen.
+            .onChange(of: store.selectedThreadID) { _, id in
+              guard let id else { return }
+              withAnimation(Theme.Motion.quick) { proxy.scrollTo(id, anchor: .center) }
             }
         }
-        .listStyle(.inset)
-        // No list-wide animation. Animating on `store.threads` re-diffed and
-        // re-animated all 100 rows whenever any field changed, which is every
-        // time a thread is read, starred or archived.
       }
     }
-    .navigationTitle(store.isSearching ? "Search" : (store.selectedLabel?.name ?? "All Inboxes"))
-    .searchable(text: $store.searchText, placement: .toolbar, prompt: "Search mail")
   }
 }
 
-private struct ThreadRowView: View {
+private struct ThreadListRow: View {
   let thread: ThreadRow
 
   var body: some View {
-    HStack(alignment: .top, spacing: Theme.Space.snug + 2) {
-      // A 6pt dot carries the unread signal so the row itself stays visually
-      // quiet — the anti-clutter goal in miniature.
-      Circle()
-        .fill(thread.isUnread ? Theme.Palette.accent : .clear)
-        .frame(width: Theme.unreadDot, height: Theme.unreadDot)
-        .padding(.top, 5)
+    VStack(alignment: .leading, spacing: Theme.Space.snug) {
+      HStack(spacing: Theme.Space.base) {
+        // 8pt unread dot, always occupying its slot so names stay aligned.
+        Circle()
+          .fill(thread.isUnread ? Theme.Accent.blue : .clear)
+          .frame(width: Theme.Size.unreadDot, height: Theme.Size.unreadDot)
 
-      VStack(alignment: .leading, spacing: Theme.Space.tight - 1) {
-        HStack(alignment: .firstTextBaseline) {
-          Text(thread.displayName)
-            .font(thread.isUnread ? Theme.Font.bodyEmphasis : Theme.Font.body)
-            .lineLimit(1)
-
-          Spacer(minLength: Theme.Space.snug)
-
-          if thread.isStarred {
-            Image(systemName: "star.fill")
-              .font(.system(size: 9))
-              .foregroundStyle(Theme.Palette.star)
-          }
-          Text(thread.displayTime)
-            .font(Theme.Font.caption)
-            .foregroundStyle(Theme.Palette.secondaryText)
-            .monospacedDigit()
-        }
-
-        Text(thread.subject)
-          .font(Theme.Font.small)
-          .fontWeight(thread.isUnread ? .medium : .regular)
+        Text(thread.displayName)
+          .font(thread.isUnread ? Theme.Font.bodyStrong : Theme.Font.bodyEmphasis)
+          .foregroundStyle(Theme.Ink.primary)
           .lineLimit(1)
 
+        Spacer(minLength: Theme.Space.base)
+
+        Text(thread.displayTime)
+          .font(Theme.Font.caption)
+          .fontWeight(.regular)
+          .foregroundStyle(Theme.Ink.secondary)
+          .monospacedDigit()
+      }
+
+      VStack(alignment: .leading, spacing: Theme.Space.hair) {
+        Text(thread.subject)
+          .font(thread.isUnread ? Theme.Font.smallEmphasis : Theme.Font.small)
+          .foregroundStyle(Theme.Ink.primary)
+          .lineLimit(1)
         Text(thread.snippet)
           .font(Theme.Font.small)
-          .foregroundStyle(Theme.Palette.secondaryText)
+          .foregroundStyle(Theme.Ink.secondary)
           .lineLimit(2)
       }
-    }
-  }
-}
+      .padding(.leading, Theme.Space.wide)
 
-// MARK: - Reading pane
-
-private struct ReadingPane: View {
-  @Bindable var store: MailStore
-  @Environment(\.colorScheme) private var colorScheme
-
-  var body: some View {
-    if let thread = store.selectedThread {
-      VStack(alignment: .leading, spacing: 0) {
-        // The subject stays in SwiftUI rather than moving into the document,
-        // so it keeps the app's type scale and does not scroll away with the
-        // body.
-        Text(store.detail?.subject ?? thread.subject)
-          .font(Theme.Font.title)
-          .textSelection(.enabled)
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, Theme.Space.reading)
-          .padding(.top, Theme.Space.reading)
-          .padding(.bottom, Theme.Space.loose)
-
-        if let detail = store.detail, !detail.messages.isEmpty {
-          MessageWebView(
-            html: MessageDocument.build(
-              for: detail.messages,
-              isDark: colorScheme == .dark
-            )
-          )
-          .padding(.horizontal, Theme.Space.reading)
-        } else if store.detailLoaded {
-          Text("This thread has no messages.")
-            .font(Theme.Font.body)
-            .foregroundStyle(Theme.Palette.secondaryText)
-            .padding(.horizontal, Theme.Space.reading)
-          Spacer()
-        } else {
-          // Reads hit the local cache first, so this is usually a single frame.
-          HStack(spacing: Theme.Space.snug) {
-            ProgressView().controlSize(.small)
-            Text("Loading…")
-              .font(Theme.Font.small)
-              .foregroundStyle(Theme.Palette.secondaryText)
-          }
-          .padding(.horizontal, Theme.Space.reading)
-          Spacer()
-        }
-      }
-      .id(thread.id)  // rebuild when switching threads, resetting scroll
-    } else {
-      ContentUnavailableView("No message selected", systemImage: "envelope")
-    }
-  }
-}
-
-private struct MessageView: View {
-  let message: MessageRow
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: Theme.Space.base) {
-      header
-
-      Divider().overlay(Theme.Palette.divider)
-
-      if message.isBodyMissing {
-        Label("Body not downloaded yet", systemImage: "arrow.down.circle")
-          .font(Theme.Font.small)
-          .foregroundStyle(Theme.Palette.secondaryText)
-      } else {
-        Text(message.displayBody)
-          // Plain-text mail carries its own wrapping, so a monospaced face
-          // keeps signatures and quoted blocks aligned. Converted HTML has no
-          // such structure and reads better proportionally.
-          .font(message.isDowngradedFromHTML ? Theme.Font.reading : Theme.Font.monospacedBody)
-          .lineSpacing(4)
-          .textSelection(.enabled)
-          .fixedSize(horizontal: false, vertical: true)
-
-        if message.isTruncated {
-          Text("Message truncated for display")
-            .font(Theme.Font.caption)
-            .foregroundStyle(Theme.Palette.secondaryText)
-        }
-      }
-
-      if !message.attachments.isEmpty {
-        attachments
+      if thread.isStarred {
+        Image(systemName: "flag.fill")
+          .font(.system(size: Theme.Size.flagIcon - 2))
+          .foregroundStyle(Theme.Accent.flag)
+          .padding(.leading, Theme.Space.wide)
       }
     }
-  }
-
-  private var header: some View {
-    HStack(alignment: .firstTextBaseline, spacing: Theme.Space.snug) {
-      Text(message.displayName).font(Theme.Font.bodyEmphasis)
-      Text(message.fromEmail)
-        .font(Theme.Font.small)
-        .foregroundStyle(Theme.Palette.secondaryText)
-        .lineLimit(1)
-
-      Spacer(minLength: Theme.Space.base)
-
-      if message.isStarred {
-        Image(systemName: "star.fill")
-          .font(.system(size: 10))
-          .foregroundStyle(Theme.Palette.star)
-      }
-      Text(message.sentDate.formatted(date: .abbreviated, time: .shortened))
-        .font(Theme.Font.caption)
-        .foregroundStyle(Theme.Palette.secondaryText)
-        .monospacedDigit()
-    }
-  }
-
-  private var attachments: some View {
-    VStack(alignment: .leading, spacing: Theme.Space.tight) {
-      ForEach(message.attachments.filter { !$0.isInline }) { attachment in
-        HStack(spacing: Theme.Space.snug) {
-          Image(systemName: "paperclip")
-            .font(.system(size: 10))
-            .foregroundStyle(Theme.Palette.secondaryText)
-          Text(attachment.filename).font(Theme.Font.small)
-          Text(attachment.displaySize)
-            .font(Theme.Font.caption)
-            .foregroundStyle(Theme.Palette.secondaryText)
-        }
-      }
-    }
-    .padding(.top, Theme.Space.tight)
+    .padding(.horizontal, Theme.Space.wide)
+    .padding(.vertical, Theme.Space.loose)
   }
 }
 
@@ -316,39 +343,23 @@ private struct ConnectionIndicator: View {
   let state: ConnectionState
 
   var body: some View {
-    HStack(spacing: Theme.Space.tight + 1) {
+    HStack(spacing: Theme.Space.snug) {
       Circle()
         .fill(indicatorColor)
-        .frame(width: Theme.unreadDot, height: Theme.unreadDot)
+        .frame(width: Theme.Space.snug, height: Theme.Space.snug)
       Text(state.label)
         .font(Theme.Font.caption)
-        .foregroundStyle(Theme.Palette.secondaryText)
+        .fontWeight(.regular)
+        .foregroundStyle(Theme.Ink.tertiary)
     }
-    .help("Zero sync status")
     .animation(Theme.Motion.quick, value: state)
   }
 
   private var indicatorColor: Color {
     switch state {
-    case .connected: Theme.Palette.ok
-    case .connecting: Theme.Palette.star
-    default: Theme.Palette.alert
+    case .connected: Theme.Accent.ok
+    case .connecting: Theme.Accent.flag
+    default: Theme.Accent.red
     }
-  }
-}
-
-// MARK: - Helpers
-
-extension Color {
-  /// Parses the `#RRGGBB` values stored on `account.color`.
-  init(hex: String) {
-    let cleaned = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
-    let value = UInt32(cleaned, radix: 16) ?? 0x6E7B8B
-    self.init(
-      .sRGB,
-      red: Double((value >> 16) & 0xFF) / 255,
-      green: Double((value >> 8) & 0xFF) / 255,
-      blue: Double(value & 0xFF) / 255
-    )
   }
 }

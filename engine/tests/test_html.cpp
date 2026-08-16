@@ -278,3 +278,15 @@ TEST(Unescape, LeavesUnknownEntitiesIntact) {
 TEST(Unescape, HandlesEmptyInput) {
   EXPECT_EQ(unescape_entities(""), "");
 }
+
+TEST(Sanitize, DoesNotDoubleEncodeExistingEntities) {
+  // Escaping text without decoding first turns "&nbsp;" into "&amp;nbsp;",
+  // which renders as the literal characters. Seen in real mail.
+  const auto html = clean("<p>Hello&nbsp;world</p>");
+  EXPECT_FALSE(contains(html, "&amp;nbsp"));
+  EXPECT_FALSE(contains(html, "&nbsp;"));
+
+  const auto quoted = clean("<p>Tom &amp; Jerry</p>");
+  EXPECT_FALSE(contains(quoted, "&amp;amp;"));
+  EXPECT_TRUE(contains(quoted, "&amp;"));
+}

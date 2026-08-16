@@ -97,9 +97,15 @@ struct MessageWebView: NSViewRepresentable {
 enum MessageDocument {
 
   /// Composes a thread into one styled, self-contained document.
+  ///
+  /// Per-message headers are omitted for a single-message thread, because the
+  /// reading pane already shows sender, recipient and time above the document —
+  /// repeating them reads as a duplicate.
   static func build(for messages: [MessageRow], isDark: Bool) -> String {
+    let showHeaders = messages.count > 1
+
     let bodies = messages.map { message -> String in
-      let header = """
+      let header = !showHeaders ? "" : """
         <div class="msg-head">
           <span class="from">\(escape(message.displayName))</span>
           <span class="addr">\(escape(message.fromEmail))</span>

@@ -238,11 +238,16 @@ SanitizeResult sanitize(const std::string& input, const SanitizeOptions& options
 
   while (i < n) {
     if (input[i] != '<') {
-      // Text. Accumulate to the next tag and escape it, so anything that is
-      // not well-formed markup can only ever become inert text.
+      // Text. Accumulate to the next tag, then DECODE any entities before
+      // re-escaping.
+      //
+      // Escaping alone double-encodes: an existing `&nbsp;` becomes
+      // `&amp;nbsp;` and renders as the literal text "&nbsp;". Decoding first
+      // normalises the input, and the re-escape then guarantees nothing in it
+      // can be read as markup. It also makes sanitising idempotent.
       const size_t start = i;
       while (i < n && input[i] != '<') ++i;
-      out += escape_text(input.substr(start, i - start));
+      out += escape_text(unescape_entities(input.substr(start, i - start)));
       continue;
     }
 
