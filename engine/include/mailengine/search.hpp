@@ -160,6 +160,13 @@ class SearchIndex {
   /// @brief Empties the index. It can always be rebuilt from Postgres.
   [[nodiscard]] Result<void> clear();
 
+  /// @brief Removes every document belonging to one account.
+  ///
+  /// The index is shared by every mailbox, so rebuilding one account must not
+  /// touch the others. `clear()` exists for wiping the whole thing and is not
+  /// a substitute for this.
+  [[nodiscard]] Result<void> clear_account(const std::string& account_id);
+
   /// @brief Bounded Levenshtein edit distance.
   ///
   /// Returns `max_distance + 1` as soon as the true distance is known to

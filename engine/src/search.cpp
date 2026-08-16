@@ -82,6 +82,22 @@ Result<void> SearchIndex::open(const std::string& path) {
   sqlite3_exec(db, "PRAGMA journal_mode=WAL", nullptr, nullptr, nullptr);
   sqlite3_exec(db, "PRAGMA synchronous=NORMAL", nullptr, nullptr, nullptr);
 
+  // WAL permits many readers but still only ONE writer. Without a busy
+  // timeout, a second writer does not wait — it fails instantly with
+  // SQLITE_BUSY.
+  //
+  // That was invisible with a single account and broke the moment there were
+  // two: both daemon workers open this file, and the loser of the race gave up
+  // with "database is locked", leaving that account's mail absent from search
+  // while everything else about it worked. A silent hole in search is worse
+  // than a loud failure, which is why this is a timeout rather than a retry
+  // somewhere further up.
+  //
+  // Ten seconds comfortably covers a batch commit during a backfill; the
+  // alternative, serialising indexing through one process, would give up the
+  // parallelism that makes a first sync tolerable.
+  sqlite3_busy_timeout(db, 10'000);
+
   // porter stemming so "meeting" matches "meetings"; unicode61 with diacritic
   // folding so "cafe" matches "café".
   const char* schema = R"(
@@ -627,6 +643,37 @@ Result<void> SearchIndex::clear() {
   sqlite3_exec(db, "DELETE FROM doc_rowid", nullptr, nullptr, nullptr);
   sqlite3_exec(db, "DELETE FROM spell_term", nullptr, nullptr, nullptr);
   return {};
+}
+
+Result<void> SearchIndex::clear_account(const std::string& account_id) {
+  // Document ids are `<account>|<message>`, the contract shared with ids.hpp,
+  // so an account's documents are exactly those with that prefix. Matching on
+  // the prefix rather than a stored account column keeps this working without
+  // widening the FTS table, whose UNINDEXED columns already cost weight slots.
+  auto* db = static_cast<sqlite3*>(db_);
+  if (db == nullptr) {
+    return make_error("search index is not open");
+  }
+
+  const std::string prefix = account_id + "|";
+  for (const char* sql : {"DELETE FROM message_fts WHERE message_id LIKE ?1 || '%'",
+                          "DELETE FROM doc_rowid WHERE message_id LIKE ?1 || '%'",
+                          "DELETE FROM spell_term WHERE 0"}) {
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+      // spell_term may not carry an account column in older indexes; skipping
+      // it costs a few stale correction candidates, not correctness.
+      continue;
+    }
+    sqlite3_bind_text(statement, 1, prefix.c_str(), -1, SQLITE_TRANSIENT);
+    const int status = sqlite3_step(statement);
+    sqlite3_finalize(statement);
+    if (status != SQLITE_DONE) {
+      return make_error(std::string("could not clear account documents: ") +
+                        sqlite3_errmsg(db));
+    }
+  }
+  return Result<void>{};
 }
 
 }  // namespace mailengine

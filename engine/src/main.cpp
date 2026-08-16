@@ -19,6 +19,9 @@
 #include <filesystem>
 #include <iomanip>
 #include <optional>
+#include <atomic>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -464,7 +467,7 @@ class LabelledStream : public std::ostream {
 /// The alternative, round-robin over accounts in a single loop, means one
 /// account with a slow backfill stalls every other account's mail.
 int run_account_loop(const std::string& account_id, int interval_seconds,
-                     std::ostream& out) {
+                     std::ostream& out, const std::atomic<bool>& running) {
   auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
   mailengine::GmailClient gmail(tokens);
   mailengine::PostgresStore store;
@@ -496,7 +499,7 @@ int run_account_loop(const std::string& account_id, int interval_seconds,
   // quota on every click.
   auto next_poll = std::chrono::steady_clock::now();
 
-  while (true) {
+  while (running.load()) {
     if (auto drained = drainer.drain_once(); drained) {
       if (drained->applied > 0 || drained->failed > 0) {
         out << "  outbox: applied " << drained->applied << ", failed "
@@ -551,7 +554,10 @@ int cmd_reindex(const std::string& account_id) {
 
   mailengine::SearchIndex index;
   if (!open_search(index)) return 1;
-  if (auto cleared = index.clear(); !cleared) {
+  // Only THIS account's documents. The index is shared by every mailbox, and
+  // clearing all of it here used to be harmless when there was one account —
+  // with two, reindexing one silently emptied search for the other.
+  if (auto cleared = index.clear_account(account_id); !cleared) {
     std::cerr << "error: " << cleared.error().message << "\n";
     return 1;
   }
@@ -911,41 +917,84 @@ int cmd_daemon(int interval_seconds) {
   mailengine::PostgresStore directory;
   if (!connect_store(directory)) return 1;
 
-  auto accounts = directory.list_accounts();
-  if (!accounts) {
-    std::cerr << "error: " << accounts.error().message << "\n";
-    return 1;
-  }
-  if (accounts->empty()) {
-    std::cerr << "no accounts connected. Run `mailengined connect` first.\n";
-    return 1;
-  }
-
-  std::cout << "daemon supervising " << accounts->size() << " account"
-            << (accounts->size() == 1 ? "" : "s") << ":\n";
-  for (const auto& account : *accounts) {
-    std::cout << "  " << account.id << "  " << account.email_address << "\n";
-  }
-
   // Output from several threads interleaves into one terminal, so each worker
   // buffers a full line and takes a mutex to emit it. Writing directly to
   // std::cout would shear lines together and make the log unreadable.
   std::mutex output_mutex;
-  std::vector<std::thread> workers;
-  workers.reserve(accounts->size());
 
-  for (const auto& account : *accounts) {
-    workers.emplace_back([&output_mutex, id = account.id,
+  /// One supervised account.
+  struct Worker {
+    std::shared_ptr<std::atomic<bool>> running;
+    std::thread thread;
+  };
+  std::map<std::string, Worker> workers;
+
+  // How often the account list is re-read. Connecting a mailbox must not
+  // require restarting the daemon — the connect flow runs its own backfill, so
+  // without this the new account would appear fully synced and then quietly
+  // stop receiving mail, which is worse than an obvious failure.
+  constexpr int kSweepSeconds = 15;
+  bool announced = false;
+
+  while (true) {
+    auto accounts = directory.list_accounts();
+    if (!accounts) {
+      std::cerr << "error: " << accounts.error().message << "\n";
+      return 1;
+    }
+
+    // Start anything new.
+    for (const auto& account : *accounts) {
+      if (workers.count(account.id) != 0) continue;
+
+      std::cout << (announced ? "+ now supervising " : "  ") << account.id << "  "
+                << account.email_address << "\n";
+      std::cout.flush();
+
+      auto running = std::make_shared<std::atomic<bool>>(true);
+      std::thread thread([&output_mutex, running, id = account.id,
                           email = account.email_address, interval_seconds] {
-      LabelledStream out(output_mutex, email);
-      run_account_loop(id, interval_seconds, out);
-    });
-  }
+        LabelledStream out(output_mutex, email);
+        run_account_loop(id, interval_seconds, out, *running);
+      });
+      workers.emplace(account.id,
+                      Worker{.running = running, .thread = std::move(thread)});
+    }
 
-  for (auto& worker : workers) {
-    worker.join();
+    // Stop anything that has gone away. A disconnected account whose thread
+    // kept running would keep re-populating a mailbox the user removed.
+    for (auto it = workers.begin(); it != workers.end();) {
+      const bool still_connected =
+          std::any_of(accounts->begin(), accounts->end(),
+                      [&](const auto& account) { return account.id == it->first; });
+      if (still_connected) {
+        ++it;
+        continue;
+      }
+      std::cout << "- stopping " << it->first << "\n";
+      std::cout.flush();
+      it->second.running->store(false);
+      // Detached rather than joined: the worker may be mid-request, and
+      // blocking the supervisor on a network timeout would stall every other
+      // account's supervision behind it.
+      it->second.thread.detach();
+      it = workers.erase(it);
+    }
+
+    if (!announced) {
+      if (workers.empty()) {
+        std::cerr << "no accounts connected. Run `mailengined connect` first.\n";
+        return 1;
+      }
+      std::cout << "daemon supervising " << workers.size() << " account"
+                << (workers.size() == 1 ? "" : "s") << ", sweeping every "
+                << kSweepSeconds << "s for new ones\n";
+      std::cout.flush();
+      announced = true;
+    }
+
+    std::this_thread::sleep_for(std::chrono::seconds(kSweepSeconds));
   }
-  return 0;
 }
 
 }  // namespace
