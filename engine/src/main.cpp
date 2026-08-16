@@ -19,6 +19,7 @@
 #include <string>
 
 #include "mailengine/gmail.hpp"
+#include "mailengine/html.hpp"
 #include "mailengine/keychain.hpp"
 #include "mailengine/oauth.hpp"
 #include "mailengine/outbox.hpp"
@@ -57,6 +58,7 @@ int usage() {
                "  daemon <account-id> [seconds]  run both loops continuously\n"
                "  search <account-id> <query>    full-text search the local index\n"
                "  reindex <account-id>  rebuild the search index from Postgres\n"
+               "  resanitize <account-id>  sanitize HTML bodies stored before sanitising existed\n"
                "  bench-search [counts...]  measure search latency at scale\n"
                "  version\n";
   return 64;  // EX_USAGE
@@ -520,6 +522,49 @@ int cmd_bench_search(const std::vector<int64_t>& sizes) {
   return 0;
 }
 
+/// Sanitises HTML bodies already in Postgres.
+///
+/// Everything ingested before the sanitiser existed is stored raw. The schema
+/// says otherwise, so this brings existing rows in line with the guarantee.
+int cmd_resanitize(const std::string& account_id) {
+  mailengine::PostgresStore store;
+  if (!connect_store(store)) return 1;
+
+  auto rows = store.query(
+      R"(SELECT b.message_id, b.html_body
+         FROM message_body b
+         WHERE b.account_id = $1 AND b.html_body IS NOT NULL AND b.html_body <> '')",
+      {account_id});
+  if (!rows) {
+    std::cerr << "error: " << rows.error().message << "\n";
+    return 1;
+  }
+
+  int64_t changed = 0;
+  int64_t blocked_images = 0;
+  int64_t with_active_content = 0;
+
+  for (const auto& row : *rows) {
+    if (row.size() < 2) continue;
+    const auto sanitised = mailengine::html::sanitize(row[1]);
+    blocked_images += sanitised.blocked_remote_images;
+    if (sanitised.removed_active_content) ++with_active_content;
+    if (sanitised.html == row[1]) continue;
+
+    if (store.exec("UPDATE message_body SET html_body = $2 WHERE message_id = $1",
+                   {row[0], sanitised.html})
+            .has_value()) {
+      ++changed;
+    }
+  }
+
+  std::cout << "  examined  " << rows->size() << "\n"
+            << "  rewritten " << changed << "\n"
+            << "  messages carrying active content " << with_active_content << "\n"
+            << "  remote images blocked " << blocked_images << "\n";
+  return 0;
+}
+
 int cmd_auth(const std::string& account_id) {
   const mailengine::OAuthClient client(config_from_env());
 
@@ -619,6 +664,10 @@ int main(int argc, char** argv) {
     for (int i = 2; i < argc; ++i) sizes.push_back(std::atoll(argv[i]));
     if (sizes.empty()) sizes = {1000, 10000, 50000, 200000};
     return cmd_bench_search(sizes);
+  }
+  if (command == "resanitize") {
+    if (argc < 3) return usage();
+    return cmd_resanitize(argv[2]);
   }
   if (command == "reindex") {
     if (argc < 3) return usage();

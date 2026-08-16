@@ -7,6 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "mailengine/html.hpp"
 #include "mailengine/ids.hpp"
 
 namespace mailengine {
@@ -231,6 +232,17 @@ Result<void> PostgresStore::upsert_message(const std::string& account_id,
 
     // 3. Body, when requested. Backfill defers this so the list view is usable
     //    long before every body has downloaded.
+    //
+    //    HTML is sanitised HERE, on the way in, rather than at render time.
+    //    Sanitising once per message on ingest costs nothing noticeable;
+    //    sanitising on every render would put a parser on the UI path. It also
+    //    means the guarantee holds for every reader of the table — the Swift
+    //    app today, anything else later — rather than depending on each one
+    //    remembering to do it.
+    std::string safe_html;
+    if (write_body && !message.html_body.empty()) {
+      safe_html = html::sanitize(message.html_body).html;
+    }
     if (write_body) {
       auto body_written = exec(
           R"(INSERT INTO message_body (message_id, account_id, text_body, html_body)
@@ -239,7 +251,7 @@ Result<void> PostgresStore::upsert_message(const std::string& account_id,
                SET text_body = EXCLUDED.text_body,
                    html_body = EXCLUDED.html_body,
                    fetched_at = now())",
-          {message_id, account_id, message.text_body, message.html_body});
+          {message_id, account_id, message.text_body, safe_html});
       if (!body_written) return body_written.error();
     }
 
