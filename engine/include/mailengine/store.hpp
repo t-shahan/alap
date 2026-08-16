@@ -55,7 +55,7 @@ class PostgresStore {
   /// @return The account as stored, including its sync watermark.
   [[nodiscard]] Result<StoredAccount> upsert_account(const std::string& account_id,
                                                      const std::string& email_address,
-                                                     const std::string& color = "#E4572E");
+                                                     const std::string& color = "#4aa3a2");
 
   /// @brief Reads an account, or nullopt when it does not exist.
   [[nodiscard]] Result<std::optional<StoredAccount>> get_account(

@@ -121,3 +121,41 @@ enum Mailbox: Hashable, Identifiable {
     }
   }
 }
+
+extension Mailbox {
+  /// Empty-state wording, per destination.
+  ///
+  /// "This mailbox is empty" is technically true everywhere and useful
+  /// nowhere. An empty Trash and an empty Inbox mean opposite things — one is
+  /// an achievement, the other is usually a sync that has not finished.
+  var emptyTitle: String {
+    switch self {
+    case .allInboxes, .label(remoteId: "INBOX"): "Inbox zero"
+    case .label(remoteId: "TRASH"): "Trash is empty"
+    case .label(remoteId: "DRAFT"): "No drafts"
+    case .label(remoteId: "SENT"): "Nothing sent yet"
+    case .label(remoteId: "STARRED"): "Nothing flagged"
+    case .label: "Nothing here"
+    case .archived: "Nothing archived"
+    case .unread: "All caught up"
+    case .attachments: "No attachments"
+    case .account: "Nothing in this account"
+    }
+  }
+
+  var emptyMessage: String {
+    switch self {
+    case .allInboxes, .label(remoteId: "INBOX"):
+      "You have read everything. Enjoy it while it lasts."
+    case .label(remoteId: "TRASH"): "Deleted mail will appear here."
+    case .label(remoteId: "DRAFT"): "Messages you start and do not send land here."
+    case .label(remoteId: "SENT"): "Messages you send will appear here."
+    case .label(remoteId: "STARRED"): "Flag a conversation to keep it close."
+    case .label: "This label has no conversations."
+    case .archived: "Archived mail is filed out of the inbox but never deleted."
+    case .unread: "Every message has been read."
+    case .attachments: "Conversations carrying files will appear here."
+    case .account: "This mailbox has no conversations yet."
+    }
+  }
+}

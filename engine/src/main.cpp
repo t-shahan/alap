@@ -815,10 +815,23 @@ std::string account_id_for(const std::string& email_address) {
   return "acct_" + digest.substr(0, 12);
 }
 
-/// Colours new accounts get, in order. Taken from the design's accent ramp so
-/// a second mailbox is distinguishable at a glance in the list.
-constexpr std::array<const char*, 6> kAccountColours = {
-    "#0a84ff", "#30d158", "#ff9f0a", "#bf5af2", "#ff453a", "#64d2ff",
+/// Colours new accounts get, in order.
+///
+/// Must stay in step with `AccountPalette.choices` in AccountViews.swift — the
+/// picker offers these, so a colour assigned here that is absent there shows as
+/// no selected swatch.
+///
+/// Built on the same cool axis as the app icon rather than the iOS system
+/// palette used before: those hues are tuned to sit on white at full
+/// saturation and read as loud plastic dots against a navy sidebar. These are
+/// desaturated and mid-lightness, legible on all three themes.
+///
+/// Order is the assignment order, so the first two must be maximally
+/// distinguishable — teal and clay differ in warmth as well as hue, so they
+/// separate on lightness alone if hue perception fails.
+constexpr std::array<const char*, 8> kAccountColours = {
+    "#4aa3a2", "#c2705a", "#5b7ba8", "#7d9a6d",
+    "#8a6a9e", "#c39a4e", "#b5697f", "#6f7d8c",
 };
 
 /// Emits one JSON line of progress.

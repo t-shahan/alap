@@ -336,6 +336,23 @@ final class MailStore {
     return Color(hex: account.color)
   }
 
+  /// Renames or recolours an account.
+  ///
+  /// Local presentation only — nothing here reaches Gmail, so unlike almost
+  /// every other mutation in this store it produces no outbox row.
+  func updateAccount(_ accountId: String, displayName: String? = nil,
+                     color: String? = nil) async {
+    var args: [String: JSONValue] = ["accountId": .string(accountId)]
+    if let displayName {
+      let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !trimmed.isEmpty { args["displayName"] = .string(trimmed) }
+    }
+    if let color { args["color"] = .string(color) }
+    guard args.count > 1 else { return }
+
+    try? await bridge.mutate("accounts.update", args: args)
+  }
+
   /// Unread messages in one account's inbox.
   ///
   /// Read from the label row's trigger-maintained counter rather than counted

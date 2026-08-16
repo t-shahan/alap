@@ -115,10 +115,12 @@ private struct Sidebar: View {
         AccountRowView(
           account: account,
           unread: store.unreadCount(forAccount: account.id),
-          isSelected: store.selectedMailbox == .account(id: account.id)
-        ) {
-          store.selectedMailbox = .account(id: account.id)
-        }
+          isSelected: store.selectedMailbox == .account(id: account.id),
+          select: { store.selectedMailbox = .account(id: account.id) },
+          save: { name, color in
+            await store.updateAccount(account.id, displayName: name, color: color)
+          }
+        )
       }
 
       Button {
@@ -326,12 +328,14 @@ private struct MessageListPane: View {
   private var list: some View {
     Group {
       if store.threads.isEmpty && store.threadsLoaded {
-        ContentUnavailableView(
-          store.isSearching ? "No matches" : "Nothing here",
-          systemImage: store.isSearching ? "magnifyingglass" : "checkmark.circle",
-          description: Text(store.isSearching
-            ? "Nothing in the local index matches that."
-            : "This mailbox is empty.")
+        EmptyState(
+          title: store.isSearching ? "No matches" : store.selectedMailbox.emptyTitle,
+          message: store.isSearching
+            ? "Nothing in the local index matches “\(store.searchText)”."
+            : store.selectedMailbox.emptyMessage,
+          symbol: store.isSearching ? "magnifyingglass" : store.selectedMailbox.systemImage,
+          actionTitle: store.isSearching ? "Clear search" : nil,
+          action: store.isSearching ? { store.searchText = "" } : nil
         )
       } else {
         ScrollViewReader { proxy in

@@ -28,8 +28,13 @@ struct ReadingPane: View {
         // wrong recipient.
         .id(thread.id)
       } else {
-        ContentUnavailableView("No message selected", systemImage: "envelope")
-          .frame(maxHeight: .infinity)
+        EmptyState(
+          title: "No message selected",
+          message: store.threads.isEmpty
+            ? "Nothing to read in this mailbox."
+            : "Choose a conversation, or press ↓ to start reading.",
+          symbol: "envelope"
+        )
       }
     }
     .background(Theme.Surface.raised)

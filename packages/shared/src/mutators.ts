@@ -326,6 +326,42 @@ export const mutators = defineMutators({
     ),
   },
 
+  accounts: {
+    /**
+     * Renames or recolours a connected mailbox.
+     *
+     * Purely local presentation — nothing here touches Gmail, so unlike almost
+     * every other mutator in this file it writes NO outbox row. `display_name`
+     * is seeded from the address on first sync, which is why every account
+     * starts out labelled with its own local part.
+     *
+     * The colour is what makes a unified inbox readable once several accounts
+     * are merged into one list, so it is worth letting people choose one they
+     * can actually tell apart.
+     */
+    update: defineMutator(
+      z.object({
+        accountId: z.string(),
+        displayName: z.string().trim().min(1).max(64).optional(),
+        // Hex, validated here rather than at the view: a malformed value would
+        // otherwise reach every client through replication and each would have
+        // to defend against it separately.
+        color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+      }),
+      async ({tx, args: {accountId, displayName, color}}) => {
+        const account = await tx.run(zql.account.where('id', accountId).one())
+        if (!account) {
+          throw new Error(`update: unknown account ${accountId}`)
+        }
+        await tx.mutate.account.update({
+          id: accountId,
+          ...(displayName === undefined ? {} : {displayName}),
+          ...(color === undefined ? {} : {color: color.toLowerCase()}),
+        })
+      },
+    ),
+  },
+
   outbox: {
     /**
      * Retry a permanently-failed operation.

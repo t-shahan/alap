@@ -11,8 +11,10 @@ struct AccountRowView: View {
   let unread: Int
   let isSelected: Bool
   let select: () -> Void
+  let save: (String?, String?) async -> Void
 
   @State private var isHovering = false
+  @State private var isEditing = false
 
   var body: some View {
     Button(action: select) {
@@ -30,7 +32,19 @@ struct AccountRowView: View {
 
         Spacer(minLength: Theme.Space.base)
 
-        if unread > 0 {
+        // The ⋯ replaces the count on hover rather than sitting beside it.
+        // A 220pt sidebar has no room for both, and an always-visible control
+        // on every row is clutter in the one part of the app that should be
+        // quietest.
+        if isHovering || isEditing {
+          Image(systemName: "ellipsis")
+            .font(.system(size: Theme.Size.smallIcon - 2))
+            .foregroundStyle(Theme.Ink.secondary)
+            .frame(width: 18, height: 18)
+            .background(Theme.Surface.raised, in: .rect(cornerRadius: Theme.Radius.checkbox))
+            .onTapGesture { isEditing = true }
+            .help("Account settings")
+        } else if unread > 0 {
           Text("\(unread)")
             .font(Theme.Font.micro)
             .fontWeight(.medium)
@@ -49,6 +63,9 @@ struct AccountRowView: View {
     .buttonStyle(.plain)
     .onHover { isHovering = $0 }
     .help(account.emailAddress)
+    .popover(isPresented: $isEditing, arrowEdge: .trailing) {
+      AccountSettingsPopover(account: account, save: save)
+    }
   }
 }
 
@@ -207,5 +224,132 @@ struct ThemeSwitcher: View {
     let all = AppTheme.allCases
     let index = all.firstIndex(of: themes.theme) ?? 0
     return all[(index + 1) % all.count]
+  }
+}
+
+/// The colours offered for an account.
+///
+/// Built on the same cool axis as the app icon rather than reusing the iOS
+/// system palette, which was the previous default: those hues are tuned to sit
+/// on white at full saturation and read as loud, plasticky dots against a navy
+/// sidebar. These are desaturated and mid-lightness, so they stay legible on
+/// all three themes without shouting on any of them.
+///
+/// Order matters — it is the assignment order for new accounts, so the first
+/// two must be maximally distinguishable, including for the most common forms
+/// of colour blindness. Teal and clay differ in both hue and warmth, so they
+/// separate on lightness alone if hue perception fails.
+enum AccountPalette {
+  static let choices: [(name: String, hex: String)] = [
+    ("Teal", "#4aa3a2"),
+    ("Clay", "#c2705a"),
+    ("Slate", "#5b7ba8"),
+    ("Sage", "#7d9a6d"),
+    ("Plum", "#8a6a9e"),
+    ("Amber", "#c39a4e"),
+    ("Rose", "#b5697f"),
+    ("Steel", "#6f7d8c"),
+  ]
+
+  static func hex(at index: Int) -> String {
+    choices[index % choices.count].hex
+  }
+}
+
+/// Rename and recolour, in a popover from the account row's ⋯ button.
+///
+/// A popover rather than a settings window: it edits exactly two fields
+/// belonging to the row it is anchored to, and a whole window for that would
+/// put more chrome on screen than content.
+struct AccountSettingsPopover: View {
+  let account: AccountRow
+  let save: (String?, String?) async -> Void
+
+  @Environment(\.dismiss) private var dismiss
+  @State private var name: String
+  @State private var color: String
+
+  init(account: AccountRow, save: @escaping (String?, String?) async -> Void) {
+    self.account = account
+    self.save = save
+    _name = State(initialValue: account.displayName == account.emailAddress
+                  ? "" : account.displayName)
+    _color = State(initialValue: account.color.lowercased())
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: Theme.Space.wide) {
+      VStack(alignment: .leading, spacing: Theme.Space.tight) {
+        Text("DISPLAY NAME")
+          .font(Theme.Font.caption)
+          .foregroundStyle(Theme.Ink.tertiary)
+        // The address is the placeholder rather than the value, so leaving it
+        // blank keeps the current fallback instead of pinning the address in
+        // as a literal name you would then have to delete.
+        TextField(account.emailAddress, text: $name)
+          .textFieldStyle(.plain)
+          .font(Theme.Font.body)
+          .foregroundStyle(Theme.Ink.primary)
+          .padding(.horizontal, Theme.Space.base)
+          .frame(height: 28)
+          .background(Theme.Surface.control, in: .rect(cornerRadius: Theme.Radius.control))
+          .onSubmit { commit() }
+      }
+
+      VStack(alignment: .leading, spacing: Theme.Space.base) {
+        Text("COLOUR")
+          .font(Theme.Font.caption)
+          .foregroundStyle(Theme.Ink.tertiary)
+        LazyVGrid(
+          columns: Array(repeating: GridItem(.fixed(28), spacing: Theme.Space.base), count: 4),
+          spacing: Theme.Space.base
+        ) {
+          ForEach(AccountPalette.choices, id: \.hex) { choice in
+            swatch(choice.hex, name: choice.name)
+          }
+        }
+      }
+
+      Text(account.emailAddress)
+        .font(Theme.Font.micro)
+        .fontWeight(.regular)
+        .foregroundStyle(Theme.Ink.tertiary)
+        .lineLimit(1)
+
+      HStack {
+        Spacer()
+        Button("Done") { commit() }
+          .keyboardShortcut(.defaultAction)
+      }
+    }
+    .padding(Theme.Space.wide)
+    .frame(width: 260)
+  }
+
+  private func swatch(_ hex: String, name: String) -> some View {
+    let isSelected = hex.lowercased() == color.lowercased()
+    return Button {
+      color = hex
+      // Applied immediately rather than on Done: recolouring is reversible and
+      // the point is to see it against the real list while choosing.
+      Task { await save(nil, hex) }
+    } label: {
+      Circle()
+        .fill(Color(hex: hex) ?? Theme.Accent.muted)
+        .frame(width: 24, height: 24)
+        .overlay {
+          Circle().strokeBorder(Theme.Ink.primary.opacity(isSelected ? 0.9 : 0),
+                                lineWidth: 2)
+        }
+        .padding(2)
+    }
+    .buttonStyle(.plain)
+    .help(name)
+  }
+
+  private func commit() {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    Task { await save(trimmed.isEmpty ? nil : trimmed, color) }
+    dismiss()
   }
 }
