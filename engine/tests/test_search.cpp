@@ -15,6 +15,8 @@ using namespace mailengine;
 
 namespace {
 
+using mailengine::SearchOrder;
+
 GmailMessage message_with(const std::string& subject, const std::string& body,
                           const std::string& from_name = "Ada Okonkwo",
                           const std::string& from_email = "ada@example.com") {
@@ -204,7 +206,9 @@ TEST(SearchIndex, RanksSubjectMatchesAboveBodyMatches) {
                                   message_with("Budget planning", "unrelated text"))
                   .has_value());
 
-  const auto hits = index.search("budget");
+  // Explicitly Relevance: the DEFAULT order is Recency, under which this would
+  // pass or fail on insertion order and prove nothing about ranking.
+  const auto hits = index.search("budget", 100, SearchOrder::Relevance);
   ASSERT_TRUE(hits.has_value());
   ASSERT_EQ(hits->size(), 2u);
   // bm25 weights subject 10x body, so the subject match must come first.
@@ -245,4 +249,135 @@ TEST(SearchIndex, SurvivesPunctuationHeavyInput) {
     const auto hits = index.search(nasty);
     EXPECT_TRUE(hits.has_value()) << "crashed on: " << nasty;
   }
+}
+
+// MARK: - Fuzzy matching
+//
+// Speed is the priority and fuzziness second, so the contract under test is:
+// a correctly spelled query never pays for typo tolerance, and correction only
+// happens when the exact query genuinely failed.
+
+TEST(EditDistance, MeasuresKnownPairs) {
+  EXPECT_EQ(SearchIndex::edit_distance("kitten", "sitting", 5), 3);
+  EXPECT_EQ(SearchIndex::edit_distance("budget", "budget", 2), 0);
+  EXPECT_EQ(SearchIndex::edit_distance("recieve", "receive", 2), 2);
+  EXPECT_EQ(SearchIndex::edit_distance("meeting", "meating", 2), 1);
+}
+
+TEST(EditDistance, StopsAtTheBound) {
+  // Anything beyond the bound reports bound+1 rather than the true distance.
+  EXPECT_EQ(SearchIndex::edit_distance("abc", "xyzzy", 1), 2);
+  EXPECT_GT(SearchIndex::edit_distance("completely", "different", 2), 2);
+}
+
+TEST(EditDistance, RejectsOnLengthWithoutComputing) {
+  EXPECT_GT(SearchIndex::edit_distance("a", "abcdefgh", 2), 2);
+}
+
+TEST(SearchFuzzy, ExactMatchesSkipCorrectionEntirely) {
+  auto index = make_index();
+  for (int i = 0; i < 10; ++i) {
+    ASSERT_TRUE(index
+                    .index_document("acct", "acct|t" + std::to_string(i),
+                                    "acct|m" + std::to_string(i), "Budget review",
+                                    "Ada", "the quarterly budget", 1700000000000LL + i)
+                    .has_value());
+  }
+
+  const auto result = index.search_fuzzy("budget");
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  EXPECT_EQ(result->hits.size(), 10u);
+  // The fast path must not report a correction.
+  EXPECT_FALSE(result->corrected);
+}
+
+TEST(SearchFuzzy, CorrectsATypo) {
+  auto index = make_index();
+  for (int i = 0; i < 10; ++i) {
+    ASSERT_TRUE(index
+                    .index_document("acct", "acct|t" + std::to_string(i),
+                                    "acct|m" + std::to_string(i), "Infrastructure",
+                                    "Ada", "infrastructure planning notes",
+                                    1700000000000LL + i)
+                    .has_value());
+  }
+
+  // "infrastructre" — a transposition/omission a person actually makes.
+  const auto result = index.search_fuzzy("infrastructre");
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  EXPECT_TRUE(result->corrected);
+  EXPECT_FALSE(result->hits.empty());
+}
+
+TEST(SearchFuzzy, LeavesGenuineNonMatchesAlone) {
+  // A query with no near neighbour must report no results rather than
+  // inventing a correction to something unrelated.
+  auto index = make_index();
+  ASSERT_TRUE(
+      index.index_document("acct", "acct|t1", "acct|m1", "Budget", "Ada", "budget", 1)
+          .has_value());
+
+  const auto result = index.search_fuzzy("xylophone");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->hits.empty());
+  EXPECT_FALSE(result->corrected);
+}
+
+TEST(SimilarTerms, DrawsOnlyFromTheIndexedVocabulary) {
+  auto index = make_index();
+  ASSERT_TRUE(index
+                  .index_document("acct", "acct|t1", "acct|m1", "Quarterly budget",
+                                  "Ada", "review", 1)
+                  .has_value());
+
+  const auto similar = index.similar_terms("budgt");
+  ASSERT_TRUE(similar.has_value()) << similar.error().message;
+  ASSERT_FALSE(similar->empty());
+  EXPECT_EQ(similar->front(), "budget");
+}
+
+TEST(SimilarTerms, ExcludesTheTermItself) {
+  auto index = make_index();
+  ASSERT_TRUE(
+      index.index_document("acct", "acct|t1", "acct|m1", "budget", "Ada", "x", 1)
+          .has_value());
+
+  const auto similar = index.similar_terms("budget");
+  ASSERT_TRUE(similar.has_value());
+  for (const auto& term : *similar) {
+    EXPECT_NE(term, "budget");
+  }
+}
+
+TEST(SearchIndex, RecencyOrderReturnsNewestFirst) {
+  auto index = make_index();
+  for (int i = 0; i < 5; ++i) {
+    ASSERT_TRUE(index
+                    .index_document("acct", "acct|t" + std::to_string(i),
+                                    "acct|m" + std::to_string(i), "Budget", "Ada",
+                                    "budget", 1700000000000LL + i * 1000)
+                    .has_value());
+  }
+
+  const auto hits = index.search("budget", 10, SearchOrder::Recency);
+  ASSERT_TRUE(hits.has_value());
+  ASSERT_EQ(hits->size(), 5u);
+  // Newest indexed timestamp first.
+  EXPECT_EQ((*hits)[0].thread_id, "acct|t4");
+  EXPECT_EQ((*hits)[4].thread_id, "acct|t0");
+}
+
+TEST(SearchIndex, HandlesTimestampCollisions) {
+  // Two messages in the same millisecond must both be indexed, not silently
+  // dropped by a rowid conflict.
+  auto index = make_index();
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_TRUE(index
+                    .index_document("acct", "acct|t" + std::to_string(i),
+                                    "acct|m" + std::to_string(i), "Same", "Ada",
+                                    "collision", 1700000000000LL)
+                    .has_value());
+  }
+  EXPECT_EQ(*index.count(), 3);
+  EXPECT_EQ(index.search("collision")->size(), 3u);
 }

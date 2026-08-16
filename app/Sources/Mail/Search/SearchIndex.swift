@@ -63,30 +63,47 @@ final class SearchIndex {
     if let db { sqlite3_close(db) }
   }
 
-  /// Returns matching thread ids, best first.
+  /// Returns matching thread ids, newest first.
   ///
-  /// Ids are our composite `account|threadId` form, ready to hand to ZQL
-  /// without translation — which is exactly why the engine stores them that
-  /// way rather than storing Gmail's raw ids.
+  /// ## Why recency and not relevance
+  ///
+  /// bm25 relevance ranking must score EVERY matching document — you cannot
+  /// know the top 100 without examining all candidates — so its cost grows
+  /// with the mailbox. Measured on a synthetic corpus: 180ms at 200k messages.
+  ///
+  /// `ORDER BY rowid DESC LIMIT n` lets SQLite walk the posting list backwards
+  /// and stop as soon as it has enough, because the engine stores each
+  /// message's timestamp AS its rowid. Cost becomes O(results) rather than
+  /// O(corpus): 2.96ms at 200k. It is also what a mail user normally wants.
   func threadIDs(matching query: String, limit: Int = 100) -> [String] {
-    guard let db, isAvailable else { return [] }
+    let exact = rawThreadIDs(matching: query, limit: limit)
+    guard exact.count < Self.fuzzyThreshold else { return exact }
 
+    // FUZZY FALLBACK, reached only when the exact query found almost nothing.
+    // A correctly spelled query never pays for this, which is what keeps
+    // typing instant.
+    guard let corrected = correctedQuery(for: query), corrected != query else {
+      return exact
+    }
+    let fuzzy = rawThreadIDs(matching: corrected, limit: limit)
+    return fuzzy.count > exact.count ? fuzzy : exact
+  }
+
+  /// Below this many results, term correction is attempted.
+  private static let fuzzyThreshold = 5
+
+  private func rawThreadIDs(matching query: String, limit: Int) -> [String] {
+    guard let db, isAvailable else { return [] }
     let escaped = Self.escape(query)
     guard !escaped.isEmpty else { return [] }
 
-    // Mirrors the engine's query. The MATERIALIZED CTE is required: FTS5
-    // auxiliary functions like bm25() cannot appear alongside GROUP BY, and
-    // SQLite would otherwise flatten a plain subquery and reintroduce that.
+    // Over-fetch, then deduplicate by thread here. Doing it in SQL would need
+    // GROUP BY, which defeats the early termination this whole design rests on.
+    let window = min(limit * 4, 2000)
     let sql = """
-      WITH hits AS MATERIALIZED (
-        SELECT thread_id, bm25(message_fts, 0.0, 0.0, 0.0, 10.0, 5.0, 1.0) AS score
-        FROM message_fts
-        WHERE message_fts MATCH ?1
-      )
-      SELECT thread_id, min(score) AS best
-      FROM hits
-      GROUP BY thread_id
-      ORDER BY best
+      SELECT thread_id FROM message_fts
+      WHERE message_fts MATCH ?1
+      ORDER BY rowid DESC
       LIMIT ?2
       """
 
@@ -97,20 +114,119 @@ final class SearchIndex {
     }
     defer { sqlite3_finalize(statement) }
 
-    // SQLITE_TRANSIENT: SQLite copies the bytes, so the Swift string need not
-    // outlive the call.
-    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    sqlite3_bind_text(statement, 1, escaped, -1, transient)
-    sqlite3_bind_int(statement, 2, Int32(limit))
+    sqlite3_bind_text(statement, 1, escaped, -1, Self.transient)
+    sqlite3_bind_int(statement, 2, Int32(window))
 
     var ids: [String] = []
+    var seen = Set<String>()
     while sqlite3_step(statement) == SQLITE_ROW {
-      if let text = sqlite3_column_text(statement, 0) {
-        ids.append(String(cString: text))
+      guard let text = sqlite3_column_text(statement, 0) else { continue }
+      let id = String(cString: text)
+      // Rows arrive newest-first, so the first sighting of a thread is the one
+      // to keep.
+      if seen.insert(id).inserted {
+        ids.append(id)
+        if ids.count >= limit { break }
       }
     }
     return ids
   }
+
+  /// Rewrites a query using the closest terms that actually appear in the
+  /// index, or nil when nothing is close enough.
+  ///
+  /// Mirrors the engine's `search_fuzzy`. Candidates come from FTS5's own
+  /// vocabulary table, so a correction can never suggest a word that would
+  /// match nothing.
+  private func correctedQuery(for query: String) -> String? {
+    let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
+    guard !terms.isEmpty else { return nil }
+
+    var rebuilt: [String] = []
+    var changed = false
+    for term in terms {
+      // Short words tolerate one edit, longer ones two — otherwise a 4-letter
+      // word matches half the dictionary.
+      // Mirrors the engine: longer words tolerate more edits, because a
+      // porter-stemmed vocabulary entry can sit several characters from what
+      // the user typed ("meeting" is stored as "meet").
+      let bound = term.count <= 4 ? 1 : (term.count <= 7 ? 2 : 3)
+      if let best = closestTerm(to: term, maxDistance: bound) {
+        rebuilt.append(best)
+        changed = true
+      } else {
+        rebuilt.append(term)
+      }
+    }
+    return changed ? rebuilt.joined(separator: " ") : nil
+  }
+
+  private func closestTerm(to term: String, maxDistance: Int) -> String? {
+    guard let db else { return nil }
+
+    // Filter by length in SQL and order by document frequency: a typo is far
+    // more likely to be a misspelling of a common word than a rare one.
+    let sql = """
+      SELECT term FROM spell_term
+      WHERE length(term) BETWEEN ?1 AND ?2
+      ORDER BY cnt DESC
+      LIMIT 20000
+      """
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return nil }
+    defer { sqlite3_finalize(statement) }
+
+    sqlite3_bind_int(statement, 1, Int32(max(1, term.count - maxDistance)))
+    sqlite3_bind_int(statement, 2, Int32(term.count + maxDistance))
+
+    let lowered = term.lowercased()
+    var best: (score: Int, term: String)?
+    while sqlite3_step(statement) == SQLITE_ROW {
+      guard let text = sqlite3_column_text(statement, 0) else { continue }
+      let candidate = String(cString: text)
+      let distance = Self.editDistance(lowered, candidate, maxDistance: maxDistance)
+      guard distance > 0, distance <= maxDistance else { continue }
+
+      // Distance dominates, shared prefix breaks ties. Typos preserve opening
+      // characters, which is what rescues stemmed vocabulary entries.
+      let prefix = zip(lowered, candidate).prefix { $0 == $1 }.count
+      let score = distance * 10 - prefix
+      if best == nil || score < best!.score {
+        best = (score, candidate)
+      }
+    }
+    return best?.term
+  }
+
+  /// Bounded Levenshtein distance.
+  ///
+  /// Returns `maxDistance + 1` as soon as the true distance is known to exceed
+  /// the bound, so most vocabulary candidates are rejected almost immediately.
+  static func editDistance(_ a: String, _ b: String, maxDistance: Int) -> Int {
+    let lhs = Array(a.utf8), rhs = Array(b.utf8)
+    if abs(lhs.count - rhs.count) > maxDistance { return maxDistance + 1 }
+
+    // Two rows, not a full matrix: only the previous row is ever needed.
+    var previous = Array(0...rhs.count)
+    var current = [Int](repeating: 0, count: rhs.count + 1)
+
+    for i in 1...max(lhs.count, 1) where !lhs.isEmpty {
+      current[0] = i
+      var rowBest = i
+      for j in 1...max(rhs.count, 1) where !rhs.isEmpty {
+        let cost = lhs[i - 1] == rhs[j - 1] ? 0 : 1
+        current[j] = min(current[j - 1] + 1, previous[j] + 1, previous[j - 1] + cost)
+        rowBest = min(rowBest, current[j])
+      }
+      // Later rows can only increase the distance.
+      if rowBest > maxDistance { return maxDistance + 1 }
+      swap(&previous, &current)
+    }
+    return previous[rhs.count]
+  }
+
+  /// SQLite copies the bound bytes, so Swift strings need not outlive the call.
+  private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
   /// Escapes user input for FTS5's MATCH grammar.
   ///

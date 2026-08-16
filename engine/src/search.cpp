@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <sstream>
 #include <unordered_set>
 #include <utility>
@@ -104,6 +105,26 @@ Result<void> SearchIndex::open(const std::string& path) {
     CREATE TABLE IF NOT EXISTS doc_rowid (
       message_id TEXT PRIMARY KEY,
       fts_rowid  INTEGER NOT NULL
+    );
+
+    -- FTS5's own vocabulary, exposed as a queryable table.
+    CREATE VIRTUAL TABLE IF NOT EXISTS message_vocab
+      USING fts5vocab(message_fts, 'row');
+
+    -- UNSTEMMED terms, for spelling correction only.
+    --
+    -- message_vocab cannot serve this. It is porter-stemmed, so it holds
+    -- "meet" rather than "meeting" — and a user's typo "meetign" is 3 edits
+    -- from "meet" but only 2 from the unrelated "mention", so correcting
+    -- against stems reliably picks the wrong word. Correction needs the words
+    -- as they were actually written.
+    --
+    -- Populated from subjects and senders only. Bodies would multiply write
+    -- cost for little benefit: people mistype the subject words they are
+    -- searching for far more often than incidental body text.
+    CREATE TABLE IF NOT EXISTS spell_term (
+      term TEXT PRIMARY KEY,
+      cnt  INTEGER NOT NULL DEFAULT 1
     );
   )";
   char* error = nullptr;
@@ -204,12 +225,44 @@ Result<void> SearchIndex::index_document(const std::string& account_id,
     return make_error("could not find a free rowid for " + message_id);
   }
 
+  // Capture the rowid IMMEDIATELY, before any other statement runs.
+  // sqlite3_last_insert_rowid() is per-connection, not per-table, so the
+  // spell_term inserts below would otherwise overwrite it and the recorded
+  // fts_rowid would point at the wrong row — silently breaking replacement.
+  const sqlite3_int64 inserted_rowid = sqlite3_last_insert_rowid(db);
+
+  // Harvest unstemmed words for spelling correction.
+  {
+    Stmt bump(db,
+              "INSERT INTO spell_term(term, cnt) VALUES(?1, 1) "
+              "ON CONFLICT(term) DO UPDATE SET cnt = cnt + 1");
+    if (bump.ok()) {
+      for (const std::string& source : {subject, sender}) {
+        std::string word;
+        // Split on anything that is not a letter or digit, matching how a
+        // person perceives "words" closely enough for correction.
+        for (const char c : source + " ") {
+          if (std::isalnum(static_cast<unsigned char>(c)) != 0) {
+            word += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+          } else if (!word.empty()) {
+            if (word.size() >= 3) {  // 1-2 letter words are noise here
+              sqlite3_reset(bump.get());
+              bump.bind(1, word);
+              sqlite3_step(bump.get());
+            }
+            word.clear();
+          }
+        }
+      }
+    }
+  }
+
   Stmt remember(db,
                 "INSERT INTO doc_rowid(message_id, fts_rowid) VALUES(?1, ?2) "
                 "ON CONFLICT(message_id) DO UPDATE SET fts_rowid = excluded.fts_rowid");
   if (!remember.ok()) return make_error("prepare rowid record failed");
   remember.bind(1, message_id);
-  sqlite3_bind_int64(remember.get(), 2, sqlite3_last_insert_rowid(db));
+  sqlite3_bind_int64(remember.get(), 2, inserted_rowid);
   if (sqlite3_step(remember.get()) != SQLITE_DONE) {
     return make_error(std::string("rowid record failed: ") + sqlite3_errmsg(db));
   }
@@ -376,6 +429,158 @@ Result<std::vector<SearchHit>> SearchIndex::search(const std::string& query,
   return hits;
 }
 
+int SearchIndex::edit_distance(std::string_view a, std::string_view b,
+                               int max_distance) {
+  // Length alone can rule a candidate out before any work happens, which is
+  // what keeps a vocabulary scan cheap.
+  const auto size_a = static_cast<int>(a.size());
+  const auto size_b = static_cast<int>(b.size());
+  if (std::abs(size_a - size_b) > max_distance) return max_distance + 1;
+
+  // Two rows rather than a full matrix: only the previous row is ever needed.
+  std::vector<int> previous(static_cast<size_t>(size_b) + 1);
+  std::vector<int> current(static_cast<size_t>(size_b) + 1);
+  for (int j = 0; j <= size_b; ++j) previous[static_cast<size_t>(j)] = j;
+
+  for (int i = 1; i <= size_a; ++i) {
+    current[0] = i;
+    int row_best = current[0];
+    for (int j = 1; j <= size_b; ++j) {
+      const int cost = a[static_cast<size_t>(i - 1)] == b[static_cast<size_t>(j - 1)] ? 0 : 1;
+      current[static_cast<size_t>(j)] =
+          std::min({current[static_cast<size_t>(j - 1)] + 1,
+                    previous[static_cast<size_t>(j)] + 1,
+                    previous[static_cast<size_t>(j - 1)] + cost});
+      row_best = std::min(row_best, current[static_cast<size_t>(j)]);
+    }
+    // Every remaining row can only increase the distance, so once the best
+    // value in this row exceeds the bound the answer is settled.
+    if (row_best > max_distance) return max_distance + 1;
+    previous.swap(current);
+  }
+  return previous[static_cast<size_t>(size_b)];
+}
+
+Result<std::vector<std::string>> SearchIndex::similar_terms(const std::string& term,
+                                                            int max_distance,
+                                                            int limit) {
+  auto* db = static_cast<sqlite3*>(db_);
+  if (db == nullptr) return make_error("search index not open");
+
+  // Narrow the candidate set in SQL before measuring anything. Terms whose
+  // length differs by more than the bound cannot possibly be within it, and
+  // ordering by document frequency means common words are considered first —
+  // a typo is far more likely to be a misspelling of a frequent word.
+  Stmt select(db, R"(
+      SELECT term FROM spell_term
+      WHERE length(term) BETWEEN ?2 AND ?3
+      ORDER BY cnt DESC
+      LIMIT 20000)");
+  if (!select.ok()) {
+    return make_error(std::string("prepare vocab scan failed: ") + sqlite3_errmsg(db));
+  }
+  select.bind(1, term);
+  sqlite3_bind_int(select.get(), 2,
+                   std::max(1, static_cast<int>(term.size()) - max_distance));
+  sqlite3_bind_int(select.get(), 3, static_cast<int>(term.size()) + max_distance);
+
+  // Score on edit distance AND shared prefix.
+  //
+  // Distance alone corrects badly here, for a structural reason: the
+  // vocabulary is porter-stemmed, so it contains "meet" rather than "meeting".
+  // A user's typo "meetign" is 3 edits from "meet" but only 2 from the
+  // unrelated "mention", so pure distance picks the wrong word.
+  //
+  // Real typos almost always preserve the opening characters, so a long shared
+  // prefix is strong evidence. Weighting distance x10 keeps it dominant while
+  // letting the prefix break ties and rescue stemmed forms.
+  const auto shared_prefix = [](std::string_view a, std::string_view b) {
+    size_t i = 0;
+    while (i < a.size() && i < b.size() &&
+           std::tolower(static_cast<unsigned char>(a[i])) ==
+               std::tolower(static_cast<unsigned char>(b[i]))) {
+      ++i;
+    }
+    return static_cast<int>(i);
+  };
+
+  std::vector<std::pair<int, std::string>> scored;
+  while (sqlite3_step(select.get()) == SQLITE_ROW) {
+    std::string candidate = select.column(0);
+    const int distance = edit_distance(term, candidate, max_distance);
+    if (distance <= max_distance && distance > 0) {
+      const int score = distance * 10 - shared_prefix(term, candidate);
+      scored.emplace_back(score, std::move(candidate));
+    }
+  }
+
+  // Best score first; the vocabulary arrived in frequency order, so a stable
+  // sort keeps document frequency as the final tiebreak.
+  std::stable_sort(scored.begin(), scored.end(),
+                   [](const auto& a, const auto& b) { return a.first < b.first; });
+
+  std::vector<std::string> terms;
+  for (const auto& [distance, candidate] : scored) {
+    if (static_cast<int>(terms.size()) >= limit) break;
+    terms.push_back(candidate);
+  }
+  return terms;
+}
+
+Result<FuzzyResult> SearchIndex::search_fuzzy(const std::string& query, int limit,
+                                              int min_results, SearchOrder order) {
+  FuzzyResult result;
+
+  // FAST PATH. A correctly spelled query pays nothing for fuzziness.
+  auto exact = search(query, limit, order);
+  if (!exact) return exact.error();
+  if (static_cast<int>(exact->size()) >= min_results) {
+    result.hits = std::move(*exact);
+    return result;
+  }
+
+  // SLOW PATH, reached only when the user has already failed to find
+  // something. Correct each term against the mailbox vocabulary.
+  std::istringstream stream(query);
+  std::string term;
+  std::vector<std::string> corrected;
+  bool any_correction = false;
+
+  while (stream >> term) {
+    auto similar = similar_terms(term, /*max_distance=*/term.size() <= 4 ? 1 : 2);
+    if (similar && !similar->empty()) {
+      corrected.push_back(similar->front());
+      any_correction = true;
+    } else {
+      corrected.push_back(term);
+    }
+  }
+
+  if (!any_correction) {
+    result.hits = std::move(*exact);
+    return result;
+  }
+
+  std::string rebuilt;
+  for (const auto& word : corrected) {
+    if (!rebuilt.empty()) rebuilt += ' ';
+    rebuilt += word;
+  }
+
+  auto fuzzy = search(rebuilt, limit, order);
+  if (!fuzzy) return fuzzy.error();
+
+  // Only claim a correction if it actually helped.
+  if (fuzzy->size() > exact->size()) {
+    result.hits = std::move(*fuzzy);
+    result.corrected = true;
+    result.corrected_query = rebuilt;
+  } else {
+    result.hits = std::move(*exact);
+  }
+  return result;
+}
+
 Result<int64_t> SearchIndex::count() {
   auto* db = static_cast<sqlite3*>(db_);
   if (db == nullptr) return make_error("search index not open");
@@ -391,6 +596,7 @@ Result<void> SearchIndex::clear() {
   if (db == nullptr) return make_error("search index not open");
   sqlite3_exec(db, "DELETE FROM message_fts", nullptr, nullptr, nullptr);
   sqlite3_exec(db, "DELETE FROM doc_rowid", nullptr, nullptr, nullptr);
+  sqlite3_exec(db, "DELETE FROM spell_term", nullptr, nullptr, nullptr);
   return {};
 }
 

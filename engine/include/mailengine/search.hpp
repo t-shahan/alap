@@ -61,6 +61,16 @@ struct SearchHit {
   double rank = 0;
 };
 
+/// @brief Outcome of a fuzzy search.
+struct FuzzyResult {
+  std::vector<SearchHit> hits;
+  /// True when term correction was used, so the UI can say "showing results
+  /// for X" rather than silently changing what the user asked for.
+  bool corrected = false;
+  /// The corrected query, when `corrected` is set.
+  std::string corrected_query;
+};
+
 /// @brief Owns the FTS5 index.
 ///
 /// Not thread-safe. SQLite connections are per-thread.
@@ -129,11 +139,42 @@ class SearchIndex {
       const std::string& query, int limit = 100,
       SearchOrder order = SearchOrder::Recency);
 
+  /// @brief Search with typo tolerance.
+  ///
+  /// Runs the exact query first and returns immediately if it produced enough
+  /// results. Only when it did not does this spend time correcting terms
+  /// against the mailbox vocabulary and re-querying.
+  ///
+  /// That ordering is deliberate: the common case — a correctly spelled query
+  /// — pays nothing at all for fuzziness, so typing stays instant. The slow
+  /// path runs only when the user has already failed to find something.
+  ///
+  /// @param min_results Below this, fuzzy expansion kicks in.
+  [[nodiscard]] Result<FuzzyResult> search_fuzzy(
+      const std::string& query, int limit = 100, int min_results = 5,
+      SearchOrder order = SearchOrder::Recency);
+
   /// @brief Number of indexed messages.
   [[nodiscard]] Result<int64_t> count();
 
   /// @brief Empties the index. It can always be rebuilt from Postgres.
   [[nodiscard]] Result<void> clear();
+
+  /// @brief Bounded Levenshtein edit distance.
+  ///
+  /// Returns `max_distance + 1` as soon as the true distance is known to
+  /// exceed the bound, so scanning a vocabulary rejects most candidates after
+  /// a couple of rows rather than computing a full matrix.
+  [[nodiscard]] static int edit_distance(std::string_view a, std::string_view b,
+                                         int max_distance);
+
+  /// @brief Finds indexed terms within `max_distance` edits of `term`.
+  ///
+  /// Reads FTS5's own vocabulary table, so the candidate set is exactly the
+  /// terms that actually appear in this mailbox — a correction can never
+  /// suggest a word that would match nothing.
+  [[nodiscard]] Result<std::vector<std::string>> similar_terms(
+      const std::string& term, int max_distance = 2, int limit = 8);
 
   /// @brief Escapes user input for FTS5's MATCH grammar.
   ///

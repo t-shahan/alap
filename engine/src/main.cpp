@@ -13,6 +13,7 @@
 #include <iostream>
 #include <chrono>
 #include <filesystem>
+#include <iomanip>
 #include <optional>
 #include <thread>
 #include <string>
@@ -233,14 +234,24 @@ int cmd_search(const std::string& account_id, const std::string& query) {
   mailengine::SearchIndex index;
   if (!open_search(index)) return 1;
 
-  auto hits = index.search(query, 20);
-  if (!hits) {
-    std::cerr << "error: " << hits.error().message << "\n";
+  const auto began = std::chrono::steady_clock::now();
+  auto found = index.search_fuzzy(query, 20);
+  const auto elapsed = std::chrono::duration<double, std::milli>(
+                           std::chrono::steady_clock::now() - began)
+                           .count();
+  if (!found) {
+    std::cerr << "error: " << found.error().message << "\n";
     return 1;
   }
-  std::cout << hits->size() << " thread(s) for \"" << query << "\"  (index holds "
-            << index.count().value_or(0) << " messages)\n\n";
-  for (const auto& hit : *hits) {
+
+  std::cout << found->hits.size() << " thread(s) for \"" << query << "\"";
+  if (found->corrected) {
+    std::cout << "  -> showing results for \"" << found->corrected_query << "\"";
+  }
+  std::cout << "  (" << std::fixed << std::setprecision(2) << elapsed
+            << " ms, index holds " << index.count().value_or(0) << " messages)\n\n";
+
+  for (const auto& hit : found->hits) {
     std::cout << "  " << hit.subject << "\n      " << hit.thread_id << "\n";
   }
   return 0;
@@ -409,7 +420,8 @@ int cmd_reindex(const std::string& account_id) {
 
   auto rows = store.query(
       R"(SELECT m.id, m.thread_id, m.subject, m.from_name, m.from_email,
-                COALESCE(b.text_body, m.snippet)
+                COALESCE(b.text_body, m.snippet),
+                (EXTRACT(EPOCH FROM m.sent_at) * 1000)::bigint
          FROM message m
          LEFT JOIN message_body b ON b.message_id = m.id
          WHERE m.account_id = $1)",
@@ -426,10 +438,13 @@ int cmd_reindex(const std::string& account_id) {
 
   int64_t indexed = 0;
   for (const auto& row : *rows) {
-    if (row.size() < 6) continue;
+    if (row.size() < 7) continue;
+    // The timestamp becomes the FTS rowid, which is what makes recency-ordered
+    // search early-terminating. Omitting it silently degrades every query.
+    const int64_t sent_at_ms = row[6].empty() ? 0 : std::stoll(row[6]);
     if (index
             .index_document(account_id, row[1], row[0], row[2],
-                            row[3] + " " + row[4], row[5])
+                            row[3] + " " + row[4], row[5], sent_at_ms)
             .has_value()) {
       ++indexed;
     }
