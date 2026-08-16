@@ -17,15 +17,15 @@
 #      like a data-loss bug rather than a service that is not running.
 #
 # The process is matched by its full executable PATH, never by the name "Mail".
-# The bundle shares that name with Apple Mail, so `pkill Mail` or AppleScript's
-# `quit app "Mail"` are both ambiguous — and `quit app` will even LAUNCH Apple
-# Mail in order to deliver the quit event.
+# Matching by path rather than name is a habit worth keeping even now that
+# the app is no longer called "Mail": a name match would still catch an editor
+# with the binary open, or a second checkout.
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP="build/Mail.app"
-EXEC_PATH="$APP/Contents/MacOS/Mail"
+APP="build/Alap.app"
+EXEC_PATH="$APP/Contents/MacOS/Alap"
 
 # ── 1. Stop the old instance ────────────────────────────────────────────────
 if pkill -f "$EXEC_PATH" 2>/dev/null; then

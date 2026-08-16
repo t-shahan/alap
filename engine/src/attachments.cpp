@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "mailengine/crypto.hpp"
+#include "mailengine/identity.hpp"
 
 namespace mailengine {
 namespace {
@@ -54,9 +55,7 @@ std::string AttachmentStore::default_root() {
       configured != nullptr && *configured != '\0') {
     return configured;
   }
-  const char* home = std::getenv("HOME");
-  const std::string base = home != nullptr ? home : ".";
-  return base + "/Library/Caches/dev.local.mailapp/Attachments";
+  return identity::cache_dir() + "/Attachments";
 }
 
 Result<std::string> AttachmentStore::path_for(const std::string& hash) const {

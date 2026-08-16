@@ -139,6 +139,16 @@ class PostgresStore {
       const std::string& attachment_id, const std::string& content_hash,
       const std::string& local_path, int64_t size_bytes);
 
+  /// @brief Repoints stored attachment paths after the cache directory moves.
+  ///
+  /// `local_path` holds ABSOLUTE paths. Moving the cache without this leaves
+  /// every downloaded attachment looking un-downloaded, and the app would
+  /// quietly re-fetch hundreds of megabytes it already has on disk.
+  ///
+  /// @return How many rows were rewritten.
+  [[nodiscard]] Result<int64_t> rewrite_attachment_paths(
+      const std::string& old_prefix, const std::string& new_prefix);
+
   /// @brief Every connected account, in sidebar order.
   ///
   /// Disconnected accounts are excluded: `disconnected_at` marks an account

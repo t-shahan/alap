@@ -1,6 +1,6 @@
 import Foundation
 import WebKit
-@testable import Mail
+@testable import Alap
 
 /// A `MailBridge` that records what it was asked to do and lets a test push
 /// rows back synchronously.

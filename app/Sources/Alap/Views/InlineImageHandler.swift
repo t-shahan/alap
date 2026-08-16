@@ -50,8 +50,7 @@ final class InlineImageHandler: NSObject, WKURLSchemeHandler {
   }
 
   static var defaultRoot: URL {
-    let home = FileManager.default.homeDirectoryForCurrentUser
-    return home.appendingPathComponent("Library/Caches/dev.local.mailapp/Attachments")
+    AppIdentity.caches.appendingPathComponent("Attachments")
   }
 
   @MainActor

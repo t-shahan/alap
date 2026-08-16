@@ -387,6 +387,22 @@ Result<std::vector<std::vector<std::string>>> PostgresStore::query(
   return rows;
 }
 
+Result<int64_t> PostgresStore::rewrite_attachment_paths(
+    const std::string& old_prefix, const std::string& new_prefix) {
+  // Anchored with `LIKE $1 || '%'` would be wrong for the same reason it was
+  // wrong in the search index: the old prefix contains `_`, a single-character
+  // wildcard. left() compares an exact prefix.
+  auto rows = query(
+      R"(UPDATE attachment
+         SET local_path = $2 || substr(local_path, length($1) + 1)
+         WHERE local_path IS NOT NULL
+           AND left(local_path, length($1)) = $1
+         RETURNING 1)",
+      {old_prefix, new_prefix});
+  if (!rows) return rows.error();
+  return static_cast<int64_t>(rows->size());
+}
+
 Result<std::vector<StoredAccount>> PostgresStore::list_accounts() {
   auto rows = query(
       R"(SELECT id, email_address, COALESCE(last_history_id, '')

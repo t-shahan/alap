@@ -23,7 +23,9 @@ namespace mailengine {
 class Keychain {
  public:
   /// @param service Keychain service identifier, shared by all items.
-  explicit Keychain(std::string service = "dev.local.mailapp");
+  /// @param service Defaults to `identity::keychain_service()`. Passing it
+  ///        explicitly is for tests and for reading the pre-rename items.
+  explicit Keychain(std::string service = {});
 
   /// @brief Stores or replaces a secret.
   /// @param account Our account id, e.g. `acct_dev`.

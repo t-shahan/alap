@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 import Testing
-@testable import Mail
+@testable import Alap
 
 /// Behaviour that only appears once a second mailbox exists.
 ///

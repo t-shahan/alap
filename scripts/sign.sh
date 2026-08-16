@@ -14,12 +14,21 @@
 #
 set -euo pipefail
 
-IDENTITY="Mail Local Dev"
+# The former name is still accepted. Switching certificates would change the
+# designated requirement, which is precisely what the Keychain ACL matches on —
+# so anyone who set up before the rename would be re-prompted for every stored
+# credential. Not worth it to make a local certificate's label tidy.
+IDENTITIES=("Alap Local Dev" "Mail Local Dev")
 
-if security find-identity -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
-  SIGNER="$IDENTITY"
-else
-  SIGNER="-"
+SIGNER="-"
+for candidate in "${IDENTITIES[@]}"; do
+  if security find-identity -p codesigning 2>/dev/null | grep -q "$candidate"; then
+    SIGNER="$candidate"
+    break
+  fi
+done
+
+if [[ "$SIGNER" == "-" ]]; then
   echo "  (no local signing identity; using ad-hoc — run scripts/make-signing-cert.sh)" >&2
 fi
 

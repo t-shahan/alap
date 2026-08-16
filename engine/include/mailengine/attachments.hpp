@@ -77,7 +77,7 @@ class AttachmentStore {
 
   const std::filesystem::path& root() const { return root_; }
 
-  /// @brief The default location: `~/Library/Caches/dev.local.mailapp/Attachments`.
+  /// @brief The default location: `~/Library/Caches/Alap/Attachments`.
   ///
   /// Caches rather than Application Support because every blob is
   /// re-downloadable from Gmail. That keeps hundreds of megabytes of

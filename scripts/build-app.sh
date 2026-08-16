@@ -15,14 +15,14 @@ cd "$(dirname "$0")/.."
 CONFIG="debug"
 [[ "${1:-}" == "--release" ]] && CONFIG="release"
 
-APP="build/Mail.app"
+APP="build/Alap.app"
 CONTENTS="$APP/Contents"
 
 echo "▸ bundling Zero client"
 npm run build --workspace=@mailapp/client --silent
 
 # The web assets are a SwiftPM resource, so they must be in place BEFORE the
-# Swift build copies them into Mail_Mail.bundle.
+# Swift build copies them into Alap_Alap.bundle.
 mkdir -p app/Sources/Mail/Web
 cp packages/client/dist/index.html packages/client/dist/bridge.js app/Sources/Mail/Web/
 
@@ -34,7 +34,7 @@ BIN="$(swift build --package-path app -c "$CONFIG" --show-bin-path)"
 echo "▸ assembling $APP"
 rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
-cp "$BIN/Mail" "$CONTENTS/MacOS/Mail"
+cp "$BIN/Alap" "$CONTENTS/MacOS/Alap"
 
 # SwiftPM emits resources as a separate .bundle next to the binary; Bundle.module
 # resolves it relative to the executable, so it has to sit alongside.
@@ -46,10 +46,10 @@ cp "$BIN/Mail" "$CONTENTS/MacOS/Mail"
 # genuine bundle on the way in. `Bundle.module.resourceURL` then resolves to
 # Contents/Resources, which is where the payload now lives, so the lookup in
 # ZeroBridge.swift keeps working unchanged.
-RESOURCE_BUNDLE="$CONTENTS/MacOS/Mail_Mail.bundle"
-if [[ -d "$BIN/Mail_Mail.bundle" ]]; then
+RESOURCE_BUNDLE="$CONTENTS/MacOS/Alap_Alap.bundle"
+if [[ -d "$BIN/Alap_Alap.bundle" ]]; then
   mkdir -p "$RESOURCE_BUNDLE/Contents/Resources"
-  cp -R "$BIN/Mail_Mail.bundle/." "$RESOURCE_BUNDLE/Contents/Resources/"
+  cp -R "$BIN/Alap_Alap.bundle/." "$RESOURCE_BUNDLE/Contents/Resources/"
   # Guard against copying a previously-reshaped bundle into itself.
   rm -rf "$RESOURCE_BUNDLE/Contents/Resources/Contents"
 
@@ -58,8 +58,8 @@ if [[ -d "$BIN/Mail_Mail.bundle" ]]; then
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Mail_Mail</string>
-  <key>CFBundleIdentifier</key><string>dev.local.mailapp.resources</string>
+  <key>CFBundleName</key><string>Alap_Alap</string>
+  <key>CFBundleIdentifier</key><string>app.alap.mail.resources</string>
   <key>CFBundlePackageType</key><string>BNDL</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
@@ -90,10 +90,10 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Mail</string>
-  <key>CFBundleDisplayName</key><string>Mail</string>
-  <key>CFBundleExecutable</key><string>Mail</string>
-  <key>CFBundleIdentifier</key><string>dev.local.mailapp</string>
+  <key>CFBundleName</key><string>Alap</string>
+  <key>CFBundleDisplayName</key><string>Alap</string>
+  <key>CFBundleExecutable</key><string>Alap</string>
+  <key>CFBundleIdentifier</key><string>app.alap.mail</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>

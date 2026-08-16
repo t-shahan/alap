@@ -33,7 +33,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-IDENTITY="Mail Local Dev"
+IDENTITY="Alap Local Dev"
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
 # NOT `find-identity -v`: -v lists only identities that chain to a trusted

@@ -113,7 +113,7 @@ TEST(LoopbackListener, ReceivesTheRedirectQueryString) {
 }
 
 TEST(Keychain, RoundTripsASecret) {
-  const Keychain keychain("dev.local.mailapp.tests");
+  const Keychain keychain("app.alap.mail.tests");
   const std::string account = "acct_unit_test";
   const std::string secret = "1//0eXaMpLe-refresh-token";
 
@@ -128,7 +128,7 @@ TEST(Keychain, RoundTripsASecret) {
 }
 
 TEST(Keychain, StoreOverwritesExistingSecret) {
-  const Keychain keychain("dev.local.mailapp.tests");
+  const Keychain keychain("app.alap.mail.tests");
   const std::string account = "acct_overwrite_test";
 
   ASSERT_TRUE(keychain.store(account, "first").has_value());
@@ -142,6 +142,6 @@ TEST(Keychain, StoreOverwritesExistingSecret) {
 }
 
 TEST(Keychain, RemovingAnAbsentItemSucceeds) {
-  const Keychain keychain("dev.local.mailapp.tests");
+  const Keychain keychain("app.alap.mail.tests");
   EXPECT_TRUE(keychain.remove("acct_never_existed").has_value());
 }

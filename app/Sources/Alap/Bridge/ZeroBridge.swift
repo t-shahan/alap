@@ -3,7 +3,7 @@ import Observation
 import OSLog
 import WebKit
 
-let bridgeLog = Logger(subsystem: "dev.local.mailapp", category: "bridge")
+let bridgeLog = Logger(subsystem: AppIdentity.bundleID, category: "bridge")
 
 /// Hosts the Zero client in a headless `WKWebView` and relays reactive query
 /// results into Swift.

@@ -2,9 +2,11 @@
 
 <img src="app/Resources/icon.png" width="128" alt="">
 
-# Mail
+# Alap
 
 **A local-first macOS email client built for speed.**
+
+*আলাপ — a conversation; an acquaintance; the unmetered opening of a raga.*
 
 Search 32,000 messages in under a millisecond. Open a conversation in a frame.
 Triage a mailbox without waiting for anything.
@@ -92,7 +94,7 @@ and a Google Cloud project with the Gmail API enabled.
 brew install postgresql@18 cmake pkgconf libpq
 createdb mailapp
 
-git clone <your-fork> && cd mail
+git clone <your-fork> && cd alap
 npm install
 ```
 
@@ -129,7 +131,7 @@ cmake -S engine -B engine/build
 cmake --build engine/build -j8
 
 npm run dev                             # postgres + sidecar + zero-cache
-npm run app                             # build and launch the app
+npm run app                             # build and launch Alap.app
 ```
 
 Click **Add Account** in the sidebar to authorise a mailbox, then start the

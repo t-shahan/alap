@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Mail
+@testable import Alap
 
 /// Keyboard triage: selection movement and where you land after archiving.
 ///

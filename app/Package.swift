@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-  name: "Mail",
+  name: "Alap",
   platforms: [.macOS(.v14)],
   targets: [
     .executableTarget(
-      name: "Mail",
-      path: "Sources/Mail",
+      name: "Alap",
+      path: "Sources/Alap",
       resources: [
         // The Zero client bundle, copied here by scripts/build-app.sh from
         // packages/client/dist. `.copy` (not `.process`) so the directory
@@ -18,9 +18,9 @@ let package = Package(
       swiftSettings: [.swiftLanguageMode(.v6)]
     ),
     .testTarget(
-      name: "MailTests",
-      dependencies: ["Mail"],
-      path: "Tests/MailTests",
+      name: "AlapTests",
+      dependencies: ["Alap"],
+      path: "Tests/AlapTests",
       swiftSettings: [.swiftLanguageMode(.v6)]
     ),
   ]

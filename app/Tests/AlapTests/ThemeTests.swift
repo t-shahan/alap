@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 import Testing
-@testable import Mail
+@testable import Alap
 
 /// Palettes and appearance switching.
 ///

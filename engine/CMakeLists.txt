@@ -69,6 +69,7 @@ add_library(mailengine_core
   src/bench.cpp
   src/html.cpp
   src/attachments.cpp
+  src/identity.cpp
   src/compose.cpp
 )
 target_include_directories(mailengine_core

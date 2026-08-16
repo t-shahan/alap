@@ -29,6 +29,7 @@
 
 #include "mailengine/attachments.hpp"
 #include "mailengine/gmail.hpp"
+#include "mailengine/identity.hpp"
 #include "mailengine/html.hpp"
 #include "mailengine/keychain.hpp"
 #include "mailengine/oauth.hpp"
@@ -226,8 +227,7 @@ std::string search_index_path() {
   const std::string configured = env("MAILENGINE_SEARCH_DB");
   if (!configured.empty()) return configured;
 
-  const std::string home = env("HOME");
-  const std::string dir = home + "/Library/Application Support/dev.local.mailapp";
+  const std::string dir = mailengine::identity::app_support_dir();
   std::filesystem::create_directories(dir);
   return dir + "/search.db";
 }
@@ -921,6 +921,56 @@ int cmd_connect(int64_t max_messages) {
   return 0;
 }
 
+/// Moves data left behind by the pre-rename identity.
+///
+/// Runs on daemon startup rather than on every command: it is idempotent and
+/// cheap once complete, but it needs the account list and a database, and the
+/// daemon is the process that always has both.
+void run_startup_migration(mailengine::PostgresStore& store,
+                           const std::vector<mailengine::StoredAccount>& accounts) {
+  std::vector<std::string> ids;
+  ids.reserve(accounts.size());
+  for (const auto& account : accounts) ids.push_back(account.id);
+
+  auto report = mailengine::identity::migrate_from_legacy(ids);
+  if (!report) {
+    std::cerr << "warning: migration incomplete: " << report.error().message << "\n";
+    return;
+  }
+
+  // Attachment paths are rewritten only when the cache actually moved. Doing it
+  // unconditionally would be harmless but would run a full table scan on every
+  // start for no reason.
+  if (report->moved_cache) {
+    const std::string old_root = std::string(std::getenv("HOME") ? std::getenv("HOME") : ".") +
+                                 "/Library/Caches/" +
+                                 mailengine::identity::legacy_identifier();
+    if (auto rewritten =
+            store.rewrite_attachment_paths(old_root, mailengine::identity::cache_dir());
+        rewritten) {
+      report->rewritten_paths = *rewritten;
+    } else {
+      std::cerr << "warning: could not repoint attachment paths: "
+                << rewritten.error().message << "\n";
+    }
+  }
+
+  if (report->moved_app_support || report->moved_cache ||
+      report->migrated_keychain_items > 0) {
+    std::cout << "migrated from the previous application identity:\n";
+    if (report->moved_app_support) std::cout << "  search index\n";
+    if (report->moved_cache) {
+      std::cout << "  attachment cache (" << report->rewritten_paths
+                << " paths repointed)\n";
+    }
+    if (report->migrated_keychain_items > 0) {
+      std::cout << "  " << report->migrated_keychain_items
+                << " Keychain credential(s)\n";
+    }
+    std::cout.flush();
+  }
+}
+
 /// Supervises every connected account.
 ///
 /// Accounts are discovered from Postgres rather than passed on the command
@@ -949,11 +999,19 @@ int cmd_daemon(int interval_seconds) {
   constexpr int kSweepSeconds = 15;
   bool announced = false;
 
+  bool migrated = false;
+
   while (true) {
     auto accounts = directory.list_accounts();
     if (!accounts) {
       std::cerr << "error: " << accounts.error().message << "\n";
       return 1;
+    }
+
+    // Before any worker opens the search index at its new path.
+    if (!migrated) {
+      run_startup_migration(directory, *accounts);
+      migrated = true;
     }
 
     // Start anything new.

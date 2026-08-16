@@ -18,7 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct MailApp: App {
+struct AlapApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   /// Owned here so the menu commands and the window share one store.
   @State private var store = MailStore()

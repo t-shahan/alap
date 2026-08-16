@@ -3,6 +3,8 @@
 
 #include "mailengine/keychain.hpp"
 
+#include "mailengine/identity.hpp"
+
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
 
@@ -93,7 +95,8 @@ CFRef<CFMutableDictionaryRef> base_query(const std::string& service,
 
 }  // namespace
 
-Keychain::Keychain(std::string service) : service_(std::move(service)) {}
+Keychain::Keychain(std::string service)
+    : service_(service.empty() ? identity::keychain_service() : std::move(service)) {}
 
 Result<void> Keychain::store(const std::string& account,
                              const std::string& secret) const {

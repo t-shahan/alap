@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Mail
+@testable import Alap
 
 /// Resolution of `cid:` image references.
 ///

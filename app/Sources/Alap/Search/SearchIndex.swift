@@ -27,7 +27,7 @@ import SQLite3
 /// `deinit` nonisolated and unable to close the connection under Swift 6's
 /// strict concurrency rules.
 final class SearchIndex {
-  private static let log = Logger(subsystem: "dev.local.mailapp", category: "search")
+  private static let log = Logger(subsystem: AppIdentity.bundleID, category: "search")
 
   private var db: OpaquePointer?
 
@@ -38,7 +38,7 @@ final class SearchIndex {
   /// each process.
   static var defaultPath: String {
     let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    return base.appendingPathComponent("dev.local.mailapp/search.db").path
+    return AppIdentity.applicationSupport.appendingPathComponent("search.db").path
   }
 
   /// True when the index file exists and opened successfully.

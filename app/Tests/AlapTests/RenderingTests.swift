@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Mail
+@testable import Alap
 
 /// Row decoding and the reading pane's HTML document.
 ///

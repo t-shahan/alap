@@ -1,5 +1,5 @@
 import Foundation
-@testable import Mail
+@testable import Alap
 
 /// JSON in the exact shape Zero delivers, so these tests exercise the real
 /// decoders rather than hand-built structs.
