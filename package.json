@@ -18,6 +18,7 @@
     "sidecar": "npm run dev --workspace=@mailapp/sidecar",
     "client:build": "npm run build --workspace=@mailapp/client",
     "dev": "./scripts/dev.sh",
+    "app": "./scripts/run-app.sh",
     "typecheck": "tsc --build --incremental",
     "test": "npm test --workspace=@mailapp/sidecar"
   },
