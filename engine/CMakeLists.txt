@@ -62,6 +62,8 @@ add_library(mailengine_core
   src/oauth.cpp
   src/mime.cpp
   src/gmail.cpp
+  src/store.cpp
+  src/sync.cpp
 )
 target_include_directories(mailengine_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include

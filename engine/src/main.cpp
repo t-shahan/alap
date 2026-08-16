@@ -17,6 +17,8 @@
 #include "mailengine/gmail.hpp"
 #include "mailengine/keychain.hpp"
 #include "mailengine/oauth.hpp"
+#include "mailengine/store.hpp"
+#include "mailengine/sync.hpp"
 #include "mailengine/version.hpp"
 
 namespace {
@@ -42,6 +44,8 @@ int usage() {
                "  labels <account-id>   list Gmail labels\n"
                "  peek <account-id> [n] fetch and print the newest n messages\n"
                "  check <account-id> [n] parse-health report over n messages (no content)\n"
+               "  sync <account-id> [query] [max]  backfill into Postgres\n"
+               "  poll <account-id>     apply changes since the stored watermark\n"
                "  version\n";
   return 64;  // EX_USAGE
 }
@@ -187,6 +191,79 @@ int cmd_check(const std::string& account_id, int count) {
   return 0;
 }
 
+/// Connects to Postgres using ZERO_UPSTREAM_DB.
+bool connect_store(mailengine::PostgresStore& store) {
+  const std::string conninfo = env("ZERO_UPSTREAM_DB");
+  if (conninfo.empty()) {
+    std::cerr << "error: ZERO_UPSTREAM_DB is not set (source .env)\n";
+    return false;
+  }
+  if (auto connected = store.connect(conninfo); !connected) {
+    std::cerr << "error: " << connected.error().message << "\n";
+    return false;
+  }
+  return true;
+}
+
+void print_stats(const mailengine::SyncStats& stats) {
+  std::cout << "\n  fetched   " << stats.fetched << "\n"
+            << "  written   " << stats.written << "\n"
+            << "  skipped   " << stats.skipped << "  (already stored)\n"
+            << "  deleted   " << stats.deleted << "\n"
+            << "  failed    " << stats.failed << "\n"
+            << "  historyId " << stats.history_id << "\n\n";
+}
+
+int cmd_sync(const std::string& account_id, const std::string& query, int64_t max) {
+  auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
+  mailengine::GmailClient gmail(tokens);
+  mailengine::PostgresStore store;
+  if (!connect_store(store)) return 1;
+
+  mailengine::Syncer syncer(gmail, store, account_id);
+
+  std::cout << "backfilling " << account_id;
+  if (!query.empty()) std::cout << "  query=\"" << query << "\"";
+  if (max > 0) std::cout << "  max=" << max;
+  std::cout << "\n";
+
+  int64_t last_shown = 0;
+  auto stats = syncer.backfill(query, max, true, [&](int64_t done, int64_t total) {
+    if (done - last_shown >= 10 || done == total) {
+      last_shown = done;
+      std::cout << "\r  " << done << " / " << total << std::flush;
+    }
+  });
+  std::cout << "\n";
+
+  if (!stats) {
+    std::cerr << "error: " << stats.error().message << "\n";
+    return 1;
+  }
+  print_stats(*stats);
+  return 0;
+}
+
+int cmd_poll(const std::string& account_id) {
+  auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
+  mailengine::GmailClient gmail(tokens);
+  mailengine::PostgresStore store;
+  if (!connect_store(store)) return 1;
+
+  mailengine::Syncer syncer(gmail, store, account_id);
+  auto stats = syncer.incremental();
+  if (!stats) {
+    if (mailengine::Syncer::needs_full_resync(stats.error())) {
+      std::cerr << "watermark expired; run `mailengined sync " << account_id << "`\n";
+      return 2;
+    }
+    std::cerr << "error: " << stats.error().message << "\n";
+    return 1;
+  }
+  print_stats(*stats);
+  return 0;
+}
+
 int cmd_auth(const std::string& account_id) {
   const mailengine::OAuthClient client(config_from_env());
 
@@ -262,6 +339,15 @@ int main(int argc, char** argv) {
   if (command == "labels") {
     if (argc < 3) return usage();
     return cmd_labels(argv[2]);
+  }
+  if (command == "sync") {
+    if (argc < 3) return usage();
+    return cmd_sync(argv[2], argc > 3 ? argv[3] : "",
+                    argc > 4 ? std::atoll(argv[4]) : 0);
+  }
+  if (command == "poll") {
+    if (argc < 3) return usage();
+    return cmd_poll(argv[2]);
   }
   if (command == "check") {
     if (argc < 3) return usage();
