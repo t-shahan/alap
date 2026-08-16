@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/bridge.ts --bundle --format=iife --outfile=dist/bridge.js --target=safari18",
-    "watch": "npm run build -- --watch"
+    "build": "esbuild src/bridge.ts --bundle --minify --format=iife --outfile=dist/bridge.js --target=safari18 && cp src/index.html src/dev.html dist/",
+    "watch": "esbuild src/bridge.ts --bundle --format=iife --outfile=dist/bridge.js --target=safari18 --watch",
+    "serve": "node --run build && npx --yes http-server dist -p 5173 -c-1 --silent"
   },
   "dependencies": {
     "@mailapp/shared": "*",

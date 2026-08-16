@@ -76,14 +76,23 @@ async function stackIsUp(): Promise<boolean> {
   return cache && sidecar
 }
 
+/**
+ * Factory exists so the client's type can be INFERRED. Annotating
+ * `Zero<typeof schema, typeof mutators>` by hand does not typecheck: the
+ * generic expects `CustomMutatorDefs`, not the `MutatorRegistry` that
+ * `defineMutators` returns.
+ */
+const createClient = () =>
+  new Zero({cacheURL: CACHE_URL, schema, mutators, kvStore: 'mem'})
+
 describe('mutators (integration)', {concurrency: false}, async () => {
   let up = false
-  let zero: Zero<typeof schema, typeof mutators> | undefined
+  let zero: ReturnType<typeof createClient> | undefined
 
   before(async () => {
     up = await stackIsUp()
     if (!up) return
-    zero = new Zero({cacheURL: CACHE_URL, schema, mutators, kvStore: 'mem'})
+    zero = createClient()
   })
 
   after(async () => {

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>zero bridge — dev harness</title>
+    <!--
+      Drives the EXACT same bridge.js the app loads, but in a normal browser.
+
+      Because the bridge falls back to `window.__zeroBridgeOnEvent` when no
+      WebKit message handler is present, every code path exercised here is the
+      one that will run inside WKWebView. This is how the bridge gets debugged
+      with real devtools instead of through a Swift log.
+    -->
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0; padding: 1.5rem;
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: #14161a; color: #d8dee9;
+      }
+      h1 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: #7c8899; margin: 0 0 1rem; }
+      button {
+        font: inherit; background: #232830; color: #d8dee9;
+        border: 1px solid #333b47; border-radius: 6px;
+        padding: .4rem .8rem; margin: 0 .4rem .5rem 0; cursor: pointer;
+      }
+      button:hover { background: #2c323c; border-color: #4a5567; }
+      #log { white-space: pre-wrap; margin-top: 1rem; }
+      .ev { padding: .35rem .6rem; border-left: 2px solid #333b47; margin-bottom: .3rem; }
+      .ev.ready      { border-color: #7cc36e; }
+      .ev.update     { border-color: #5b9dd9; }
+      .ev.connection { border-color: #d9a75b; }
+      .ev.error      { border-color: #d95b5b; color: #ffb3b3; }
+      .t { color: #7c8899; }
+    </style>
+  </head>
+  <body>
+    <h1>Zero bridge — dev harness</h1>
+
+    <button onclick="send({type:'subscribe',id:'inbox',query:'threads.unifiedInbox',args:{}})">
+      subscribe inbox
+    </button>
+    <button onclick="send({type:'subscribe',id:'labels',query:'labels.all',args:{}})">
+      subscribe labels
+    </button>
+    <button onclick="send({type:'unsubscribe',id:'inbox'})">unsubscribe inbox</button>
+    <button onclick="document.getElementById('log').innerHTML=''">clear</button>
+
+    <div id="log"></div>
+
+    <script>
+      const log = document.getElementById('log')
+      function line(cls, text) {
+        const el = document.createElement('div')
+        el.className = 'ev ' + cls
+        const t = new Date().toISOString().slice(11, 23)
+        el.innerHTML = '<span class="t">' + t + '</span>  ' + text
+        log.prepend(el)
+      }
+      // The bridge calls this when no WebKit handler exists.
+      window.__zeroBridgeOnEvent = ev => {
+        let detail = ''
+        if (ev.type === 'update') {
+          const n = Array.isArray(ev.rows) ? ev.rows.length : (ev.rows ? 1 : 0)
+          detail = ev.id + '  rows=' + n + '  (' + ev.resultType + ')'
+          if (Array.isArray(ev.rows)) {
+            detail += '\n' + ev.rows.map(r => '    · ' + (r.subject ?? r.name ?? r.id)).join('\n')
+          }
+        } else {
+          detail = JSON.stringify(ev)
+        }
+        line(ev.type, '<b>' + ev.type + '</b>  ' + detail)
+      }
+      function send(cmd) {
+        line('cmd', '→ ' + JSON.stringify(cmd))
+        window.__zeroBridge.receive(JSON.stringify(cmd))
+      }
+    </script>
+    <script src="./bridge.js"></script>
+  </body>
+</html>
