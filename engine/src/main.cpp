@@ -51,7 +51,7 @@ int usage() {
                "  labels <account-id>   list Gmail labels\n"
                "  peek <account-id> [n] fetch and print the newest n messages\n"
                "  check <account-id> [n] parse-health report over n messages (no content)\n"
-               "  sync <account-id> [query] [max]  backfill into Postgres\n"
+               "  sync <account-id> [query] [max] [workers]  backfill into Postgres\n"
                "  poll <account-id>     apply changes since the stored watermark\n"
                "  drain <account-id>    push queued local changes to Gmail\n"
                "  daemon <account-id> [seconds]  run both loops continuously\n"
@@ -287,7 +287,8 @@ void print_stats(const mailengine::SyncStats& stats) {
             << "  historyId " << stats.history_id << "\n\n";
 }
 
-int cmd_sync(const std::string& account_id, const std::string& query, int64_t max) {
+int cmd_sync(const std::string& account_id, const std::string& query, int64_t max,
+             int workers) {
   auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
   mailengine::GmailClient gmail(tokens);
   mailengine::PostgresStore store;
@@ -300,15 +301,24 @@ int cmd_sync(const std::string& account_id, const std::string& query, int64_t ma
   std::cout << "backfilling " << account_id;
   if (!query.empty()) std::cout << "  query=\"" << query << "\"";
   if (max > 0) std::cout << "  max=" << max;
-  std::cout << "\n";
+  std::cout << "  workers=" << workers << "\n";
 
   int64_t last_shown = 0;
-  auto stats = syncer.backfill(query, max, true, [&](int64_t done, int64_t total) {
-    if (done - last_shown >= 10 || done == total) {
-      last_shown = done;
-      std::cout << "\r  " << done << " / " << total << std::flush;
-    }
-  });
+  const auto began = std::chrono::steady_clock::now();
+  auto stats = syncer.backfill(
+      query, max, true,
+      [&](int64_t done, int64_t total) {
+        if (done - last_shown >= 25 || done == total) {
+          last_shown = done;
+          const double seconds = std::chrono::duration<double>(
+                                     std::chrono::steady_clock::now() - began)
+                                     .count();
+          const double rate = seconds > 0 ? done / seconds : 0;
+          std::cout << "\r  " << done << " / " << total << "   " << std::fixed
+                    << std::setprecision(1) << rate << " msg/s" << std::flush;
+        }
+      },
+      workers);
   std::cout << "\n";
 
   if (!stats) {
@@ -589,7 +599,8 @@ int main(int argc, char** argv) {
   if (command == "sync") {
     if (argc < 3) return usage();
     return cmd_sync(argv[2], argc > 3 ? argv[3] : "",
-                    argc > 4 ? std::atoll(argv[4]) : 0);
+                    argc > 4 ? std::atoll(argv[4]) : 0,
+                    argc > 5 ? std::atoi(argv[5]) : 16);
   }
   if (command == "poll") {
     if (argc < 3) return usage();

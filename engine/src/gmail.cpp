@@ -168,6 +168,10 @@ TokenProvider::TokenProvider(OAuthConfig config, std::string account_id)
     : oauth_(std::move(config)), account_id_(std::move(account_id)) {}
 
 Result<std::string> TokenProvider::access_token() {
+  // Held across the refresh so concurrent workers cannot each mint their own
+  // token; the first to arrive refreshes and the rest reuse the result.
+  const std::lock_guard<std::mutex> lock(mutex_);
+
   if (!cached_.access_token.empty() && !cached_.needs_refresh()) {
     return cached_.access_token;
   }

@@ -260,8 +260,18 @@ TEST(SearchIndex, SurvivesPunctuationHeavyInput) {
 TEST(EditDistance, MeasuresKnownPairs) {
   EXPECT_EQ(SearchIndex::edit_distance("kitten", "sitting", 5), 3);
   EXPECT_EQ(SearchIndex::edit_distance("budget", "budget", 2), 0);
-  EXPECT_EQ(SearchIndex::edit_distance("recieve", "receive", 2), 2);
   EXPECT_EQ(SearchIndex::edit_distance("meeting", "meating", 2), 1);
+}
+
+TEST(EditDistance, CountsATranspositionAsOneEdit) {
+  // Damerau-Levenshtein, not plain Levenshtein. Transposition is the most
+  // common typo, and charging 2 for it loses the right word: measured on a
+  // real mailbox, "invioce" tied with "invite" and "reciept" lost to "recipe".
+  EXPECT_EQ(SearchIndex::edit_distance("recieve", "receive", 2), 1);
+  EXPECT_EQ(SearchIndex::edit_distance("invioce", "invoice", 2), 1);
+  EXPECT_EQ(SearchIndex::edit_distance("reciept", "receipt", 2), 1);
+  // ...and still separates genuinely different words.
+  EXPECT_GT(SearchIndex::edit_distance("reciept", "recipe", 1), 1);
 }
 
 TEST(EditDistance, StopsAtTheBound) {

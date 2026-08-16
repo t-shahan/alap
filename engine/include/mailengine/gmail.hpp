@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -100,6 +101,11 @@ struct HistoryPage {
 /// Access tokens last an hour. Rather than making every call site handle
 /// expiry, this caches the current token and mints a new one from the stored
 /// refresh token when it is within a minute of expiring.
+///
+/// Thread-safe: the parallel fetch pool shares ONE provider across workers, so
+/// a token is refreshed once rather than once per thread. Everything else in
+/// this file remains single-threaded — each worker owns its own GmailClient
+/// and therefore its own curl handle.
 class TokenProvider {
  public:
   TokenProvider(OAuthConfig config, std::string account_id);
@@ -111,6 +117,7 @@ class TokenProvider {
   OAuthClient oauth_;
   std::string account_id_;
   TokenSet cached_;
+  std::mutex mutex_;
 };
 
 /// @brief The single write operation the outbox drainer needs.
@@ -142,6 +149,13 @@ class LabelWriter {
 class GmailClient : public LabelWriter {
  public:
   GmailClient(TokenProvider& tokens);
+
+  /// @brief The shared token source.
+  ///
+  /// Exposed so the parallel fetch pool can construct additional clients that
+  /// authenticate as the same account without each holding its own credential
+  /// or triggering its own refresh.
+  [[nodiscard]] TokenProvider& tokens() const noexcept { return tokens_; }
 
   /// @brief Lists every label in the mailbox.
   [[nodiscard]] Result<std::vector<GmailLabel>> list_labels();

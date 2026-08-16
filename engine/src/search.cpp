@@ -431,31 +431,50 @@ Result<std::vector<SearchHit>> SearchIndex::search(const std::string& query,
 
 int SearchIndex::edit_distance(std::string_view a, std::string_view b,
                                int max_distance) {
+  // Damerau-Levenshtein (optimal string alignment), NOT plain Levenshtein.
+  //
+  // A transposition is the most common typo people make, and plain Levenshtein
+  // charges 2 edits for one — which is enough to lose the right word. Measured
+  // on a real mailbox: "invioce" scored equal to "invoice" and "invite", and
+  // "reciept" lost to "recipe". Counting a swap as a single edit separates
+  // them cleanly.
   // Length alone can rule a candidate out before any work happens, which is
   // what keeps a vocabulary scan cheap.
   const auto size_a = static_cast<int>(a.size());
   const auto size_b = static_cast<int>(b.size());
   if (std::abs(size_a - size_b) > max_distance) return max_distance + 1;
 
-  // Two rows rather than a full matrix: only the previous row is ever needed.
-  std::vector<int> previous(static_cast<size_t>(size_b) + 1);
-  std::vector<int> current(static_cast<size_t>(size_b) + 1);
+  // Three rows: a transposition looks back two rows and two columns.
+  const auto width = static_cast<size_t>(size_b) + 1;
+  std::vector<int> before(width, 0);
+  std::vector<int> previous(width);
+  std::vector<int> current(width);
   for (int j = 0; j <= size_b; ++j) previous[static_cast<size_t>(j)] = j;
 
   for (int i = 1; i <= size_a; ++i) {
     current[0] = i;
     int row_best = current[0];
     for (int j = 1; j <= size_b; ++j) {
-      const int cost = a[static_cast<size_t>(i - 1)] == b[static_cast<size_t>(j - 1)] ? 0 : 1;
-      current[static_cast<size_t>(j)] =
-          std::min({current[static_cast<size_t>(j - 1)] + 1,
-                    previous[static_cast<size_t>(j)] + 1,
-                    previous[static_cast<size_t>(j - 1)] + cost});
-      row_best = std::min(row_best, current[static_cast<size_t>(j)]);
+      const auto ui = static_cast<size_t>(i);
+      const auto uj = static_cast<size_t>(j);
+      const int cost = a[ui - 1] == b[uj - 1] ? 0 : 1;
+
+      int value = std::min({current[uj - 1] + 1,      // insertion
+                            previous[uj] + 1,          // deletion
+                            previous[uj - 1] + cost}); // substitution
+
+      // Transposition: the previous two characters are swapped.
+      if (i > 1 && j > 1 && a[ui - 1] == b[uj - 2] && a[ui - 2] == b[uj - 1]) {
+        value = std::min(value, before[uj - 2] + 1);
+      }
+
+      current[uj] = value;
+      row_best = std::min(row_best, value);
     }
-    // Every remaining row can only increase the distance, so once the best
-    // value in this row exceeds the bound the answer is settled.
+    // Later rows can only increase the distance, so once the best value in
+    // this row exceeds the bound the answer is settled.
     if (row_best > max_distance) return max_distance + 1;
+    before.swap(previous);
     previous.swap(current);
   }
   return previous[static_cast<size_t>(size_b)];
@@ -484,16 +503,15 @@ Result<std::vector<std::string>> SearchIndex::similar_terms(const std::string& t
                    std::max(1, static_cast<int>(term.size()) - max_distance));
   sqlite3_bind_int(select.get(), 3, static_cast<int>(term.size()) + max_distance);
 
-  // Score on edit distance AND shared prefix.
+  // Score on edit distance, with shared prefix and equal length as tiebreaks.
   //
-  // Distance alone corrects badly here, for a structural reason: the
-  // vocabulary is porter-stemmed, so it contains "meet" rather than "meeting".
-  // A user's typo "meetign" is 3 edits from "meet" but only 2 from the
-  // unrelated "mention", so pure distance picks the wrong word.
+  // The prefix term is deliberately WEAK. An earlier version weighted it
+  // heavily to rescue stemmed vocabulary entries, but spell_term is unstemmed
+  // so that need is gone — and a strong prefix bonus actively misfires:
+  // "invioce" was corrected to "invite" (4 shared characters) instead of
+  // "invoice" (3). Distance now dominates, prefix only separates ties.
   //
-  // Real typos almost always preserve the opening characters, so a long shared
-  // prefix is strong evidence. Weighting distance x10 keeps it dominant while
-  // letting the prefix break ties and rescue stemmed forms.
+  // Equal length is a genuine signal because a transposition preserves it.
   const auto shared_prefix = [](std::string_view a, std::string_view b) {
     size_t i = 0;
     while (i < a.size() && i < b.size() &&
@@ -509,7 +527,18 @@ Result<std::vector<std::string>> SearchIndex::similar_terms(const std::string& t
     std::string candidate = select.column(0);
     const int distance = edit_distance(term, candidate, max_distance);
     if (distance <= max_distance && distance > 0) {
-      const int score = distance * 10 - shared_prefix(term, candidate);
+      // Distance dominates; everything else only separates exact ties.
+      //
+      // Ties are common at distance 1 — "acount" is one edit from both
+      // "account" (insertion) and "amount" (substitution). Document frequency
+      // is the right arbiter there, and the vocabulary scan already delivers
+      // rows in frequency order, so a stable sort preserves it. An earlier
+      // equal-length bonus overrode that and picked "amount" and "fight" over
+      // "account" and "flight".
+      //
+      // Shared prefix stays as a weak, capped nudge for the same-distance
+      // same-frequency case.
+      const int score = distance * 100 - std::min(shared_prefix(term, candidate), 3);
       scored.emplace_back(score, std::move(candidate));
     }
   }

@@ -3,8 +3,12 @@
 
 #include "mailengine/sync.hpp"
 
+#include <algorithm>
+#include <optional>
 #include <set>
+#include <thread>
 #include <utility>
+#include <vector>
 
 #include "mailengine/ids.hpp"
 
@@ -55,7 +59,8 @@ bool Syncer::ingest_one(const std::string& remote_id, bool write_body,
 }
 
 Result<SyncStats> Syncer::backfill(const std::string& query, int64_t max_messages,
-                                   bool write_bodies, const ProgressFn& on_progress) {
+                                   bool write_bodies, const ProgressFn& on_progress,
+                                   int fetch_workers) {
   SyncStats stats;
 
   // 1. Identify the mailbox and capture the watermark FIRST. Anything that
@@ -94,23 +99,79 @@ Result<SyncStats> Syncer::backfill(const std::string& query, int64_t max_message
       return page.error();
     }
 
+    // Resume support: already-stored messages are skipped without a fetch,
+    // which is what makes restarting a partial backfill cheap. Do this first
+    // so the fetch pool only handles genuinely new work.
+    std::vector<std::string> to_fetch;
     for (const auto& remote_id : page->message_ids) {
-      if (max_messages > 0 && stats.written + stats.skipped >= max_messages) {
+      if (max_messages > 0 &&
+          stats.written + stats.skipped + static_cast<int64_t>(to_fetch.size()) >=
+              max_messages) {
         break;
       }
-
-      // Resume support: a message already stored is skipped without a fetch,
-      // which is what makes restarting a partial backfill cheap.
       auto exists = store_.has_message(account_id_, remote_id);
       if (exists && *exists) {
         ++stats.skipped;
         continue;
       }
+      to_fetch.push_back(remote_id);
+    }
 
-      (void)ingest_one(remote_id, write_bodies, stats, touched_threads);
+    // Fetch concurrently, write serially.
+    //
+    // The network is the bottleneck and parallelises cleanly; Postgres is local
+    // and fast, so keeping writes on this thread avoids extra connections and
+    // leaves transaction ordering untouched.
+    if (!to_fetch.empty()) {
+      const int workers =
+          std::max(1, std::min(fetch_workers, static_cast<int>(to_fetch.size())));
 
-      if (on_progress) {
-        on_progress(stats.written + stats.skipped, total_estimate);
+      // Each worker owns a GmailClient, and therefore its own curl handle —
+      // a CURL* may only be used by one thread at a time. They share the
+      // TokenProvider, which is mutex-guarded.
+      std::vector<std::optional<GmailMessage>> fetched(to_fetch.size());
+      std::vector<std::thread> pool;
+      pool.reserve(static_cast<size_t>(workers));
+
+      for (int worker = 0; worker < workers; ++worker) {
+        pool.emplace_back([&, worker] {
+          GmailClient client(gmail_.tokens());
+          // Stride rather than contiguous chunks, so a slow run of large
+          // messages does not leave one worker finishing long after the rest.
+          for (size_t i = static_cast<size_t>(worker); i < to_fetch.size();
+               i += static_cast<size_t>(workers)) {
+            auto message = client.get_message(to_fetch[i]);
+            if (message) {
+              fetched[i] = std::move(*message);
+            }
+          }
+        });
+      }
+      for (auto& thread : pool) thread.join();
+
+      for (size_t i = 0; i < fetched.size(); ++i) {
+        if (!fetched[i]) {
+          ++stats.failed;
+          continue;
+        }
+        ++stats.fetched;
+        if (auto written =
+                store_.upsert_message(account_id_, *fetched[i], write_bodies);
+            !written) {
+          ++stats.failed;
+          continue;
+        }
+        if (search_ != nullptr) {
+          (void)search_->index_message(
+              account_id_, ids::thread(account_id_, fetched[i]->thread_id),
+              ids::message(account_id_, fetched[i]->id), *fetched[i]);
+        }
+        ++stats.written;
+        touched_threads.insert(ids::thread(account_id_, fetched[i]->thread_id));
+
+        if (on_progress) {
+          on_progress(stats.written + stats.skipped, total_estimate);
+        }
       }
     }
 
