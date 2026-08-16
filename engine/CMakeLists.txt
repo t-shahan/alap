@@ -64,6 +64,7 @@ add_library(mailengine_core
   src/gmail.cpp
   src/store.cpp
   src/sync.cpp
+  src/outbox.cpp
 )
 target_include_directories(mailengine_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include

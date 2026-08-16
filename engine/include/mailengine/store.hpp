@@ -102,6 +102,32 @@ class PostgresStore {
   [[nodiscard]] Result<bool> has_message(const std::string& account_id,
                                          const std::string& remote_message_id);
 
+  /// @brief One claimed outbox row.
+  struct OutboxItem {
+    std::string id;
+    std::string op;       ///< matches the outbox_op enum
+    std::string payload;  ///< raw JSONB
+    int attempts = 0;
+  };
+
+  /// @brief Atomically claims up to `limit` pending operations.
+  ///
+  /// Uses `FOR UPDATE SKIP LOCKED`, so several drainers can run concurrently
+  /// without ever handing the same row to two of them — and a drainer that
+  /// dies mid-flight leaves its rows recoverable rather than locked forever.
+  [[nodiscard]] Result<std::vector<OutboxItem>> claim_outbox(
+      const std::string& account_id, int limit = 20);
+
+  /// @brief Marks a claimed operation as applied.
+  [[nodiscard]] Result<void> complete_outbox(const std::string& outbox_id);
+
+  /// @brief Records a failure.
+  /// @param permanent When true the row becomes `failed` and stops retrying;
+  ///        otherwise it returns to `pending` for another attempt.
+  [[nodiscard]] Result<void> fail_outbox(const std::string& outbox_id,
+                                         const std::string& error,
+                                         bool permanent);
+
   /// @brief Runs `fn` inside a transaction, rolling back if it fails.
   [[nodiscard]] Result<void> transaction(const std::function<Result<void>()>& fn);
 
@@ -111,6 +137,10 @@ class PostgresStore {
   /// a subject line containing a quote cannot alter the statement.
   [[nodiscard]] Result<void> exec(const std::string& sql,
                                   const std::vector<std::string>& params = {});
+
+  /// @brief Executes a statement and returns its rows as strings.
+  [[nodiscard]] Result<std::vector<std::vector<std::string>>> query(
+      const std::string& sql, const std::vector<std::string>& params = {});
 
  private:
   /// Opaque `PGconn*`, kept as void* so libpq-fe.h stays out of this header.

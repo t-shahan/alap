@@ -141,6 +141,21 @@ class GmailClient {
   /// @brief Fetches and parses one message in full.
   [[nodiscard]] Result<GmailMessage> get_message(const std::string& message_id);
 
+  /// @brief Adds and/or removes labels across many messages in one call.
+  ///
+  /// This is the single write primitive Gmail exposes for the operations we
+  /// care about. Archive is `removeLabelIds: ["INBOX"]`; mark-read is
+  /// `removeLabelIds: ["UNREAD"]`; star is `addLabelIds: ["STARRED"]`.
+  ///
+  /// Naturally idempotent — adding a label already present, or removing one
+  /// already absent, is a no-op. That is what makes outbox retries safe.
+  ///
+  /// @param remote_message_ids Gmail message ids. Max 1000 per call.
+  [[nodiscard]] Result<void> batch_modify(
+      const std::vector<std::string>& remote_message_ids,
+      const std::vector<std::string>& add_label_ids,
+      const std::vector<std::string>& remove_label_ids);
+
   /// @brief Lists changes since `start_history_id`.
   ///
   /// This is the mechanism that makes refresh fast: instead of re-scanning the
@@ -156,6 +171,10 @@ class GmailClient {
 
   /// Issues an authenticated GET, retrying on rate limits and 5xx.
   [[nodiscard]] Result<std::string> api_get(const std::string& path);
+
+  /// Issues an authenticated JSON POST, with the same retry policy.
+  [[nodiscard]] Result<std::string> api_post(const std::string& path,
+                                             const std::string& json_body);
 };
 
 /// @brief Converts a Gmail `messages.get` JSON body into a `GmailMessage`.

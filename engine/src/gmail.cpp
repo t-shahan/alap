@@ -191,6 +191,70 @@ Result<std::string> TokenProvider::access_token() {
 
 GmailClient::GmailClient(TokenProvider& tokens) : tokens_(tokens) {}
 
+namespace {
+
+/// True for failures that are worth retrying rather than surfacing.
+///
+/// Rate limits are a normal part of a large backfill, and 5xx is transient.
+/// Everything else is a real failure: returning immediately keeps genuine bugs
+/// from being buried under five silent retries.
+bool is_retryable(long status, const std::string& body) {
+  if (status == 429 || status >= 500) return true;
+  return status == 403 && body.find("ateLimitExceeded") != std::string::npos;
+}
+
+}  // namespace
+
+Result<std::string> GmailClient::api_post(const std::string& path,
+                                          const std::string& json_body) {
+  for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
+    auto token = tokens_.access_token();
+    if (!token) {
+      return token.error();
+    }
+
+    auto response = http_.post(kApiBase + path, json_body, "application/json",
+                               {{"Authorization", "Bearer " + *token}});
+    if (!response) {
+      return response.error();
+    }
+    if (response->ok()) {
+      return response->body;
+    }
+    if (!is_retryable(response->status, response->body)) {
+      return make_error("gmail POST " + path + " failed: " + response->body,
+                        static_cast<int>(response->status));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250 << attempt));
+  }
+  return make_error("gmail POST " + path + " exhausted retries");
+}
+
+Result<void> GmailClient::batch_modify(
+    const std::vector<std::string>& remote_message_ids,
+    const std::vector<std::string>& add_label_ids,
+    const std::vector<std::string>& remove_label_ids) {
+  if (remote_message_ids.empty()) {
+    return Result<void>{};  // nothing to do is success, not an error
+  }
+  if (remote_message_ids.size() > 1000) {
+    return make_error("batchModify accepts at most 1000 ids per call");
+  }
+
+  json request;
+  request["ids"] = remote_message_ids;
+  request["addLabelIds"] = add_label_ids;
+  request["removeLabelIds"] = remove_label_ids;
+
+  // batchModify answers 204 No Content on success, so an empty body here is
+  // the expected outcome rather than a sign something went wrong.
+  auto response = api_post("/messages/batchModify", request.dump());
+  if (!response) {
+    return response.error();
+  }
+  return Result<void>{};
+}
+
 Result<std::string> GmailClient::api_get(const std::string& path) {
   for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
     auto token = tokens_.access_token();
@@ -208,23 +272,13 @@ Result<std::string> GmailClient::api_get(const std::string& path) {
       return response->body;
     }
 
-    // 429 and 403-with-rateLimitExceeded are expected during a large backfill,
-    // not errors. 5xx is transient. Everything else is a real failure and
-    // returning immediately avoids masking a bug behind retries.
-    const bool rate_limited =
-        response->status == 429 ||
-        (response->status == 403 &&
-         response->body.find("ateLimitExceeded") != std::string::npos);
-    const bool transient = response->status >= 500;
-
-    if (!rate_limited && !transient) {
+    if (!is_retryable(response->status, response->body)) {
       return make_error("gmail " + path + " failed: " + response->body,
                         static_cast<int>(response->status));
     }
 
     // Exponential backoff: 250ms, 500ms, 1s, 2s...
-    const auto delay = std::chrono::milliseconds(250 << attempt);
-    std::this_thread::sleep_for(delay);
+    std::this_thread::sleep_for(std::chrono::milliseconds(250 << attempt));
   }
 
   return make_error("gmail " + path + " exhausted retries");

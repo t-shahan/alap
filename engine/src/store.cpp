@@ -335,6 +335,91 @@ Result<void> PostgresStore::set_history_id(const std::string& account_id,
       {account_id, history_id});
 }
 
+Result<std::vector<std::vector<std::string>>> PostgresStore::query(
+    const std::string& sql, const std::vector<std::string>& params) {
+  auto* conn = static_cast<PGconn*>(conn_);
+  if (conn == nullptr) return make_error("not connected to postgres");
+
+  std::vector<const char*> values;
+  values.reserve(params.size());
+  for (const auto& param : params) values.push_back(param.c_str());
+
+  const ResultGuard result(PQexecParams(
+      conn, sql.c_str(), static_cast<int>(params.size()), nullptr,
+      values.empty() ? nullptr : values.data(), nullptr, nullptr, 0));
+
+  if (result.status() != PGRES_TUPLES_OK) {
+    return make_error(std::string("query failed: ") + PQerrorMessage(conn));
+  }
+
+  std::vector<std::vector<std::string>> rows;
+  const int row_count = PQntuples(result.get());
+  const int column_count = PQnfields(result.get());
+  rows.reserve(static_cast<size_t>(row_count));
+
+  for (int r = 0; r < row_count; ++r) {
+    std::vector<std::string> row;
+    row.reserve(static_cast<size_t>(column_count));
+    for (int c = 0; c < column_count; ++c) {
+      // NULL and empty string both surface as empty; no column read here is
+      // nullable in a way that distinction matters.
+      row.emplace_back(PQgetisnull(result.get(), r, c) ? ""
+                                                       : PQgetvalue(result.get(), r, c));
+    }
+    rows.push_back(std::move(row));
+  }
+  return rows;
+}
+
+Result<std::vector<PostgresStore::OutboxItem>> PostgresStore::claim_outbox(
+    const std::string& account_id, int limit) {
+  // FOR UPDATE SKIP LOCKED is the whole trick. Rows are selected and marked
+  // in_flight atomically, and any row another transaction already holds is
+  // skipped rather than waited on — so concurrent drainers never collide and
+  // never block each other.
+  auto rows = query(
+      R"(UPDATE outbox SET status = 'in_flight',
+                           attempts = attempts + 1,
+                           updated_at = now()
+         WHERE id IN (
+           SELECT id FROM outbox
+           WHERE status = 'pending' AND account_id = $1
+           ORDER BY created_at
+           FOR UPDATE SKIP LOCKED
+           LIMIT $2
+         )
+         RETURNING id, op::text, payload::text, attempts)",
+      {account_id, std::to_string(limit)});
+  if (!rows) return rows.error();
+
+  std::vector<OutboxItem> items;
+  items.reserve(rows->size());
+  for (const auto& row : *rows) {
+    if (row.size() < 4) continue;
+    items.push_back(OutboxItem{
+        .id = row[0], .op = row[1], .payload = row[2], .attempts = std::stoi(row[3])});
+  }
+  return items;
+}
+
+Result<void> PostgresStore::complete_outbox(const std::string& outbox_id) {
+  return exec(
+      "UPDATE outbox SET status = 'done', last_error = NULL, updated_at = now() "
+      "WHERE id = $1",
+      {outbox_id});
+}
+
+Result<void> PostgresStore::fail_outbox(const std::string& outbox_id,
+                                        const std::string& error, bool permanent) {
+  // Back to 'pending' means the next drain picks it up again. 'failed' is
+  // terminal and surfaces in the UI through the outbox.unresolved query, so a
+  // permanently failed archive is visible rather than silently lost.
+  return exec(
+      "UPDATE outbox SET status = $2::outbox_status, last_error = $3, "
+      "updated_at = now() WHERE id = $1",
+      {outbox_id, permanent ? "failed" : "pending", error});
+}
+
 Result<int64_t> PostgresStore::count_messages(const std::string& account_id) {
   auto* conn = static_cast<PGconn*>(conn_);
   if (conn == nullptr) return make_error("not connected to postgres");

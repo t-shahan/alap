@@ -11,12 +11,15 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <chrono>
 #include <optional>
+#include <thread>
 #include <string>
 
 #include "mailengine/gmail.hpp"
 #include "mailengine/keychain.hpp"
 #include "mailengine/oauth.hpp"
+#include "mailengine/outbox.hpp"
 #include "mailengine/store.hpp"
 #include "mailengine/sync.hpp"
 #include "mailengine/version.hpp"
@@ -46,6 +49,8 @@ int usage() {
                "  check <account-id> [n] parse-health report over n messages (no content)\n"
                "  sync <account-id> [query] [max]  backfill into Postgres\n"
                "  poll <account-id>     apply changes since the stored watermark\n"
+               "  drain <account-id>    push queued local changes to Gmail\n"
+               "  daemon <account-id> [seconds]  run both loops continuously\n"
                "  version\n";
   return 64;  // EX_USAGE
 }
@@ -264,6 +269,70 @@ int cmd_poll(const std::string& account_id) {
   return 0;
 }
 
+int cmd_drain(const std::string& account_id) {
+  auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
+  mailengine::GmailClient gmail(tokens);
+  mailengine::PostgresStore store;
+  if (!connect_store(store)) return 1;
+
+  mailengine::OutboxDrainer drainer(gmail, store, account_id);
+  auto stats = drainer.drain_once();
+  if (!stats) {
+    std::cerr << "error: " << stats.error().message << "\n";
+    return 1;
+  }
+  std::cout << "  claimed  " << stats->claimed << "\n"
+            << "  applied  " << stats->applied << "\n"
+            << "  retrying " << stats->retrying << "\n"
+            << "  failed   " << stats->failed
+            << (stats->failed ? "   <-- visible in the app" : "") << "\n";
+  return 0;
+}
+
+/// Runs both loops forever.
+///
+/// The outbox is drained BEFORE polling, so a change the user just made
+/// reaches Gmail before we ask Gmail what changed. Reversing the order would
+/// briefly show the pre-mutation state coming back from the server.
+int cmd_daemon(const std::string& account_id, int interval_seconds) {
+  auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
+  mailengine::GmailClient gmail(tokens);
+  mailengine::PostgresStore store;
+  if (!connect_store(store)) return 1;
+
+  mailengine::Syncer syncer(gmail, store, account_id);
+  mailengine::OutboxDrainer drainer(gmail, store, account_id);
+
+  std::cout << "daemon started for " << account_id << "  (every "
+            << interval_seconds << "s, Ctrl-C to stop)\n";
+
+  while (true) {
+    if (auto drained = drainer.drain_once(); drained) {
+      if (drained->applied > 0 || drained->failed > 0) {
+        std::cout << "  outbox: applied " << drained->applied << ", failed "
+                  << drained->failed << "\n";
+      }
+    } else {
+      std::cerr << "  outbox error: " << drained.error().message << "\n";
+    }
+
+    if (auto polled = syncer.incremental(); polled) {
+      if (polled->written > 0 || polled->deleted > 0) {
+        std::cout << "  sync: " << polled->written << " written, "
+                  << polled->deleted << " deleted\n";
+      }
+    } else if (mailengine::Syncer::needs_full_resync(polled.error())) {
+      std::cerr << "  watermark expired; run `mailengined sync " << account_id
+                << "`\n";
+      return 2;
+    } else {
+      std::cerr << "  sync error: " << polled.error().message << "\n";
+    }
+
+    std::this_thread::sleep_for(std::chrono::seconds(interval_seconds));
+  }
+}
+
 int cmd_auth(const std::string& account_id) {
   const mailengine::OAuthClient client(config_from_env());
 
@@ -348,6 +417,14 @@ int main(int argc, char** argv) {
   if (command == "poll") {
     if (argc < 3) return usage();
     return cmd_poll(argv[2]);
+  }
+  if (command == "drain") {
+    if (argc < 3) return usage();
+    return cmd_drain(argv[2]);
+  }
+  if (command == "daemon") {
+    if (argc < 3) return usage();
+    return cmd_daemon(argv[2], argc > 3 ? std::atoi(argv[3]) : 15);
   }
   if (command == "check") {
     if (argc < 3) return usage();
