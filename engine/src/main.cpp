@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <chrono>
+#include <filesystem>
 #include <optional>
 #include <thread>
 #include <string>
@@ -20,6 +21,7 @@
 #include "mailengine/keychain.hpp"
 #include "mailengine/oauth.hpp"
 #include "mailengine/outbox.hpp"
+#include "mailengine/search.hpp"
 #include "mailengine/store.hpp"
 #include "mailengine/sync.hpp"
 #include "mailengine/version.hpp"
@@ -51,6 +53,8 @@ int usage() {
                "  poll <account-id>     apply changes since the stored watermark\n"
                "  drain <account-id>    push queued local changes to Gmail\n"
                "  daemon <account-id> [seconds]  run both loops continuously\n"
+               "  search <account-id> <query>    full-text search the local index\n"
+               "  reindex <account-id>  rebuild the search index from Postgres\n"
                "  version\n";
   return 64;  // EX_USAGE
 }
@@ -196,6 +200,57 @@ int cmd_check(const std::string& account_id, int count) {
   return 0;
 }
 
+/// Path to the FTS5 index.
+///
+/// Application Support rather than the project directory, because the Swift
+/// app reads this same file and must be able to find it regardless of its
+/// working directory. Both sides compute the identical path.
+std::string search_index_path() {
+  const std::string configured = env("MAILENGINE_SEARCH_DB");
+  if (!configured.empty()) return configured;
+
+  const std::string home = env("HOME");
+  const std::string dir = home + "/Library/Application Support/dev.local.mailapp";
+  std::filesystem::create_directories(dir);
+  return dir + "/search.db";
+}
+
+/// Opens the search index, reporting failure but not aborting: the index is
+/// disposable, and sync is more important than search.
+bool open_search(mailengine::SearchIndex& index) {
+  if (auto opened = index.open(search_index_path()); !opened) {
+    std::cerr << "warning: search index unavailable: " << opened.error().message
+              << "\n";
+    return false;
+  }
+  return true;
+}
+
+int cmd_search(const std::string& account_id, const std::string& query) {
+  (void)account_id;
+  mailengine::SearchIndex index;
+  if (!open_search(index)) return 1;
+
+  auto hits = index.search(query, 20);
+  if (!hits) {
+    std::cerr << "error: " << hits.error().message << "\n";
+    return 1;
+  }
+  std::cout << hits->size() << " thread(s) for \"" << query << "\"  (index holds "
+            << index.count().value_or(0) << " messages)\n\n";
+  for (const auto& hit : *hits) {
+    std::cout << "  " << hit.subject << "\n      " << hit.thread_id << "\n";
+  }
+  return 0;
+}
+
+/// Rebuilds the FTS5 index from Postgres.
+///
+/// The index is disposable by design — deleting the file and running this is
+/// always safe, and it is the only way to index a mailbox that was synced
+/// before search existed.
+int cmd_reindex(const std::string& account_id);
+
 /// Connects to Postgres using ZERO_UPSTREAM_DB.
 bool connect_store(mailengine::PostgresStore& store) {
   const std::string conninfo = env("ZERO_UPSTREAM_DB");
@@ -225,7 +280,9 @@ int cmd_sync(const std::string& account_id, const std::string& query, int64_t ma
   mailengine::PostgresStore store;
   if (!connect_store(store)) return 1;
 
-  mailengine::Syncer syncer(gmail, store, account_id);
+  mailengine::SearchIndex index;
+  const bool indexing = open_search(index);
+  mailengine::Syncer syncer(gmail, store, account_id, indexing ? &index : nullptr);
 
   std::cout << "backfilling " << account_id;
   if (!query.empty()) std::cout << "  query=\"" << query << "\"";
@@ -255,7 +312,9 @@ int cmd_poll(const std::string& account_id) {
   mailengine::PostgresStore store;
   if (!connect_store(store)) return 1;
 
-  mailengine::Syncer syncer(gmail, store, account_id);
+  mailengine::SearchIndex index;
+  const bool indexing = open_search(index);
+  mailengine::Syncer syncer(gmail, store, account_id, indexing ? &index : nullptr);
   auto stats = syncer.incremental();
   if (!stats) {
     if (mailengine::Syncer::needs_full_resync(stats.error())) {
@@ -300,7 +359,9 @@ int cmd_daemon(const std::string& account_id, int interval_seconds) {
   mailengine::PostgresStore store;
   if (!connect_store(store)) return 1;
 
-  mailengine::Syncer syncer(gmail, store, account_id);
+  mailengine::SearchIndex index;
+  const bool indexing = open_search(index);
+  mailengine::Syncer syncer(gmail, store, account_id, indexing ? &index : nullptr);
   mailengine::OutboxDrainer drainer(gmail, store, account_id);
 
   std::cout << "daemon started for " << account_id << "  (every "
@@ -331,6 +392,44 @@ int cmd_daemon(const std::string& account_id, int interval_seconds) {
 
     std::this_thread::sleep_for(std::chrono::seconds(interval_seconds));
   }
+}
+
+int cmd_reindex(const std::string& account_id) {
+  mailengine::PostgresStore store;
+  if (!connect_store(store)) return 1;
+
+  mailengine::SearchIndex index;
+  if (!open_search(index)) return 1;
+  if (auto cleared = index.clear(); !cleared) {
+    std::cerr << "error: " << cleared.error().message << "\n";
+    return 1;
+  }
+
+  auto rows = store.query(
+      R"(SELECT m.id, m.thread_id, m.subject, m.from_name, m.from_email,
+                COALESCE(b.text_body, m.snippet)
+         FROM message m
+         LEFT JOIN message_body b ON b.message_id = m.id
+         WHERE m.account_id = $1)",
+      {account_id});
+  if (!rows) {
+    std::cerr << "error: " << rows.error().message << "\n";
+    return 1;
+  }
+
+  int64_t indexed = 0;
+  for (const auto& row : *rows) {
+    if (row.size() < 6) continue;
+    if (index
+            .index_document(account_id, row[1], row[0], row[2],
+                            row[3] + " " + row[4], row[5])
+            .has_value()) {
+      ++indexed;
+    }
+  }
+
+  std::cout << "  indexed " << indexed << " messages\n";
+  return 0;
 }
 
 int cmd_auth(const std::string& account_id) {
@@ -425,6 +524,14 @@ int main(int argc, char** argv) {
   if (command == "daemon") {
     if (argc < 3) return usage();
     return cmd_daemon(argv[2], argc > 3 ? std::atoi(argv[3]) : 15);
+  }
+  if (command == "reindex") {
+    if (argc < 3) return usage();
+    return cmd_reindex(argv[2]);
+  }
+  if (command == "search") {
+    if (argc < 4) return usage();
+    return cmd_search(argv[2], argv[3]);
   }
   if (command == "check") {
     if (argc < 3) return usage();

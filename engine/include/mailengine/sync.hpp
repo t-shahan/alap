@@ -10,6 +10,7 @@
 
 #include "mailengine/gmail.hpp"
 #include "mailengine/result.hpp"
+#include "mailengine/search.hpp"
 #include "mailengine/store.hpp"
 
 namespace mailengine {
@@ -33,7 +34,11 @@ using ProgressFn = std::function<void(int64_t, int64_t)>;
 /// replication carries them the rest of the way.
 class Syncer {
  public:
-  Syncer(GmailClient& gmail, PostgresStore& store, std::string account_id);
+  /// @param search Optional FTS5 index, updated as messages are ingested.
+  ///        Passing nullptr skips indexing — useful when rebuilding Postgres
+  ///        without touching search, or vice versa.
+  Syncer(GmailClient& gmail, PostgresStore& store, std::string account_id,
+         SearchIndex* search = nullptr);
 
   /// @brief Full backfill.
   ///
@@ -72,6 +77,7 @@ class Syncer {
   GmailClient& gmail_;
   PostgresStore& store_;
   std::string account_id_;
+  SearchIndex* search_;
 
   /// Fetches, parses and stores one message. Returns false on failure.
   [[nodiscard]] bool ingest_one(const std::string& remote_id, bool write_body,

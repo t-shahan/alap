@@ -10,8 +10,12 @@
 
 namespace mailengine {
 
-Syncer::Syncer(GmailClient& gmail, PostgresStore& store, std::string account_id)
-    : gmail_(gmail), store_(store), account_id_(std::move(account_id)) {}
+Syncer::Syncer(GmailClient& gmail, PostgresStore& store, std::string account_id,
+               SearchIndex* search)
+    : gmail_(gmail),
+      store_(store),
+      account_id_(std::move(account_id)),
+      search_(search) {}
 
 bool Syncer::needs_full_resync(const Error& error) {
   // Gmail returns 404 when startHistoryId predates its retention window.
@@ -31,6 +35,15 @@ bool Syncer::ingest_one(const std::string& remote_id, bool write_body,
   if (!written) {
     ++stats.failed;
     return false;
+  }
+
+  // Index for search. A failure here is logged but not fatal: the index is
+  // disposable and rebuildable from Postgres, so losing a document must never
+  // cost us the message itself.
+  if (search_ != nullptr) {
+    (void)search_->index_message(account_id_,
+                                 ids::thread(account_id_, message->thread_id),
+                                 ids::message(account_id_, message->id), *message);
   }
 
   ++stats.written;
@@ -158,6 +171,9 @@ Result<SyncStats> Syncer::incremental() {
         if (auto deleted = store_.delete_message(account_id_, change.message_id);
             deleted) {
           ++stats.deleted;
+        }
+        if (search_ != nullptr) {
+          (void)search_->remove_message(ids::message(account_id_, change.message_id));
         }
         if (!change.thread_id.empty()) {
           touched_threads.insert(ids::thread(account_id_, change.thread_id));

@@ -84,9 +84,11 @@ private struct ThreadList: View {
     Group {
       if store.threads.isEmpty && store.threadsLoaded {
         ContentUnavailableView(
-          "Nothing here",
-          systemImage: "checkmark.circle",
-          description: Text("This mailbox is empty.")
+          store.isSearching ? "No matches" : "Nothing here",
+          systemImage: store.isSearching ? "magnifyingglass" : "checkmark.circle",
+          description: Text(store.isSearching
+            ? "Nothing in the local index matches that."
+            : "This mailbox is empty.")
         )
       } else {
         List(store.threads, selection: $store.selectedThread) { thread in
@@ -115,7 +117,8 @@ private struct ThreadList: View {
         .animation(Theme.Motion.standard, value: store.threads)
       }
     }
-    .navigationTitle(store.selectedLabel?.name ?? "All Inboxes")
+    .navigationTitle(store.isSearching ? "Search" : (store.selectedLabel?.name ?? "All Inboxes"))
+    .searchable(text: $store.searchText, placement: .toolbar, prompt: "Search mail")
   }
 }
 

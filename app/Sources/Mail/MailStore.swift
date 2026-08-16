@@ -15,6 +15,14 @@ import Observation
 @Observable
 final class MailStore {
   let bridge = ZeroBridge()
+  let search = SearchIndex()
+
+  /// Current search text. Empty means the normal label view.
+  var searchText: String = "" {
+    didSet { resubscribeThreads() }
+  }
+
+  var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespaces).isEmpty }
 
   private(set) var accounts: [AccountRow] = []
   private(set) var labels: [LabelRow] = []
@@ -85,6 +93,33 @@ final class MailStore {
   /// sidebar click.
   private func resubscribeThreads() {
     threadsLoaded = false
+
+    // STAGE TWO of search. FTS5 has already matched and returned thread ids;
+    // feeding them through ZQL rather than rendering SQLite rows directly is
+    // what keeps results live — a thread marked read while the results are on
+    // screen updates itself.
+    if isSearching {
+      let ids = search.threadIDs(matching: searchText)
+      if ids.isEmpty {
+        threads = []
+        threadsLoaded = true
+        bridge.unsubscribe(id: threadSubscriptionID)
+        return
+      }
+      bridge.subscribe(
+        id: threadSubscriptionID,
+        query: "threads.byIds",
+        args: ["ids": .array(ids.map { .string($0) })],
+        as: ThreadRow.self
+      ) { [weak self] rows, isComplete in
+        // FTS5 ranked these by relevance; ZQL returns them by recency. Restore
+        // the relevance order, since that is what the user asked for.
+        let rank = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($1, $0) })
+        self?.threads = rows.sorted { (rank[$0.id] ?? .max) < (rank[$1.id] ?? .max) }
+        if isComplete { self?.threadsLoaded = true }
+      }
+      return
+    }
 
     if let label = selectedLabel {
       bridge.subscribe(
