@@ -1,0 +1,17 @@
+{
+  "name": "@mailapp/client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/bridge.ts --bundle --format=iife --outfile=dist/bridge.js --target=safari18",
+    "watch": "npm run build -- --watch"
+  },
+  "dependencies": {
+    "@mailapp/shared": "*",
+    "@rocicorp/zero": "^1.7.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

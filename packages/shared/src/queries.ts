@@ -1,0 +1,133 @@
+/**
+ * ZQL query definitions.
+ *
+ * Every query is defined once and runs in two places: optimistically on the
+ * client against the local store, and authoritatively on the server (via the
+ * `/api/query` endpoint) to produce the ZQL that zero-cache actually executes.
+ * Clients never send raw ZQL — they send a query *name* plus arguments, which
+ * is why every parameterised query needs a validator: those arguments arrive
+ * from an untrusted client.
+ */
+
+import {defineQueries, defineQuery} from '@rocicorp/zero'
+import {z} from 'zod'
+import {zql} from './schema.ts'
+
+/** Default page size for the thread list. */
+const THREAD_PAGE_SIZE = 100
+
+export const queries = defineQueries({
+  accounts: {
+    /** Every connected account, for the sidebar and account badges. */
+    all: defineQuery(() => zql.account.orderBy('sortOrder', 'asc')),
+  },
+
+  labels: {
+    /**
+     * Sidebar labels with their unread badges.
+     *
+     * `unreadCount` is read straight off the row. ZQL has no aggregates, so
+     * this is not a `COUNT(*)` — it is the denormalised column maintained by
+     * the Postgres trigger. That is the whole reason the trigger exists.
+     */
+    forAccount: defineQuery(z.object({accountId: z.string()}), ({args: {accountId}}) =>
+      zql.label.where('accountId', accountId).orderBy('sortOrder', 'asc'),
+    ),
+
+    /** All labels across all accounts, for the unified sidebar. */
+    all: defineQuery(() => zql.label.orderBy('sortOrder', 'asc')),
+  },
+
+  threads: {
+    /**
+     * THE LIST VIEW QUERY.
+     *
+     * Note what this does *not* do: no `.related()` at all. It returns bare
+     * `thread` rows and nothing else, because subject, snippet, participants
+     * and counts are all denormalised onto the thread. No message rows, no
+     * bodies, no attachment metadata crosses the wire to render the list.
+     *
+     * That is the single biggest lever on perceived speed — roughly 200 bytes
+     * per row instead of tens of kilobytes.
+     */
+    inLabel: defineQuery(
+      z.object({
+        labelId: z.string(),
+        limit: z.number().int().positive().max(1000).optional(),
+      }),
+      ({args: {labelId, limit}}) =>
+        zql.thread
+          // thread → messages → labels. Threads have no direct label link
+          // because labels are per-message in Gmail: a thread is "in the
+          // inbox" if *any* of its messages still carries INBOX.
+          .whereExists('messages', m => m.whereExists('labels', l => l.where('id', labelId)))
+          .orderBy('lastMessageAt', 'desc')
+          .limit(limit ?? THREAD_PAGE_SIZE),
+    ),
+
+    /**
+     * Unified inbox across every connected account.
+     *
+     * Filters on `remoteId` rather than `id`: each account has its own INBOX
+     * label row (`acct_1|INBOX`, `acct_2|INBOX`), but they all share the
+     * provider-side name.
+     */
+    unifiedInbox: defineQuery(
+      z.object({limit: z.number().int().positive().max(1000).optional()}),
+      ({args: {limit}}) =>
+        zql.thread
+          .whereExists('messages', m =>
+            m.whereExists('labels', l => l.where('remoteId', 'INBOX')),
+          )
+          .orderBy('lastMessageAt', 'desc')
+          .limit(limit ?? THREAD_PAGE_SIZE),
+    ),
+
+    /**
+     * THE READING PANE QUERY.
+     *
+     * The mirror image of `inLabel`: one thread, but fully hydrated —
+     * messages in chronological order, each with its body, attachments and
+     * labels. This is the only query that ever pulls `messageBody`, which is
+     * why that table was split out in the first place.
+     */
+    detail: defineQuery(z.object({threadId: z.string()}), ({args: {threadId}}) =>
+      zql.thread
+        .where('id', threadId)
+        .related('messages', m =>
+          m
+            .orderBy('sentAt', 'asc')
+            .related('body')
+            .related('attachments')
+            .related('labels'),
+        )
+        .one(),
+    ),
+
+    /**
+     * SEARCH — stage two of the two-stage pattern.
+     *
+     * ZQL has no full-text search, so the C++ engine's SQLite FTS5 index does
+     * the matching and returns thread IDs. Feeding them back through ZQL keeps
+     * the result set *reactive*: if a new mail arrives in a matching thread,
+     * or someone marks one read, the search results update live. A plain FTS5
+     * query would return a dead snapshot.
+     */
+    byIds: defineQuery(
+      z.object({ids: z.array(z.string()).max(500)}),
+      ({args: {ids}}) => zql.thread.where('id', 'IN', ids).orderBy('lastMessageAt', 'desc'),
+    ),
+  },
+
+  outbox: {
+    /**
+     * In-flight and failed remote operations, for sync status in the UI.
+     *
+     * Surfacing this is what stops the app from silently diverging from Gmail:
+     * if an archive fails permanently, the user finds out.
+     */
+    unresolved: defineQuery(() =>
+      zql.outbox.where('status', 'IN', ['pending', 'in_flight', 'failed']).orderBy('createdAt', 'asc'),
+    ),
+  },
+})

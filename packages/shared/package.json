@@ -1,0 +1,13 @@
+{
+  "name": "@mailapp/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@rocicorp/zero": "^1.7.0",
+    "zod": "^3.24.0"
+  }
+}
