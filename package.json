@@ -1,0 +1,31 @@
+{
+  "name": "mac-email-app",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/shared",
+    "packages/sidecar",
+    "packages/client"
+  ],
+  "scripts": {
+    "db:start": "brew services start postgresql@18",
+    "db:stop": "brew services stop postgresql@18",
+    "db:psql": "psql mailapp",
+    "zero:cache": "npm run zero:cache --workspace=@mailapp/sidecar",
+    "sidecar": "npm run dev --workspace=@mailapp/sidecar",
+    "client:build": "npm run build --workspace=@mailapp/client",
+    "dev": "./scripts/dev.sh",
+    "typecheck": "tsc --build --incremental"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  },
+  "allowScripts": {
+    "@rocicorp/zero-sqlite3@1.1.4": true,
+    "esbuild@0.24.2": true,
+    "protobufjs@7.6.5": true
+  }
+}

@@ -1,0 +1,26 @@
+# Secrets — never commit
+.env
+.env.local
+*.pem
+client_secret*.json
+
+# Local runtime state: Postgres data, zero-cache SQLite replica, FTS index
+.data/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# C++ / CMake
+engine/build/
+compile_commands.json
+
+# Xcode
+app/build/
+*.xcuserstate
+xcuserdata/
+DerivedData/
+
+# macOS
+.DS_Store
