@@ -110,6 +110,49 @@ class PostgresStore {
     int attempts = 0;
   };
 
+  /// @brief Everything needed to download one attachment.
+  struct PendingAttachment {
+    std::string id;                    ///< attachment row id
+    std::string remote_message_id;     ///< Gmail message id
+    std::string remote_attachment_id;  ///< Gmail attachment id
+    std::string filename;              ///< display name only, never a path
+    std::string mime_type;
+    int64_t size_bytes = 0;
+    std::string content_hash;  ///< empty until downloaded
+    std::string local_path;    ///< empty until downloaded
+  };
+
+  /// @brief Loads an attachment row and its message's Gmail id.
+  ///
+  /// The join is necessary because Gmail addresses attachments as
+  /// `messages/{messageId}/attachments/{id}` — the attachment id alone is not
+  /// addressable.
+  [[nodiscard]] Result<PendingAttachment> attachment_for_download(
+      const std::string& attachment_id);
+
+  /// @brief Records a completed download.
+  ///
+  /// Writes the path but NOT the bytes: the blob lives in a content-addressed
+  /// cache on disk, because everything in Postgres is replicated into
+  /// zero-cache's SQLite replica and diffed on every sync.
+  [[nodiscard]] Result<void> record_attachment_download(
+      const std::string& attachment_id, const std::string& content_hash,
+      const std::string& local_path, int64_t size_bytes);
+
+  /// @brief Subscribes to a Postgres NOTIFY channel.
+  ///
+  /// The daemon otherwise learns about new work only when its poll interval
+  /// elapses, which makes a click feel like it did nothing for up to that long.
+  /// Downloading an attachment made that indefensible: the user is waiting.
+  [[nodiscard]] Result<void> listen(const std::string& channel);
+
+  /// @brief Blocks until a notification arrives or `timeout_ms` elapses.
+  ///
+  /// @return True if a notification arrived, false on timeout. Both are normal;
+  ///         the timeout is what preserves periodic polling as a backstop, so a
+  ///         missed NOTIFY delays work rather than losing it.
+  [[nodiscard]] Result<bool> wait_for_notification(int timeout_ms);
+
   /// @brief Atomically claims up to `limit` pending operations.
   ///
   /// Uses `FOR UPDATE SKIP LOCKED`, so several drainers can run concurrently

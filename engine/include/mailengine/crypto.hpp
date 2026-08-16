@@ -35,6 +35,14 @@ namespace mailengine::crypto {
 /// decode.
 [[nodiscard]] std::string base64_encode(const std::vector<uint8_t>& bytes);
 
+/// @brief Encodes bytes as lowercase hexadecimal.
+///
+/// Used for content hashes that become filesystem paths. Hex rather than
+/// base64 precisely because it is case-insensitive-safe: APFS is case
+/// *preserving* but case *insensitive* by default, so two base64 digests
+/// differing only in case would collide as filenames.
+[[nodiscard]] std::string hex_encode(const std::vector<uint8_t>& bytes);
+
 /// @brief Decodes base64url, tolerating missing padding.
 ///
 /// Also accepts standard base64 (`+` and `/`), because Gmail message bodies

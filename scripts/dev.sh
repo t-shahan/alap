@@ -33,6 +33,17 @@ set +a
 
 mkdir -p .data
 
+# `npm run --workspace` executes with the cwd set to packages/sidecar, so the
+# relative ZERO_REPLICA_FILE in .env would resolve there instead of here — and
+# zero-cache exits with "Cannot open ZERO_REPLICA_FILE" rather than silently
+# building a second replica. Resolve it to an absolute path while we still know
+# where "here" is.
+case "$ZERO_REPLICA_FILE" in
+  /*) ;;
+  *) ZERO_REPLICA_FILE="$PWD/${ZERO_REPLICA_FILE#./}" ;;
+esac
+export ZERO_REPLICA_FILE
+
 if ! pg_isready -q; then
   echo "▸ starting postgres"
   pg_ctl -D "$PGDATA" -l .data/postgres.log start

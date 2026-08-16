@@ -93,7 +93,7 @@ struct ReadingPane: View {
           let attachments = detail.messages.flatMap { $0.attachments }
             .filter { !$0.isInline }
           if !attachments.isEmpty {
-            AttachmentStrip(attachments: attachments)
+            AttachmentStrip(store: store, attachments: attachments)
           }
         } else if store.detailLoaded {
           Text("This thread has no messages.")
@@ -224,6 +224,7 @@ private struct ToolbarPill: View {
 /// and a tooltip that says so, rather than a chip that does nothing when
 /// clicked.
 private struct AttachmentStrip: View {
+  @Bindable var store: MailStore
   let attachments: [AttachmentRow]
 
   var body: some View {
@@ -234,25 +235,13 @@ private struct AttachmentStrip: View {
 
       FlowRow(spacing: Theme.Space.loose) {
         ForEach(attachments) { attachment in
-          HStack(spacing: Theme.Space.base) {
-            Image(systemName: symbol(for: attachment.mimeType))
-              .font(.system(size: 18))
-              .foregroundStyle(Theme.Ink.secondary)
-            VStack(alignment: .leading, spacing: Theme.Space.hair) {
-              Text(attachment.filename)
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Ink.primary)
-                .lineLimit(1)
-              Text(attachment.displaySize)
-                .font(Theme.Font.micro)
-                .fontWeight(.regular)
-                .foregroundStyle(Theme.Ink.secondary)
-            }
-          }
-          .padding(.horizontal, Theme.Space.cosy)
-          .padding(.vertical, Theme.Space.base)
-          .background(Theme.Surface.control, in: .rect(cornerRadius: Theme.Radius.control))
-          .help("Attachment downloads are not implemented yet")
+          AttachmentChip(
+            attachment: attachment,
+            state: store.state(of: attachment),
+            symbol: symbol(for: attachment.mimeType),
+            open: { Task { await store.openAttachment(attachment) } },
+            download: { Task { await store.downloadAttachment(attachment) } }
+          )
         }
       }
     }
@@ -264,6 +253,153 @@ private struct AttachmentStrip: View {
     if mimeType.contains("zip") || mimeType.contains("compressed") { return "doc.zipper" }
     if mimeType.contains("csv") || mimeType.contains("sheet") { return "tablecells" }
     return "doc.text"
+  }
+}
+
+/// One attachment, in whatever state it is actually in.
+///
+/// The chip is deliberately the same size in every state — the icon is swapped
+/// and the subtitle changes, but nothing reflows. Attachments arrive in rows,
+/// and a chip that grew while downloading would shove its neighbours around
+/// under the pointer that is about to click them.
+private struct AttachmentChip: View {
+  let attachment: AttachmentRow
+  let state: MailStore.AttachmentState
+  let symbol: String
+  let open: () -> Void
+  let download: () -> Void
+
+  @State private var isHovering = false
+
+  var body: some View {
+    Button(action: primaryAction) {
+      HStack(spacing: Theme.Space.base) {
+        leading
+          .frame(width: 20, height: 20)
+
+        VStack(alignment: .leading, spacing: Theme.Space.hair) {
+          Text(attachment.filename)
+            .font(Theme.Font.body)
+            .foregroundStyle(Theme.Ink.primary)
+            .lineLimit(1)
+          Text(subtitle)
+            .font(Theme.Font.micro)
+            .fontWeight(.regular)
+            .foregroundStyle(subtitleTint)
+            .lineLimit(1)
+        }
+      }
+      .padding(.horizontal, Theme.Space.cosy)
+      .padding(.vertical, Theme.Space.base)
+      .background(
+        isHovering && isInteractive ? Theme.Surface.selection : Theme.Surface.control,
+        in: .rect(cornerRadius: Theme.Radius.control)
+      )
+      .overlay {
+        RoundedRectangle(cornerRadius: Theme.Radius.control)
+          .strokeBorder(
+            isHovering && isInteractive ? Theme.Accent.blue.opacity(0.5) : .clear
+          )
+      }
+    }
+    .buttonStyle(.plain)
+    .disabled(!isInteractive)
+    .onHover { isHovering = $0 }
+    .help(helpText)
+    .contextMenu {
+      if case .ready(let file) = state {
+        Button("Open") { NSWorkspace.shared.open(file) }
+        Button("Reveal in Finder") {
+          NSWorkspace.shared.activateFileViewerSelecting([file])
+        }
+        Divider()
+        Button("Save a Copy…") { saveCopy(of: file) }
+      } else if case .idle = state {
+        Button("Download", action: download)
+      } else if case .failed = state {
+        Button("Try Again", action: download)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var leading: some View {
+    switch state {
+    case .downloading:
+      ProgressView().controlSize(.small)
+    case .failed:
+      Image(systemName: "exclamationmark.triangle.fill")
+        .font(.system(size: 16))
+        .foregroundStyle(Theme.Accent.red)
+    case .ready:
+      Image(systemName: symbol)
+        .font(.system(size: 18))
+        .foregroundStyle(Theme.Accent.blue)
+    case .idle:
+      // The arrow says the chip does something. Without it the design's chips
+      // read as labels, which is exactly how they behaved before.
+      Image(systemName: isHovering ? "arrow.down.circle.fill" : symbol)
+        .font(.system(size: 18))
+        .foregroundStyle(isHovering ? Theme.Accent.blue : Theme.Ink.secondary)
+    case .unavailable:
+      Image(systemName: symbol)
+        .font(.system(size: 18))
+        .foregroundStyle(Theme.Ink.tertiary)
+    }
+  }
+
+  private var subtitle: String {
+    switch state {
+    case .idle: attachment.displaySize
+    case .downloading: "Downloading…"
+    case .ready: attachment.displaySize
+    case .failed: "Failed — click to retry"
+    case .unavailable: attachment.displaySize
+    }
+  }
+
+  private var subtitleTint: Color {
+    if case .failed = state { return Theme.Accent.red }
+    return Theme.Ink.secondary
+  }
+
+  private var isInteractive: Bool {
+    if case .unavailable = state { return false }
+    if case .downloading = state { return false }
+    return true
+  }
+
+  private var helpText: String {
+    switch state {
+    case .idle: "Download \(attachment.filename)"
+    case .downloading: "Downloading \(attachment.filename)…"
+    case .ready: "Open \(attachment.filename)"
+    case .failed(let message): message
+    case .unavailable: "Gmail exposes no downloadable copy of this part"
+    }
+  }
+
+  private func primaryAction() {
+    switch state {
+    case .ready, .idle, .failed: open()
+    case .downloading, .unavailable: break
+    }
+  }
+
+  /// Copies the blob out under its real filename.
+  ///
+  /// The cache stores it under its content hash, so the file on disk is not
+  /// named anything a person would recognise. Exporting is where the display
+  /// name from Postgres finally gets applied — and note it is applied by
+  /// NSSavePanel, which resolves the user's chosen destination itself. The
+  /// email-supplied name never becomes a path we construct.
+  private func saveCopy(of file: URL) {
+    let panel = NSSavePanel()
+    panel.nameFieldStringValue = attachment.filename
+    panel.canCreateDirectories = true
+    guard panel.runModal() == .OK, let destination = panel.url else { return }
+    try? FileManager.default.removeItem(at: destination)
+    try? FileManager.default.copyItem(at: file, to: destination)
   }
 }
 

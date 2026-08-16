@@ -175,7 +175,9 @@ const outbox = table('outbox')
   .columns({
     id: string(),
     accountId: string().from('account_id'),
-    op: enumeration<'modify_labels' | 'mark_read' | 'send' | 'delete_forever'>(),
+    op: enumeration<
+      'modify_labels' | 'mark_read' | 'send' | 'delete_forever' | 'download_attachment'
+    >(),
     payload: json<JsonObject>(),
     status: enumeration<'pending' | 'in_flight' | 'done' | 'failed'>(),
     attempts: number(),

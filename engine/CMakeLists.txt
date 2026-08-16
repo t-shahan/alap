@@ -68,6 +68,7 @@ add_library(mailengine_core
   src/search.cpp
   src/bench.cpp
   src/html.cpp
+  src/attachments.cpp
   src/compose.cpp
 )
 target_include_directories(mailengine_core
@@ -112,6 +113,7 @@ if(MAILENGINE_BUILD_TESTS)
     tests/test_outbox.cpp
     tests/test_search.cpp
     tests/test_html.cpp
+    tests/test_attachments.cpp
     tests/test_compose.cpp
   )
   target_link_libraries(mailengine_tests PRIVATE mailengine_core GTest::gtest_main)

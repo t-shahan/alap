@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -34,6 +35,8 @@ final class MailStore {
 
   private(set) var accounts: [AccountRow] = []
   private(set) var labels: [LabelRow] = []
+  /// Queued and failed remote operations, mirrored from the outbox.
+  private(set) var unresolvedOutbox: [OutboxRow] = []
   private(set) var threads: [ThreadRow] = []
   private(set) var threadsLoaded = false
 
@@ -110,6 +113,14 @@ final class MailStore {
       if !hadLabels, case .label = self.selectedMailbox {
         self.resubscribeThreads()
       }
+    }
+
+    // Queued and failed remote operations. This drives the attachment
+    // download indicators, and — more importantly — is what stops the app from
+    // silently diverging from Gmail when an operation fails for good.
+    bridge.subscribe(id: "outbox", query: "outbox.unresolved", as: OutboxRow.self) {
+      [weak self] rows, _ in
+      self?.unresolvedOutbox = rows
     }
 
     resubscribeThreads()
@@ -404,6 +415,66 @@ final class MailStore {
   /// absent, so round trips do not stack prefixes.
   private static func replySubject(_ original: String) -> String {
     original.lowercased().hasPrefix("re:") ? original : "Re: \(original)"
+  }
+
+  // MARK: Attachments
+
+  /// How an attachment is currently doing.
+  enum AttachmentState: Equatable {
+    /// Not downloaded, and nothing queued.
+    case idle
+    /// An outbox row for it is pending or in flight.
+    case downloading
+    /// The bytes are on disk.
+    case ready(URL)
+    /// The download failed permanently.
+    case failed(String)
+    /// Gmail exposes no attachment id, so there is nothing to fetch.
+    case unavailable
+  }
+
+  /// The outbox id the download mutator derives for an attachment.
+  ///
+  /// Deterministic rather than random, so clicking a chip five times queues
+  /// one download. Must match `attachments.download` in mutators.ts.
+  private func downloadOutboxID(_ attachmentID: String) -> String {
+    "download|\(attachmentID)"
+  }
+
+  func state(of attachment: AttachmentRow) -> AttachmentState {
+    // Disk first: the file being present is the only thing that actually
+    // matters, and it can be true even if the outbox row lingers.
+    if let file = attachment.readyFile { return .ready(file) }
+    guard attachment.canDownload else { return .unavailable }
+
+    if let row = unresolvedOutbox.first(where: { $0.id == downloadOutboxID(attachment.id) }) {
+      if row.isLive { return .downloading }
+      if row.status == "failed" { return .failed(row.lastError ?? "Download failed") }
+    }
+    return .idle
+  }
+
+  /// Queues a download. Harmless to call for something already downloaded —
+  /// the engine checks the blob store and skips the transfer.
+  func downloadAttachment(_ attachment: AttachmentRow) async {
+    guard let accountId = selectedThread?.accountId else { return }
+    try? await bridge.mutate(
+      "attachments.download",
+      args: ["accountId": .string(accountId), "attachmentId": .string(attachment.id)]
+    )
+  }
+
+  /// Opens an attachment, downloading it first if necessary.
+  ///
+  /// Nothing is ever opened straight from the network — the file is on disk
+  /// before it is handed to Launch Services, which is also what lets Quick
+  /// Look and "Reveal in Finder" work on the same path.
+  func openAttachment(_ attachment: AttachmentRow) async {
+    if case .ready(let file) = state(of: attachment) {
+      NSWorkspace.shared.open(file)
+      return
+    }
+    await downloadAttachment(attachment)
   }
 
   func toggleStarOnSelection() async {

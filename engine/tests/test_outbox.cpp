@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
@@ -225,4 +226,104 @@ TEST(ClassifyAttempt, RetriesUpToButNotIncludingTheLimit) {
             OutboxDisposition::Retry);
   EXPECT_EQ(classify_attempt(false, 503, /*attempts=*/5, /*max=*/5),
             OutboxDisposition::Failed);
+}
+
+// MARK: - Attachment downloads
+//
+// The full download path needs Postgres (it reads the attachment row and
+// writes back the resulting path), so these cover the decisions `apply` makes
+// BEFORE reaching the database — which are exactly the ones that decide
+// whether a row is retried forever or abandoned.
+
+namespace {
+
+/// Returns programmed bytes, and records what was asked for.
+class FakeAttachmentFetcher : public AttachmentFetcher {
+ public:
+  struct Call {
+    std::string message_id;
+    std::string attachment_id;
+  };
+
+  std::optional<Error> programmed_error;
+  std::string payload = "attachment bytes";
+  std::vector<Call> calls;
+
+  Result<std::string> get_attachment(const std::string& message_id,
+                                     const std::string& attachment_id) override {
+    calls.push_back(Call{message_id, attachment_id});
+    if (programmed_error) {
+      return *programmed_error;
+    }
+    return payload;
+  }
+};
+
+}  // namespace
+
+TEST(OutboxApply, DownloadFailsAsUnimplementedWhenNoFetcherIsConfigured) {
+  FakeLabelWriter api;
+  OutboxDrainer drainer(api, unused_store(), "acct_test");
+
+  const auto outcome = drainer.apply(item("download_attachment", R"({"attachmentId":"a1"})"));
+
+  ASSERT_FALSE(outcome.has_value());
+  // 501 rather than a generic failure: it is classified as permanent, so the
+  // row fails immediately instead of burning every retry on a capability the
+  // process does not have.
+  EXPECT_EQ(outcome.error().code, 501);
+  EXPECT_EQ(classify_attempt(false, outcome.error().code, 1, 5),
+            OutboxDisposition::Failed);
+}
+
+TEST(OutboxApply, DownloadRequiresBothAFetcherAndABlobStore) {
+  FakeLabelWriter api;
+  FakeAttachmentFetcher fetcher;
+  AttachmentStore blobs{std::filesystem::temp_directory_path() /
+                        "mailengine-outbox-test"};
+
+  // A fetcher with nowhere to put the bytes is not a usable configuration.
+  OutboxDrainer no_store(api, unused_store(), "acct_test", 5,
+                         {.attachments = &fetcher});
+  EXPECT_EQ(no_store.apply(item("download_attachment", R"({"attachmentId":"a1"})"))
+                .error()
+                .code,
+            501);
+
+  // Somewhere to put bytes but no way to fetch them, likewise.
+  OutboxDrainer no_fetcher(api, unused_store(), "acct_test", 5, {.blobs = &blobs});
+  EXPECT_EQ(no_fetcher.apply(item("download_attachment", R"({"attachmentId":"a1"})"))
+                .error()
+                .code,
+            501);
+
+  EXPECT_TRUE(fetcher.calls.empty()) << "no download should have been attempted";
+}
+
+TEST(OutboxApply, DownloadWithNoAttachmentIdFailsPermanently) {
+  FakeLabelWriter api;
+  FakeAttachmentFetcher fetcher;
+  AttachmentStore blobs{std::filesystem::temp_directory_path() /
+                        "mailengine-outbox-test"};
+  OutboxDrainer drainer(api, unused_store(), "acct_test", 5,
+                        {.attachments = &fetcher, .blobs = &blobs});
+
+  // An empty payload can never succeed however many times it is retried.
+  const auto outcome = drainer.apply(item("download_attachment", "{}"));
+
+  ASSERT_FALSE(outcome.has_value());
+  EXPECT_EQ(outcome.error().code, 400);
+  EXPECT_EQ(classify_attempt(false, outcome.error().code, 1, 5),
+            OutboxDisposition::Failed);
+  EXPECT_TRUE(fetcher.calls.empty());
+}
+
+TEST(OutboxApply, DownloadIsNotConfusedWithOtherOps) {
+  FakeLabelWriter api;
+  OutboxDrainer drainer(api, unused_store(), "acct_test");
+
+  // A download must never reach the label API, whatever else it does.
+  (void)drainer.apply(item("download_attachment", R"({"attachmentId":"a1"})"));
+
+  EXPECT_TRUE(api.calls.empty());
 }

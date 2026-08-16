@@ -253,6 +253,79 @@ export const mutators = defineMutators({
     ),
   },
 
+  attachments: {
+    /**
+     * Requests an attachment's bytes.
+     *
+     * Like every other outbox op, this only records intent — the engine owns
+     * all network I/O. What comes back is a `localPath` on the attachment row,
+     * not the bytes: the file goes to a content-addressed cache on disk,
+     * because anything written to Postgres is replicated into zero-cache's
+     * SQLite replica and diffed on every sync. 465 MB of attachments there
+     * would destroy the thing that makes reads instant.
+     *
+     * Deliberately does NOT skip when `localPath` is already set. The cache
+     * lives under `~/Library/Caches`, which macOS may reclaim at any time, so
+     * a recorded path can outlive its file. The caller checks the disk and
+     * asks again if the file is gone; the engine re-checks too and skips the
+     * transfer when the blob is genuinely still there.
+     */
+    download: defineMutator(
+      z.object({
+        accountId: z.string(),
+        attachmentId: z.string(),
+      }),
+      async ({tx, args: {accountId, attachmentId}}) => {
+        const attachment = await tx.run(zql.attachment.where('id', attachmentId).one())
+        if (!attachment) {
+          throw new Error(`download: unknown attachment ${attachmentId}`)
+        }
+        if (!attachment.remoteAttachmentId) {
+          // Gmail inlines very small parts into the message body rather than
+          // exposing an attachment id. There is nothing to fetch.
+          throw new Error(`download: attachment ${attachmentId} has no remote id`)
+        }
+
+        // The outbox id is derived from the attachment rather than random, so
+        // that clicking a chip five times queues one download instead of five.
+        // Every other op uses a client-generated UUID because two archives of
+        // the same thread are two distinct intents; two downloads of the same
+        // file are not.
+        const id = `download|${attachmentId}`
+
+        const existing = await tx.run(zql.outbox.where('id', id).one())
+        if (existing) {
+          // Already queued or being worked on — leave it alone.
+          if (existing.status === 'pending' || existing.status === 'in_flight') {
+            return
+          }
+          // Previously done or failed: hand it back to the drainer. This is
+          // what makes a retry after a cache purge, or after a network
+          // failure, just another click.
+          await tx.mutate.outbox.update({
+            id,
+            status: 'pending',
+            attempts: 0,
+            lastError: null,
+            updatedAt: Date.now(),
+          })
+          return
+        }
+
+        await tx.mutate.outbox.insert({
+          id,
+          accountId,
+          op: 'download_attachment',
+          payload: {attachmentId},
+          status: 'pending',
+          attempts: 0,
+          idempotencyKey: id,
+          ...timestamps(),
+        })
+      },
+    ),
+  },
+
   outbox: {
     /**
      * Retry a permanently-failed operation.

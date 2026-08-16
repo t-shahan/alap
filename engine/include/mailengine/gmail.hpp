@@ -149,6 +149,19 @@ class MessageSender {
       const std::string& raw_message, const std::string& thread_id) = 0;
 };
 
+/// @brief Attachment fetching, extracted for the same dependency-inversion
+/// reason as `LabelWriter` — the drainer's download path is then testable
+/// against programmed payloads and failures, with no network and no account.
+class AttachmentFetcher {
+ public:
+  virtual ~AttachmentFetcher() = default;
+
+  /// @see GmailClient::get_attachment
+  [[nodiscard]] virtual Result<std::string> get_attachment(
+      const std::string& remote_message_id,
+      const std::string& remote_attachment_id) = 0;
+};
+
 /// @brief Read-side Gmail API surface.
 ///
 /// ## Rate limits
@@ -157,7 +170,9 @@ class MessageSender {
 /// `messages.list` is 5, `history.list` is 2, against a 250 unit/second budget.
 /// A 429 or 403 rateLimitExceeded is retried with exponential backoff, which
 /// is a normal part of a large backfill rather than an error.
-class GmailClient : public LabelWriter, public MessageSender {
+class GmailClient : public LabelWriter,
+                    public MessageSender,
+                    public AttachmentFetcher {
  public:
   GmailClient(TokenProvider& tokens);
 
@@ -209,6 +224,21 @@ class GmailClient : public LabelWriter, public MessageSender {
   /// @return The id of the created message.
   [[nodiscard]] Result<std::string> send_message(const std::string& raw_message,
                                                  const std::string& thread_id = {}) override;
+
+  /// @brief Downloads one attachment's bytes.
+  ///
+  /// Gmail returns the payload base64url-encoded inside a JSON envelope, so a
+  /// 40 MB PDF arrives as ~54 MB of JSON that must be fully buffered before it
+  /// can be decoded. That is why downloads are on demand rather than part of
+  /// sync: eagerly fetching this mailbox would move 465 MB.
+  ///
+  /// @param remote_message_id Gmail's message id — the attachment id alone is
+  ///        not addressable.
+  /// @param remote_attachment_id From `AttachmentInfo::remote_attachment_id`.
+  /// @return The decoded raw bytes.
+  [[nodiscard]] Result<std::string> get_attachment(
+      const std::string& remote_message_id,
+      const std::string& remote_attachment_id) override;
 
   /// @brief Lists changes since `start_history_id`.
   ///

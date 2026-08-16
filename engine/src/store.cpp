@@ -4,6 +4,10 @@
 #include "mailengine/store.hpp"
 
 #include <libpq-fe.h>
+#include <sys/select.h>
+
+#include <cerrno>
+#include <cstring>
 
 #include <nlohmann/json.hpp>
 
@@ -381,6 +385,123 @@ Result<std::vector<std::vector<std::string>>> PostgresStore::query(
     rows.push_back(std::move(row));
   }
   return rows;
+}
+
+Result<void> PostgresStore::listen(const std::string& channel) {
+  // The channel name cannot be parameterised — LISTEN takes an identifier, not
+  // a value — so it is restricted to a conservative character set rather than
+  // escaped. Every caller passes a compile-time constant; this exists so that
+  // stays true.
+  for (const char c : channel) {
+    const bool safe = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+    if (!safe) {
+      return make_error("unsafe NOTIFY channel name: " + channel);
+    }
+  }
+  return exec("LISTEN " + channel, {});
+}
+
+Result<bool> PostgresStore::wait_for_notification(int timeout_ms) {
+  auto* conn = static_cast<PGconn*>(conn_);
+  if (conn == nullptr) {
+    return make_error("not connected");
+  }
+
+  // A notification may already be buffered from a previous round trip, in
+  // which case sleeping on the socket would miss it entirely and stall until
+  // the timeout.
+  if (PGnotify* pending = PQnotifies(conn); pending != nullptr) {
+    PQfreemem(pending);
+    return true;
+  }
+
+  const int fd = PQsocket(conn);
+  if (fd < 0) {
+    return make_error("connection has no socket");
+  }
+
+  fd_set readable;
+  FD_ZERO(&readable);
+  FD_SET(fd, &readable);
+  timeval tv{.tv_sec = timeout_ms / 1000,
+             .tv_usec = (timeout_ms % 1000) * 1000};
+
+  const int ready = ::select(fd + 1, &readable, nullptr, nullptr, &tv);
+  if (ready < 0) {
+    // EINTR is not a failure — a signal arrived. Report it as a timeout so the
+    // caller loops round and re-checks its work queue.
+    if (errno == EINTR) {
+      return false;
+    }
+    return make_error(std::string("select failed: ") + std::strerror(errno));
+  }
+  if (ready == 0) {
+    return false;  // timed out; the caller polls anyway
+  }
+
+  if (PQconsumeInput(conn) == 0) {
+    return make_error(std::string("connection lost: ") + PQerrorMessage(conn));
+  }
+
+  // Drain every queued notification. Several clicks in quick succession
+  // produce several NOTIFYs, and one drain pass handles all of the work they
+  // represent, so leaving the rest queued would spin the loop pointlessly.
+  bool notified = false;
+  while (PGnotify* note = PQnotifies(conn)) {
+    PQfreemem(note);
+    notified = true;
+  }
+  return notified;
+}
+
+Result<PostgresStore::PendingAttachment> PostgresStore::attachment_for_download(
+    const std::string& attachment_id) {
+  auto rows = query(
+      R"(SELECT a.id, m.remote_message_id, COALESCE(a.remote_attachment_id, ''),
+                a.filename, a.mime_type, a.size_bytes,
+                COALESCE(a.content_hash, ''), COALESCE(a.local_path, '')
+         FROM attachment a
+         JOIN message m ON m.id = a.message_id
+         WHERE a.id = $1)",
+      {attachment_id});
+  if (!rows) return rows.error();
+  if (rows->empty()) {
+    // A row that does not exist will never exist; this must not be retried.
+    return make_error("no such attachment: " + attachment_id, 404);
+  }
+
+  const auto& row = rows->front();
+  PendingAttachment pending{
+      .id = row[0],
+      .remote_message_id = row[1],
+      .remote_attachment_id = row[2],
+      .filename = row[3],
+      .mime_type = row[4],
+      .size_bytes = std::stoll(row[5]),
+      .content_hash = row[6],
+      .local_path = row[7],
+  };
+
+  if (pending.remote_attachment_id.empty()) {
+    // Gmail inlines very small parts directly in the message body instead of
+    // exposing an attachment id. Those have nothing to fetch.
+    return make_error("attachment has no remote id: " + attachment_id, 404);
+  }
+  return pending;
+}
+
+Result<void> PostgresStore::record_attachment_download(
+    const std::string& attachment_id, const std::string& content_hash,
+    const std::string& local_path, int64_t size_bytes) {
+  // size_bytes is refreshed from what was actually downloaded. Gmail's
+  // reported part size counts the base64 encoding for some part types, so the
+  // metadata captured at sync time can overstate the real file.
+  return exec(
+      R"(UPDATE attachment
+         SET content_hash = $2, local_path = $3, size_bytes = $4,
+             downloaded_at = now()
+         WHERE id = $1)",
+      {attachment_id, content_hash, local_path, std::to_string(size_bytes)});
 }
 
 Result<std::vector<PostgresStore::OutboxItem>> PostgresStore::claim_outbox(

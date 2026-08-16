@@ -11,6 +11,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <iomanip>
@@ -18,6 +19,7 @@
 #include <thread>
 #include <string>
 
+#include "mailengine/attachments.hpp"
 #include "mailengine/gmail.hpp"
 #include "mailengine/html.hpp"
 #include "mailengine/keychain.hpp"
@@ -359,7 +361,11 @@ int cmd_drain(const std::string& account_id) {
   mailengine::PostgresStore store;
   if (!connect_store(store)) return 1;
 
-  mailengine::OutboxDrainer drainer(gmail, store, account_id, 5, &gmail);
+  const mailengine::AttachmentStore blobs{mailengine::AttachmentStore::default_root()};
+  mailengine::OutboxDrainer drainer(gmail, store, account_id, 5,
+                                    {.sender = &gmail,
+                                     .attachments = &gmail,
+                                     .blobs = &blobs});
   auto stats = drainer.drain_once();
   if (!stats) {
     std::cerr << "error: " << stats.error().message << "\n";
@@ -387,10 +393,28 @@ int cmd_daemon(const std::string& account_id, int interval_seconds) {
   mailengine::SearchIndex index;
   const bool indexing = open_search(index);
   mailengine::Syncer syncer(gmail, store, account_id, indexing ? &index : nullptr);
-  mailengine::OutboxDrainer drainer(gmail, store, account_id, 5, &gmail);
+  const mailengine::AttachmentStore blobs{mailengine::AttachmentStore::default_root()};
+  mailengine::OutboxDrainer drainer(gmail, store, account_id, 5,
+                                    {.sender = &gmail,
+                                     .attachments = &gmail,
+                                     .blobs = &blobs});
 
-  std::cout << "daemon started for " << account_id << "  (every "
-            << interval_seconds << "s, Ctrl-C to stop)\n";
+  // Subscribe before the first drain, so a row committed while we were still
+  // starting up cannot slip through the gap between the two.
+  const bool live = store.listen("outbox").has_value();
+  if (!live) {
+    std::cerr << "warning: NOTIFY unavailable; falling back to polling only\n";
+  }
+
+  std::cout << "daemon started for " << account_id << "  (poll every "
+            << interval_seconds << "s"
+            << (live ? ", waking instantly on new work" : "")
+            << ", Ctrl-C to stop)\n";
+
+  // Gmail is only polled on the timer. A NOTIFY means one of OUR rows is
+  // waiting, and asking Gmail what changed would not help — it would just burn
+  // quota on every click.
+  auto next_poll = std::chrono::steady_clock::now();
 
   while (true) {
     if (auto drained = drainer.drain_once(); drained) {
@@ -402,20 +426,42 @@ int cmd_daemon(const std::string& account_id, int interval_seconds) {
       std::cerr << "  outbox error: " << drained.error().message << "\n";
     }
 
-    if (auto polled = syncer.incremental(); polled) {
-      if (polled->written > 0 || polled->deleted > 0) {
-        std::cout << "  sync: " << polled->written << " written, "
-                  << polled->deleted << " deleted\n";
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_poll) {
+      next_poll = now + std::chrono::seconds(interval_seconds);
+
+      if (auto polled = syncer.incremental(); polled) {
+        if (polled->written > 0 || polled->deleted > 0) {
+          std::cout << "  sync: " << polled->written << " written, "
+                    << polled->deleted << " deleted\n";
+        }
+      } else if (mailengine::Syncer::needs_full_resync(polled.error())) {
+        std::cerr << "  watermark expired; run `mailengined sync " << account_id
+                  << "`\n";
+        return 2;
+      } else {
+        std::cerr << "  sync error: " << polled.error().message << "\n";
       }
-    } else if (mailengine::Syncer::needs_full_resync(polled.error())) {
-      std::cerr << "  watermark expired; run `mailengined sync " << account_id
-                << "`\n";
-      return 2;
-    } else {
-      std::cerr << "  sync error: " << polled.error().message << "\n";
     }
 
-    std::this_thread::sleep_for(std::chrono::seconds(interval_seconds));
+    // Sleep until either a NOTIFY arrives or the next Gmail poll is due,
+    // whichever comes first. The timeout is what keeps this a backstop rather
+    // than a dependency: a dropped notification costs latency, never work.
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        next_poll - std::chrono::steady_clock::now());
+    const int timeout_ms =
+        static_cast<int>(std::max<int64_t>(remaining.count(), 0));
+
+    if (!live) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
+      continue;
+    }
+
+    if (auto woke = store.wait_for_notification(timeout_ms); !woke) {
+      std::cerr << "  notify error: " << woke.error().message << "\n";
+      // Do not spin on a broken connection.
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
   }
 }
 
@@ -613,6 +659,54 @@ int cmd_token(const std::string& account_id) {
   return 0;
 }
 
+/// Downloads one attachment by its row id, for diagnosing the fetch path in
+/// isolation from the outbox.
+int cmd_attachment(const std::string& account_id, const std::string& attachment_id) {
+  mailengine::PostgresStore store;
+  if (!connect_store(store)) return 1;
+
+  auto row = store.attachment_for_download(attachment_id);
+  if (!row) {
+    std::cerr << "error: " << row.error().message << "\n";
+    return 1;
+  }
+
+  auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
+  mailengine::GmailClient gmail(tokens);
+  const mailengine::AttachmentStore blobs{mailengine::AttachmentStore::default_root()};
+
+  std::cout << "  " << row->filename << "  (" << row->mime_type << ", "
+            << row->size_bytes << " bytes)\n";
+
+  const auto started = std::chrono::steady_clock::now();
+  auto bytes = gmail.get_attachment(row->remote_message_id, row->remote_attachment_id);
+  if (!bytes) {
+    std::cerr << "error: " << bytes.error().message << "\n";
+    return 1;
+  }
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - started);
+
+  auto blob = blobs.put(*bytes);
+  if (!blob) {
+    std::cerr << "error: " << blob.error().message << "\n";
+    return 1;
+  }
+
+  if (auto recorded = store.record_attachment_download(
+          attachment_id, blob->content_hash, blob->path, blob->size_bytes);
+      !recorded) {
+    std::cerr << "error: " << recorded.error().message << "\n";
+    return 1;
+  }
+
+  std::cout << "  downloaded " << blob->size_bytes << " bytes in "
+            << elapsed.count() << "ms"
+            << (blob->newly_written ? "" : "  (already stored)") << "\n"
+            << "  " << blob->path << "\n";
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -658,6 +752,10 @@ int main(int argc, char** argv) {
   if (command == "daemon") {
     if (argc < 3) return usage();
     return cmd_daemon(argv[2], argc > 3 ? std::atoi(argv[3]) : 15);
+  }
+  if (command == "attachment") {
+    if (argc < 4) return usage();
+    return cmd_attachment(argv[2], argv[3]);
   }
   if (command == "bench-search") {
     std::vector<int64_t> sizes;

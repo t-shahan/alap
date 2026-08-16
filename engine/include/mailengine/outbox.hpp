@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <string>
 
+#include "mailengine/attachments.hpp"
 #include "mailengine/gmail.hpp"
 #include "mailengine/result.hpp"
 #include "mailengine/store.hpp"
@@ -58,15 +59,35 @@ enum class OutboxDisposition {
                                                  int attempts, int max_attempts);
 
 /// @brief Applies queued local mutations to Gmail.
+/// @brief Collaborators the drainer needs for some ops but not others.
+///
+/// Bundled rather than passed as a growing tail of optional pointers, which had
+/// already reached the point where call sites were positional puzzles.
+///
+/// Each is optional, and an op whose collaborator is absent fails as
+/// unimplemented (501) rather than silently reporting success. 501 is
+/// classified as permanent, so such a row fails immediately instead of
+/// consuming every retry first.
+///
+/// Declared at namespace scope rather than nested inside `OutboxDrainer`: a
+/// nested type's default member initializers are not usable in a default
+/// argument of the enclosing class, so `Peripherals p = {}` would not compile.
+struct OutboxPeripherals {
+  /// Required by `send`.
+  MessageSender* sender = nullptr;
+  /// Required by `download_attachment`, together with `blobs`.
+  AttachmentFetcher* attachments = nullptr;
+  /// Where downloaded bytes are written. Not owned.
+  const AttachmentStore* blobs = nullptr;
+};
+
 class OutboxDrainer {
  public:
   /// @param max_attempts Attempts before a row is considered permanently
   ///        failed. Five with exponential backoff spans a few minutes, which
   ///        comfortably covers a transient network outage.
-  /// @param sender Optional. When absent, `send` operations fail as
-  ///        unimplemented rather than silently succeeding.
   OutboxDrainer(LabelWriter& gmail, PostgresStore& store, std::string account_id,
-                int max_attempts = 5, MessageSender* sender = nullptr);
+                int max_attempts = 5, OutboxPeripherals peripherals = {});
 
   /// @brief Claims and applies up to `limit` pending operations.
   ///
@@ -81,8 +102,11 @@ class OutboxDrainer {
   [[nodiscard]] Result<void> apply(const PostgresStore::OutboxItem& item);
 
  private:
+  /// Downloads one attachment and records where it landed.
+  [[nodiscard]] Result<void> download_attachment(const std::string& attachment_id);
+
   LabelWriter& gmail_;
-  MessageSender* sender_;
+  OutboxPeripherals peripherals_;
   PostgresStore& store_;
   std::string account_id_;
   int max_attempts_;

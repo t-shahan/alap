@@ -112,6 +112,17 @@ std::string base64_encode(const std::vector<uint8_t>& bytes) {
   return out;
 }
 
+std::string hex_encode(const std::vector<uint8_t>& bytes) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(bytes.size() * 2);
+  for (const uint8_t byte : bytes) {
+    out += kHex[byte >> 4];
+    out += kHex[byte & 0x0F];
+  }
+  return out;
+}
+
 Result<std::string> base64url_decode(const std::string& encoded) {
   std::string out;
   out.reserve(encoded.size() * 3 / 4);

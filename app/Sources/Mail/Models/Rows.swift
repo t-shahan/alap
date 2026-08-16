@@ -261,10 +261,41 @@ struct AttachmentRow: Decodable, Identifiable, Hashable {
   let mimeType: String
   let sizeBytes: Int
   let isInline: Bool
+  /// Gmail's attachment id. Absent for very small parts, which Gmail inlines
+  /// into the message body rather than exposing separately — those have
+  /// nothing to fetch.
+  let remoteAttachmentId: String?
+  /// Where the engine wrote the bytes. Absent until downloaded.
+  let localPath: String?
+  let contentHash: String?
 
   var displaySize: String {
     ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
   }
+
+  var canDownload: Bool { !(remoteAttachmentId ?? "").isEmpty }
+
+  /// The file on disk, or nil if it is not actually there.
+  ///
+  /// The disk is checked rather than trusting `localPath`, because the blob
+  /// cache lives under `~/Library/Caches` and macOS may reclaim it at any
+  /// time. A recorded path can outlive its file, and treating the row as
+  /// authoritative would mean opening a document that no longer exists.
+  var readyFile: URL? {
+    guard let localPath, !localPath.isEmpty else { return nil }
+    return FileManager.default.fileExists(atPath: localPath)
+      ? URL(fileURLWithPath: localPath) : nil
+  }
+}
+
+/// A queued or failed remote operation.
+struct OutboxRow: Decodable, Identifiable, Hashable {
+  let id: String
+  let op: String
+  let status: String
+  let lastError: String?
+
+  var isLive: Bool { status == "pending" || status == "in_flight" }
 }
 
 /// A thread with its messages hydrated — the reading-pane query's shape.

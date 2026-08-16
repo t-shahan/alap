@@ -289,6 +289,59 @@ Result<std::string> GmailClient::send_message(const std::string& raw_message,
   return root.value("id", std::string{});
 }
 
+Result<std::string> GmailClient::get_attachment(
+    const std::string& remote_message_id,
+    const std::string& remote_attachment_id) {
+  if (remote_message_id.empty() || remote_attachment_id.empty()) {
+    return make_error("attachment id and message id are both required", 400);
+  }
+
+  // Both ids are interpolated into a URL, so both are escaped. Gmail's own ids
+  // are URL-safe in practice, but these arrive via Postgres and the cost of
+  // being wrong here is a malformed request against someone else's mailbox.
+  auto response =
+      api_get("/messages/" + HttpClient::url_encode(remote_message_id) +
+              "/attachments/" + HttpClient::url_encode(remote_attachment_id));
+  if (!response) {
+    return response.error();
+  }
+
+  const auto root = json::parse(*response, nullptr, false);
+  if (root.is_discarded()) {
+    return make_error("attachment response was not valid JSON");
+  }
+
+  const auto encoded = root.value("data", std::string{});
+  if (encoded.empty()) {
+    // A zero-byte attachment is legal, but Gmail omits `data` entirely when
+    // the id is stale — which happens when a message is re-synced and its
+    // attachment ids are reissued. Treat it as retryable-after-resync rather
+    // than silently storing an empty file.
+    return make_error("attachment response carried no data", 404);
+  }
+
+  // Gmail encodes attachment payloads with the URL-safe alphabet, the same as
+  // message bodies.
+  auto decoded = crypto::base64url_decode(encoded);
+  if (!decoded) {
+    return decoded.error();
+  }
+
+  // `size` is Gmail's own count of the decoded bytes. Disagreement means a
+  // truncated transfer, and storing it would poison a content-addressed store
+  // with a blob whose digest is authoritative but whose content is wrong.
+  if (root.contains("size") && root["size"].is_number()) {
+    const auto expected = root["size"].get<int64_t>();
+    if (expected != static_cast<int64_t>(decoded->size())) {
+      return make_error("attachment size mismatch: expected " +
+                        std::to_string(expected) + " bytes, decoded " +
+                        std::to_string(decoded->size()));
+    }
+  }
+
+  return decoded;
+}
+
 Result<std::string> GmailClient::api_get(const std::string& path) {
   for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
     auto token = tokens_.access_token();

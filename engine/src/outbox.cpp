@@ -53,12 +53,54 @@ OutboxDisposition classify_attempt(bool succeeded, int error_code, int attempts,
 
 OutboxDrainer::OutboxDrainer(LabelWriter& gmail, PostgresStore& store,
                              std::string account_id, int max_attempts,
-                             MessageSender* sender)
+                             OutboxPeripherals peripherals)
     : gmail_(gmail),
-      sender_(sender),
+      peripherals_(peripherals),
       store_(store),
       account_id_(std::move(account_id)),
       max_attempts_(max_attempts) {}
+
+Result<void> OutboxDrainer::download_attachment(const std::string& attachment_id) {
+  if (peripherals_.attachments == nullptr || peripherals_.blobs == nullptr) {
+    return make_error("no attachment fetcher configured", 501);
+  }
+  if (attachment_id.empty()) {
+    return make_error("download_attachment requires an attachmentId", 400);
+  }
+
+  auto pending = store_.attachment_for_download(attachment_id);
+  if (!pending) {
+    return pending.error();
+  }
+
+  // Already downloaded, and the blob is still on disk. Downloads are requested
+  // by clicking, and clicking happens more than once; re-fetching several
+  // megabytes because the user double-clicked would be pure waste.
+  //
+  // The disk is checked rather than trusted from the row: the cache lives
+  // under ~/Library/Caches, which macOS may reclaim at any time, so a
+  // local_path recorded in Postgres can outlive its file.
+  if (!pending->content_hash.empty() &&
+      peripherals_.blobs->contains(pending->content_hash)) {
+    return Result<void>{};
+  }
+
+  auto bytes = peripherals_.attachments->get_attachment(
+      pending->remote_message_id, pending->remote_attachment_id);
+  if (!bytes) {
+    return bytes.error();
+  }
+
+  auto blob = peripherals_.blobs->put(*bytes);
+  if (!blob) {
+    return blob.error();
+  }
+
+  // Postgres records the PATH, never the bytes. Anything written here is
+  // replicated into zero-cache's SQLite replica and diffed on every sync.
+  return store_.record_attachment_download(attachment_id, blob->content_hash,
+                                           blob->path, blob->size_bytes);
+}
 
 Result<void> OutboxDrainer::apply(const PostgresStore::OutboxItem& item) {
   const json payload = json::parse(item.payload, nullptr, false);
@@ -82,8 +124,12 @@ Result<void> OutboxDrainer::apply(const PostgresStore::OutboxItem& item) {
     return gmail_.batch_modify(message_ids, add_labels, remove_labels);
   }
 
+  if (item.op == "download_attachment") {
+    return download_attachment(payload.value("attachmentId", ""));
+  }
+
   if (item.op == "send") {
-    if (sender_ == nullptr) {
+    if (peripherals_.sender == nullptr) {
       return make_error("no sender configured", 501);
     }
 
@@ -107,7 +153,8 @@ Result<void> OutboxDrainer::apply(const PostgresStore::OutboxItem& item) {
       return make_error("compose failed: " + raw.error().message, 400);
     }
 
-    auto sent = sender_->send_message(*raw, payload.value("threadId", ""));
+    auto sent =
+        peripherals_.sender->send_message(*raw, payload.value("threadId", ""));
     if (!sent) {
       return sent.error();
     }
