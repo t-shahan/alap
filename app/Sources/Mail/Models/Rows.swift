@@ -277,6 +277,9 @@ struct AttachmentRow: Decodable, Identifiable, Hashable {
   /// into the message body rather than exposing separately — those have
   /// nothing to fetch.
   let remoteAttachmentId: String?
+  /// RFC 2392 Content-ID, without angle brackets. What `<img src="cid:…">`
+  /// refers to.
+  let contentId: String?
   /// Where the engine wrote the bytes. Absent until downloaded.
   let localPath: String?
   let contentHash: String?

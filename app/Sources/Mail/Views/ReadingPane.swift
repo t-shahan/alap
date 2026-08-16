@@ -86,7 +86,8 @@ struct ReadingPane: View {
         if let detail = store.detail, !detail.messages.isEmpty {
           MessageWebView(
             html: MessageDocument.build(for: detail.messages,
-                                        isDark: colorScheme == .dark)
+                                        isDark: colorScheme == .dark),
+            inlineImages: store.inlineImages
           )
           .frame(minHeight: 240)
 

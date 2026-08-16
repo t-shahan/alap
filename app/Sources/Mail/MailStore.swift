@@ -210,6 +210,8 @@ final class MailStore {
       self?.detailLoaded = true
       // The bytes of a requested attachment may have just landed.
       self?.openAnyArrivedAttachments()
+      // Embedded images are part of the message, so fetch them without asking.
+      self?.downloadInlineImages()
     }
   }
 
@@ -549,6 +551,48 @@ final class MailStore {
     guard attachment.canDownload else { return }
     openWhenDownloaded.insert(attachment.id)
     await downloadAttachment(attachment)
+  }
+
+  /// Content-ID → downloaded file, for the thread on screen.
+  ///
+  /// Only the open conversation, never an accumulated cache: the map is what
+  /// the renderer is allowed to reach, so keeping it to one thread means a
+  /// crafted `cid:` cannot address another message's attachments.
+  var inlineImages: [String: URL] {
+    guard let detail else { return [:] }
+    var map: [String: URL] = [:]
+    for attachment in detail.messages.flatMap(\.attachments) {
+      guard attachment.isInline,
+            let contentId = attachment.contentId, !contentId.isEmpty,
+            let file = attachment.readyFile
+      else { continue }
+      map[contentId] = file
+    }
+    return map
+  }
+
+  /// Fetches the inline images the open thread needs to render.
+  ///
+  /// Automatic, unlike a real attachment. An embedded logo is not something
+  /// anyone chooses to download — it is part of the message, and a click-to-see
+  /// placeholder in the middle of a signature is worse than the broken box it
+  /// replaced.
+  ///
+  /// Bounded by what is actually read: only the open thread, and only parts
+  /// that are missing. The whole mailbox holds 225 MB of inline parts, which
+  /// is precisely why this is not done during sync.
+  private func downloadInlineImages() {
+    guard let detail else { return }
+
+    for attachment in detail.messages.flatMap(\.attachments) {
+      guard attachment.isInline,
+            attachment.canDownload,
+            !(attachment.contentId ?? "").isEmpty,
+            attachment.readyFile == nil,
+            case .idle = state(of: attachment)
+      else { continue }
+      Task { await downloadAttachment(attachment) }
+    }
   }
 
   /// Whether a click is still waiting on this attachment's bytes.

@@ -31,6 +31,8 @@ import WebKit
 ///     replace the pane's own document
 struct MessageWebView: NSViewRepresentable {
   let html: String
+  /// Content-ID → downloaded file, for the thread being shown.
+  var inlineImages: [String: URL] = [:]
 
   func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -40,6 +42,12 @@ struct MessageWebView: NSViewRepresentable {
     // sanitiser mistake is not automatically an execution bug.
     config.defaultWebpagePreferences.allowsContentJavaScript = false
 
+    // Embedded images arrive as `cid:` references to MIME parts. A handler has
+    // to be registered before the view exists — the configuration is copied at
+    // construction — which is another reason a single reused web view is the
+    // right shape here.
+    config.setURLSchemeHandler(context.coordinator.imageHandler, forURLScheme: "cid")
+
     let webView = WKWebView(frame: .zero, configuration: config)
     webView.navigationDelegate = context.coordinator
     webView.setValue(false, forKey: "drawsBackground")  // inherit app background
@@ -47,15 +55,30 @@ struct MessageWebView: NSViewRepresentable {
   }
 
   func updateNSView(_ webView: WKWebView, context: Context) {
+    // The handler must know the new thread's images BEFORE the document that
+    // references them is loaded, or every cid: request in the first layout
+    // resolves against the previous conversation.
+    context.coordinator.imageHandler.setResolvable(inlineImages)
+
     // Reloading the same content would reset scroll position on every
     // unrelated redraw, so only load when the document actually changed.
-    guard context.coordinator.loadedHTML != html else { return }
+    //
+    // The resolvable set is part of that identity: images finish downloading
+    // after the document first renders, and without a reload they would stay
+    // broken until the selection moved.
+    let identity = "\(inlineImages.count)|\(inlineImages.keys.sorted().joined(separator: ","))"
+    guard context.coordinator.loadedHTML != html
+            || context.coordinator.loadedImages != identity
+    else { return }
     context.coordinator.loadedHTML = html
+    context.coordinator.loadedImages = identity
     webView.loadHTMLString(html, baseURL: nil)
   }
 
   final class Coordinator: NSObject, WKNavigationDelegate {
     var loadedHTML: String?
+    var loadedImages: String?
+    let imageHandler = InlineImageHandler()
 
     func webView(
       _ webView: WKWebView,
@@ -74,6 +97,12 @@ struct MessageWebView: NSViewRepresentable {
       }
       if url.scheme == "about" {
         decisionHandler(.allow)
+        return
+      }
+      // Image subresources are not navigations, so reaching here with cid:
+      // means something tried to NAVIGATE to one. Never allowed.
+      if url.scheme == "cid" {
+        decisionHandler(.cancel)
         return
       }
 
