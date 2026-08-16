@@ -41,6 +41,7 @@ int usage() {
                "  profile <account-id>  show mailbox profile and history watermark\n"
                "  labels <account-id>   list Gmail labels\n"
                "  peek <account-id> [n] fetch and print the newest n messages\n"
+               "  check <account-id> [n] parse-health report over n messages (no content)\n"
                "  version\n";
   return 64;  // EX_USAGE
 }
@@ -105,6 +106,84 @@ int cmd_peek(const std::string& account_id, int count) {
     }
     std::cout << "\n";
   }
+  return 0;
+}
+
+/// Fetches a sample of real mail and reports parse health in aggregate.
+///
+/// Prints NO message content — only counts. Real inboxes are a far harsher
+/// test of the MIME decoder than any fixture, and building the ingest pipeline
+/// on a parser that silently drops bodies would be a bad trade.
+int cmd_check(const std::string& account_id, int count) {
+  auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
+  mailengine::GmailClient gmail(tokens);
+
+  auto page = gmail.list_messages({}, {}, count);
+  if (!page) {
+    std::cerr << "error: " << page.error().message << "\n";
+    return 1;
+  }
+
+  int parsed = 0, failed = 0;
+  int undecoded_words = 0, non_ascii_subjects = 0, empty_subjects = 0;
+  int no_body = 0, html_only = 0, text_only = 0, both_bodies = 0;
+  int with_attachments = 0, inline_images = 0;
+  int missing_from_name = 0, missing_rfc_id = 0;
+
+  for (const auto& id : page->message_ids) {
+    auto message = gmail.get_message(id);
+    if (!message) {
+      ++failed;
+      std::cerr << "  ! parse failed: " << message.error().message << "\n";
+      continue;
+    }
+    ++parsed;
+
+    // A surviving "=?" means an encoded-word the decoder did not handle —
+    // it would render as gibberish in the UI.
+    if (message->subject.find("=?") != std::string::npos) ++undecoded_words;
+    if (message->subject.empty()) ++empty_subjects;
+    for (const unsigned char c : message->subject) {
+      if (c > 127) { ++non_ascii_subjects; break; }
+    }
+
+    const bool has_text = !message->text_body.empty();
+    const bool has_html = !message->html_body.empty();
+    if (!has_text && !has_html) ++no_body;
+    else if (has_text && has_html) ++both_bodies;
+    else if (has_html) ++html_only;
+    else ++text_only;
+
+    if (!message->attachments.empty()) ++with_attachments;
+    for (const auto& attachment : message->attachments) {
+      if (attachment.is_inline) { ++inline_images; break; }
+    }
+
+    if (message->from.name.empty()) ++missing_from_name;
+    if (message->rfc822_message_id.empty()) ++missing_rfc_id;
+  }
+
+  std::cout << "\n  sampled            " << page->message_ids.size() << "\n"
+            << "  parsed             " << parsed << "\n"
+            << "  parse failures     " << failed
+            << (failed ? "   <-- investigate" : "") << "\n"
+            << "\n  subjects\n"
+            << "    non-ASCII        " << non_ascii_subjects
+            << "   (decoder exercised)\n"
+            << "    undecoded =?..?= " << undecoded_words
+            << (undecoded_words ? "   <-- DECODER BUG" : "   ok") << "\n"
+            << "    empty            " << empty_subjects << "\n"
+            << "\n  bodies\n"
+            << "    text + html      " << both_bodies << "\n"
+            << "    html only        " << html_only << "\n"
+            << "    text only        " << text_only << "\n"
+            << "    NO body          " << no_body
+            << (no_body ? "   <-- investigate" : "   ok") << "\n"
+            << "\n  other\n"
+            << "    with attachments " << with_attachments << "\n"
+            << "    inline images    " << inline_images << "\n"
+            << "    no sender name   " << missing_from_name << "\n"
+            << "    no Message-ID    " << missing_rfc_id << "\n\n";
   return 0;
 }
 
@@ -183,6 +262,10 @@ int main(int argc, char** argv) {
   if (command == "labels") {
     if (argc < 3) return usage();
     return cmd_labels(argv[2]);
+  }
+  if (command == "check") {
+    if (argc < 3) return usage();
+    return cmd_check(argv[2], argc > 3 ? std::atoi(argv[3]) : 40);
   }
   if (command == "peek") {
     if (argc < 3) return usage();
