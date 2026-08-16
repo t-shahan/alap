@@ -116,8 +116,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Ad-hoc signature. Enough for local runs; Developer ID signing and
-# notarisation are Phase 7.
+# Signed with the local development identity when one exists, ad-hoc otherwise.
+# Developer ID signing and notarisation remain Phase 7; this only stops macOS
+# treating every rebuild as a different application.
 #
 # Nested bundles are signed first: codesign seals the outer bundle over the
 # hashes of what it contains, so signing outside-in would immediately invalidate
@@ -127,16 +128,10 @@ PLIST
 # STALE signature on the bundle from an earlier build — so `codesign -dv`
 # happily reported a valid ad-hoc signature while this script was exiting 1 and
 # taking `&& open` down with it.
-echo "▸ signing (ad-hoc)"
+echo "▸ signing"
 # The embedded engine is nested CODE, not a resource, so it must carry its own
 # signature before the outer seal is computed over it.
-if [[ -x "$CONTENTS/Helpers/mailengined" ]]; then
-  codesign --force --sign - --timestamp=none "$CONTENTS/Helpers/mailengined"
-fi
-if [[ -d "$RESOURCE_BUNDLE" ]]; then
-  codesign --force --sign - --timestamp=none "$RESOURCE_BUNDLE"
-fi
-codesign --force --sign - --timestamp=none "$APP"
+./scripts/sign.sh "$CONTENTS/Helpers/mailengined" "$RESOURCE_BUNDLE" "$APP"
 codesign --verify --deep --strict "$APP"
 
 echo "✓ $APP"

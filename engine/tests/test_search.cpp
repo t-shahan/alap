@@ -391,3 +391,52 @@ TEST(SearchIndex, HandlesTimestampCollisions) {
   EXPECT_EQ(*index.count(), 3);
   EXPECT_EQ(index.search("collision")->size(), 3u);
 }
+
+// MARK: - Per-account clearing
+//
+// The index is shared by every mailbox, so rebuilding one account must not
+// touch another. This was a real bug: reindexing one account emptied search for
+// every other one, silently.
+
+TEST(SearchIndex, ClearAccountLeavesOtherAccountsAlone) {
+  auto index = make_index();
+  ASSERT_TRUE(index.index_document("acct_a", "t1", "acct_a|m1", "invoice",
+                                    "Ada", "body one", 1000).has_value());
+  ASSERT_TRUE(index.index_document("acct_b", "t2", "acct_b|m2", "invoice",
+                                    "Ben", "body two", 2000).has_value());
+
+  ASSERT_TRUE(index.clear_account("acct_a").has_value());
+
+  auto results = index.search("invoice", 10);
+  ASSERT_TRUE(results.has_value());
+  ASSERT_EQ(results->size(), 1u);
+  EXPECT_EQ(results->front().message_id, "acct_b|m2");
+}
+
+TEST(SearchIndex, ClearAccountDoesNotTreatUnderscoreAsAWildcard) {
+  // Account ids are `acct_<hex>`, and `_` is a single-character wildcard in
+  // SQL LIKE. A prefix match written with LIKE would let `acct_dev` also match
+  // `acctXdev` — the exact cross-account deletion this function prevents.
+  auto index = make_index();
+  ASSERT_TRUE(index.index_document("acct_dev", "t1", "acct_dev|m1", "invoice",
+                                    "Ada", "body", 1000).has_value());
+  ASSERT_TRUE(index.index_document("acctXdev", "t2", "acctXdev|m2", "invoice",
+                                    "Ben", "body", 2000).has_value());
+
+  ASSERT_TRUE(index.clear_account("acct_dev").has_value());
+
+  auto results = index.search("invoice", 10);
+  ASSERT_TRUE(results.has_value());
+  ASSERT_EQ(results->size(), 1u) << "a wildcard match deleted the wrong account";
+  EXPECT_EQ(results->front().message_id, "acctXdev|m2");
+}
+
+TEST(SearchIndex, ClearAccountOnAnUnknownAccountIsHarmless) {
+  auto index = make_index();
+  ASSERT_TRUE(index.index_document("acct_a", "t1", "acct_a|m1", "invoice",
+                                    "Ada", "body", 1000).has_value());
+
+  ASSERT_TRUE(index.clear_account("acct_nope").has_value());
+
+  EXPECT_EQ(index.count().value_or(-1), 1);
+}

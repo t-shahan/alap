@@ -656,9 +656,14 @@ Result<void> SearchIndex::clear_account(const std::string& account_id) {
   }
 
   const std::string prefix = account_id + "|";
-  for (const char* sql : {"DELETE FROM message_fts WHERE message_id LIKE ?1 || '%'",
-                          "DELETE FROM doc_rowid WHERE message_id LIKE ?1 || '%'",
-                          "DELETE FROM spell_term WHERE 0"}) {
+  // substr() rather than LIKE. Account ids are `acct_<hex>`, and `_` is a
+  // SINGLE-CHARACTER WILDCARD in LIKE — so `LIKE 'acct_dev|%'` also matches
+  // `acctXdev|…`. No two current accounts collide, but reindexing one deleting
+  // another's documents is exactly the bug this function exists to prevent,
+  // and it would reappear silently the first time two ids lined up.
+  for (const char* sql :
+       {"DELETE FROM message_fts WHERE substr(message_id, 1, length(?1)) = ?1",
+        "DELETE FROM doc_rowid WHERE substr(message_id, 1, length(?1)) = ?1"}) {
     sqlite3_stmt* statement = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
       // spell_term may not carry an account column in older indexes; skipping

@@ -96,6 +96,21 @@ add_executable(mailengined src/main.cpp)
 # containing a quote turns into an unparseable line.
 target_link_libraries(mailengined PRIVATE mailengine_core nlohmann_json::nlohmann_json)
 
+# Sign after every build.
+#
+# This binary — not the copy inside the app bundle — is what the daemon runs,
+# and it is the one that reads the OAuth refresh token from the Keychain. Under
+# ad-hoc signing its designated requirement is a cdhash that changes on every
+# rebuild, so the token's ACL never matches and macOS re-prompts every time.
+# That has stalled this project three times, once blocking a backfill mid-run.
+if(APPLE)
+  add_custom_command(TARGET mailengined POST_BUILD
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/sign.sh" "$<TARGET_FILE:mailengined>"
+    COMMENT "Signing mailengined with the local development identity"
+    VERBATIM
+  )
+endif()
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Tests (opt-in so the app build doesn't pay for GoogleTest)
 # ─────────────────────────────────────────────────────────────────────────────
