@@ -22,11 +22,16 @@ struct MailApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   /// Owned here so the menu commands and the window share one store.
   @State private var store = MailStore()
+  @State private var themes = ThemeController.shared
 
   var body: some Scene {
     WindowGroup {
       ContentView(store: store)
         .frame(minWidth: 900, minHeight: 560)
+        // Carries the choice into AppKit's own chrome — scrollbars, the text
+        // cursor, focus rings. Without it the surfaces go dark while the
+        // scrollbars stay light, which looks like a rendering bug.
+        .preferredColorScheme(themes.theme.colorScheme)
     }
     // Hides the title bar text so the split view reads as one continuous
     // surface rather than three stacked panels with a heavy header.
@@ -34,6 +39,7 @@ struct MailApp: App {
     .commands {
       CommandGroup(replacing: .newItem) {}
       MailCommands(store: store)
+      ThemeCommands(themes: themes)
     }
   }
 }

@@ -68,6 +68,11 @@ if [[ -d "$BIN/Mail_Mail.bundle" ]]; then
 PLIST
 fi
 
+# The app icon. Regenerate with scripts/make-icon.sh if the source art changes.
+if [[ -f app/Resources/AppIcon.icns ]]; then
+  cp app/Resources/AppIcon.icns "$CONTENTS/Resources/AppIcon.icns"
+fi
+
 # The engine ships INSIDE the bundle. The app spawns `mailengined connect` to
 # add a mailbox, because OAuth, the Keychain and every network call belong to
 # the engine — duplicating them in the app would also mean putting Google
@@ -94,6 +99,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <!-- Named without the extension; Launch Services appends .icns itself. -->
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <!-- Regular app: Dock icon and menu bar, not a background agent. -->
   <key>LSUIElement</key><false/>
   <!--

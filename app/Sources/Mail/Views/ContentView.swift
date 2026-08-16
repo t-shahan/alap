@@ -61,8 +61,12 @@ private struct Sidebar: View {
 
       Spacer(minLength: 0)
 
-      ConnectionIndicator(state: store.bridge.connection)
-        .padding(.horizontal, Theme.Space.loose)
+      HStack(spacing: Theme.Space.base) {
+        ConnectionIndicator(state: store.bridge.connection)
+        Spacer(minLength: 0)
+        ThemeSwitcher()
+      }
+      .padding(.horizontal, Theme.Space.loose)
     }
     .sheet(isPresented: .constant(connector.phase != .idle)) {
       ConnectAccountSheet(connector: connector)

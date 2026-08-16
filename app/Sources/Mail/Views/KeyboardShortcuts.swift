@@ -108,3 +108,25 @@ struct MailCommands: Commands {
     }
   }
 }
+
+/// Appearance switching, under View.
+///
+/// A menu command rather than a preferences window: there is exactly one
+/// setting so far, and a whole window to hold it would be more chrome than
+/// content. It moves into Settings the moment there is a second one.
+struct ThemeCommands: Commands {
+  @Bindable var themes: ThemeController
+
+  var body: some Commands {
+    CommandGroup(after: .toolbar) {
+      Picker("Appearance", selection: $themes.theme) {
+        ForEach(AppTheme.allCases) { theme in
+          Label(theme.title, systemImage: theme.symbol).tag(theme)
+        }
+      }
+      .pickerStyle(.inline)
+
+      Divider()
+    }
+  }
+}

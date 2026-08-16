@@ -171,3 +171,41 @@ extension Color {
     )
   }
 }
+
+/// Cycles the appearance from the sidebar footer.
+///
+/// The menu command is the canonical control, but a setting nobody finds is a
+/// setting nobody has. This sits beside the connection indicator — the corner
+/// already reserved for status rather than content — and shows the icon of the
+/// theme it will switch TO, so the affordance says what it does rather than
+/// what is currently true.
+struct ThemeSwitcher: View {
+  @State private var themes = ThemeController.shared
+  @State private var isHovering = false
+
+  var body: some View {
+    Button {
+      withAnimation(Theme.Motion.standard) { themes.theme = next }
+    } label: {
+      Image(systemName: next.symbol)
+        .font(.system(size: Theme.Size.smallIcon - 2))
+        .foregroundStyle(isHovering ? Theme.Ink.secondary : Theme.Ink.tertiary)
+        .frame(width: 22, height: 22)
+        .background(
+          isHovering ? Theme.Surface.control : .clear,
+          in: .rect(cornerRadius: Theme.Radius.control)
+        )
+        .contentShape(.rect)
+    }
+    .buttonStyle(.plain)
+    .onHover { isHovering = $0 }
+    .help("Switch to the \(next.title) appearance")
+    .accessibilityLabel("Appearance: \(themes.theme.title)")
+  }
+
+  private var next: AppTheme {
+    let all = AppTheme.allCases
+    let index = all.firstIndex(of: themes.theme) ?? 0
+    return all[(index + 1) % all.count]
+  }
+}
