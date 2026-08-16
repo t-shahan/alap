@@ -94,16 +94,46 @@ createdb mailapp
 
 git clone <your-fork> && cd mail
 npm install
-
-cp .env.example .env         # fill in GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
-./scripts/make-signing-cert.sh   # stable local code signing (see below)
-
-cmake -S engine -B engine/build && cmake --build engine/build -j8
-npm run dev                  # postgres + sidecar + zero-cache
-npm run app                  # build and launch Mail.app
 ```
 
-Then click **Add Account** in the sidebar, and start the sync daemon:
+Create a `.env` in the repository root:
+
+```ini
+# All three point at the same local database. Zero wants them separate so they
+# can diverge in a hosted deployment; locally they never do.
+ZERO_UPSTREAM_DB="postgres://YOUR_USER@localhost:5432/mailapp"
+ZERO_CVR_DB="postgres://YOUR_USER@localhost:5432/mailapp"
+ZERO_CHANGE_DB="postgres://YOUR_USER@localhost:5432/mailapp"
+
+# zero-cache's SQLite replica. This is what queries actually run against, which
+# is why reads are fast. Keep it on an internal SSD.
+ZERO_REPLICA_FILE="./.data/zero-replica.db"
+
+# Clients never send raw ZQL — they send a query NAME that the sidecar resolves
+# server-side. That indirection is the basis of Zero's permission model.
+ZERO_QUERY_URL="http://localhost:3000/api/query"
+ZERO_MUTATE_URL="http://localhost:3000/api/mutate"
+ZERO_ENABLE_CRUD_MUTATIONS="false"
+ZERO_ADMIN_PASSWORD="change-me-locally"
+
+# From your Google Cloud OAuth client (type: Desktop app).
+GOOGLE_CLIENT_ID="..."
+GOOGLE_CLIENT_SECRET="..."
+```
+
+Then build and run:
+
+```bash
+./scripts/make-signing-cert.sh          # stable local code signing (see below)
+cmake -S engine -B engine/build
+cmake --build engine/build -j8
+
+npm run dev                             # postgres + sidecar + zero-cache
+npm run app                             # build and launch the app
+```
+
+Click **Add Account** in the sidebar to authorise a mailbox, then start the
+sync daemon in a second terminal:
 
 ```bash
 set -a && . ./.env && set +a
