@@ -30,6 +30,18 @@ export type Command =
       readonly id: string
     }
   | {
+      /**
+       * Sync rows to the client WITHOUT materialising them.
+       *
+       * Used to make later queries over the same rows resolve from the local
+       * cache instead of round-tripping to zero-cache.
+       */
+      readonly type: 'preload'
+      readonly id: string
+      readonly query: string
+      readonly args?: unknown
+    }
+  | {
       readonly type: 'mutate'
       readonly id: string
       /** Dotted path into the mutator registry, e.g. `threads.archive`. */

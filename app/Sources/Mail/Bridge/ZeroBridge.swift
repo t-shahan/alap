@@ -47,6 +47,15 @@ final class ZeroBridge {
   /// captures the concrete row type registered by the caller.
   @ObservationIgnored private var sinks: [String: (Data, Bool) -> Void] = [:]
 
+  /// When each subscription was requested, for latency measurement.
+  @ObservationIgnored private var subscribeStartedAt: [String: CFAbsoluteTime] = [:]
+
+  /// Milliseconds from subscribe to first update, per subscription id.
+  ///
+  /// Exposed so latency can be measured without a profiler — the app's
+  /// os.Logger output does not persist under ad-hoc signing.
+  public private(set) var lastLatencyMs: [String: Double] = [:]
+
   /// Commands issued before `ready`, replayed in order once the client is up.
   @ObservationIgnored private var pending: [String] = []
 
@@ -147,12 +156,38 @@ final class ZeroBridge {
     as rowType: Row.Type = Row.self,
     onUpdate: @escaping (Row?, Bool) -> Void
   ) {
-    sinks[id] = { data, isComplete in
+    subscribeStartedAt[id] = CFAbsoluteTimeGetCurrent()
+    sinks[id] = { [weak self] data, isComplete in
+      if let began = self?.subscribeStartedAt.removeValue(forKey: id) {
+        let ms = (CFAbsoluteTimeGetCurrent() - began) * 1000
+        self?.lastLatencyMs[id] = ms
+        bridgeLog.info("subscription \(id, privacy: .public) first update in \(ms, format: .fixed(precision: 1))ms")
+        // Also to stderr. os.Logger output does not persist for ad-hoc-signed
+        // apps outside a proper bundle identity, which makes it useless for
+        // measurement; stderr is readable by running the binary directly.
+        if ProcessInfo.processInfo.environment["MAIL_TRACE"] != nil {
+          FileHandle.standardError.write(
+            Data("[trace] \(id) first-update \(String(format: "%.1f", ms))ms\n".utf8))
+        }
+      }
       // A `.one()` query yields `null` when nothing matches, so a decode
       // failure here is an expected "no row" rather than an error.
       onUpdate(try? JSONDecoder().decode(Row.self, from: data), isComplete)
     }
     send(Command(kind: .subscribe, id: id, path: query, args: args))
+  }
+
+  /// Syncs rows to the client without materialising them.
+  ///
+  /// Nothing is delivered back; the point is that a LATER query over the same
+  /// rows can be answered from the local cache instead of round-tripping to
+  /// zero-cache. That round trip is what made opening a thread slow.
+  func preload(
+    id: String,
+    query: String,
+    args: [String: JSONValue] = [:]
+  ) {
+    send(Command(kind: .preload, id: id, path: query, args: args))
   }
 
   func unsubscribe(id: String) {

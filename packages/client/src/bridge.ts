@@ -43,6 +43,9 @@ const CACHE_URL = 'http://localhost:4848'
 /** Live subscriptions, keyed by the id Swift assigned. */
 const views = new Map<string, {view: View; unlisten: () => void}>()
 
+/** Active preloads, keyed by id, so they can be replaced or cancelled. */
+const preloads = new Map<string, {cleanup: () => void}>()
+
 /**
  * Sends an event up to Swift.
  *
@@ -119,6 +122,23 @@ function subscribe(cmd: Extract<Command, {type: 'subscribe'}>): void {
   views.set(cmd.id, {view, unlisten})
 }
 
+/**
+ * Streams rows to the local store without building JS objects for them.
+ *
+ * The point is latency, not display: once these rows are local, a subsequent
+ * query over the same data is answered from the client cache in a frame rather
+ * than waiting on a server round trip.
+ */
+function preload(cmd: Extract<Command, {type: 'preload'}>): void {
+  const queryFactory = resolve(queries, cmd.query)
+  if (typeof queryFactory !== 'function') {
+    throw new Error(`not a query: ${cmd.query}`)
+  }
+  // Replacing an existing preload cancels the previous one.
+  preloads.get(cmd.id)?.cleanup()
+  preloads.set(cmd.id, zero.preload(queryFactory(cmd.args ?? {})))
+}
+
 function unsubscribe(id: string): void {
   const existing = views.get(id)
   if (!existing) return
@@ -176,8 +196,13 @@ function receive(json: string): void {
       case 'subscribe':
         subscribe(cmd)
         break
+      case 'preload':
+        preload(cmd)
+        break
       case 'unsubscribe':
         unsubscribe(cmd.id)
+        preloads.get(cmd.id)?.cleanup()
+        preloads.delete(cmd.id)
         break
       case 'mutate':
         void mutate(cmd).catch(err => {

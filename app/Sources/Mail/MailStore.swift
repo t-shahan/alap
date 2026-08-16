@@ -77,7 +77,10 @@ final class MailStore {
   /// that pulled full message bodies. Debouncing means a held key costs ONE
   /// load at the end rather than one per row, while still feeling immediate
   /// for a deliberate click.
-  private static let detailDebounce = Duration.milliseconds(180)
+  /// Short, because preloading means the detail query usually resolves from
+  /// the LOCAL cache rather than a server round trip. This exists only to
+  /// coalesce a held arrow key, not to hide network latency.
+  private static let detailDebounce = Duration.milliseconds(70)
 
   /// Search re-queries hit FTS5 plus a Zero subscription, so they wait for a
   /// typing pause rather than firing per character.
@@ -96,6 +99,12 @@ final class MailStore {
     }
 
     resubscribeThreads()
+
+    // Sync the bodies of the most recent threads up front. Without this, every
+    // reading-pane open is a fresh query that must round-trip to zero-cache —
+    // roughly a second before any text appears.
+    bridge.preload(id: "preload-details", query: "threads.preloadDetails",
+                   args: ["limit": .number(40)])
   }
 
   /// Subscribes the reading pane to the selected thread.

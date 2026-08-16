@@ -105,6 +105,36 @@ export const queries = defineQueries({
     ),
 
     /**
+     * PRELOAD — what makes opening a thread instant.
+     *
+     * `threads.detail` is a *new* query every time the selection moves, so it
+     * cannot be answered from the client's local cache and must round-trip to
+     * zero-cache. That round trip is the ~1s delay before a body appears.
+     *
+     * Preloading the same shape for the visible list syncs those rows to the
+     * client in advance, so the subsequent detail query resolves locally and
+     * paints in a frame. Zero's `preload()` streams without materialising JS
+     * objects, which is why this can cover far more than a screenful.
+     *
+     * Deliberately smaller than the list limit: the first 40 threads cover
+     * essentially all arrow-key navigation before the user pauses, and syncing
+     * every body would defeat the point of splitting message_body out.
+     */
+    preloadDetails: defineQuery(
+      z.object({limit: z.number().int().positive().max(200).optional()}),
+      ({args: {limit}}) =>
+        zql.thread
+          .whereExists('messages', m =>
+            m.whereExists('labels', l => l.where('remoteId', 'INBOX')),
+          )
+          .orderBy('lastMessageAt', 'desc')
+          .limit(limit ?? 40)
+          .related('messages', m =>
+            m.orderBy('sentAt', 'asc').related('body').related('attachments').related('labels'),
+          ),
+    ),
+
+    /**
      * SEARCH — stage two of the two-stage pattern.
      *
      * ZQL has no full-text search, so the C++ engine's SQLite FTS5 index does
