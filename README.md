@@ -6,8 +6,6 @@
 
 **A local-first macOS email client built for speed.**
 
-*আলাপ — a conversation; an acquaintance; the unmetered opening of a raga.*
-
 Search 32,000 messages in under a millisecond. Open a conversation in a frame.
 Triage a mailbox without waiting for anything.
 
