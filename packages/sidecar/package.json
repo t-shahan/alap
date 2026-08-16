@@ -1,0 +1,23 @@
+{
+  "name": "@mailapp/sidecar",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.ts",
+    "zero:cache": "zero-cache-dev",
+    "seed": "node src/seed.ts",
+    "smoke": "node src/smoke.ts"
+  },
+  "dependencies": {
+    "@mailapp/shared": "*",
+    "@rocicorp/zero": "^1.7.0",
+    "hono": "^4.6.0",
+    "@hono/node-server": "^1.13.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0",
+    "@types/node": "^22.10.0"
+  }
+}
