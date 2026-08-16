@@ -10,6 +10,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <iostream>
+
 #include <nlohmann/json.hpp>
 #include <utility>
 
@@ -299,6 +301,16 @@ Result<AuthorizationResult> OAuthClient::authorize_interactively(
   }
 
   const std::string url = build_authorization_url(*port, challenge, state);
+
+  // Print the URL as well as opening it. Each run binds a NEW ephemeral port,
+  // so a consent page left open from an earlier attempt redirects to a port
+  // nothing is listening on — the browser shows "can't connect" and this
+  // process waits until it times out. Showing the current URL makes it
+  // obvious which tab is the live one.
+  std::cout << "  listening on 127.0.0.1:" << *port << "\n"
+            << "  if your browser did not open, visit:\n\n"
+            << url << "\n\n";
+
   if (auto opened = open_in_browser(url); !opened) {
     return opened.error();
   }

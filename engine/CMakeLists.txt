@@ -97,6 +97,7 @@ if(MAILENGINE_BUILD_TESTS)
     tests/test_version.cpp
     tests/test_crypto.cpp
     tests/test_oauth.cpp
+    tests/test_http.cpp
   )
   target_link_libraries(mailengine_tests PRIVATE mailengine_core GTest::gtest_main)
 

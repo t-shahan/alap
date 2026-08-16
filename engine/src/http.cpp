@@ -93,6 +93,12 @@ Result<HttpResponse> HttpClient::perform(
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_seconds_);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  // Without a timeout AND this, a stalled transfer can hang indefinitely.
+  // CURLOPT_TIMEOUT alone does not cover a body-read that never produces data.
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+  // libcurl uses signals for DNS timeouts by default, which is unsafe once the
+  // ingest pool is multi-threaded.
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
   // Certificate verification stays on. Google's endpoints hold real certs and
   // there is never a reason to disable this.
   curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
@@ -110,10 +116,9 @@ Result<HttpResponse> HttpClient::perform(
   long status = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
 
-  // Reset per-request state so the next call on this handle starts clean while
-  // keeping the connection pool and TLS session.
+  // Header list is freed by HeaderList's destructor, so drop curl's pointer to
+  // it before that happens.
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, nullptr);
-  curl_easy_setopt(curl, CURLOPT_POST, 0L);
 
   return HttpResponse{status, std::move(body)};
 }
@@ -125,6 +130,11 @@ Result<HttpResponse> HttpClient::get(
   if (curl == nullptr) {
     return make_error("curl handle not initialised");
   }
+  // Clears options left over from a previous request — notably POST body state,
+  // which would otherwise turn this GET into a POST. Live connections, the TLS
+  // session cache and the DNS cache all survive a reset, so the performance
+  // reason for reusing the handle is preserved.
+  curl_easy_reset(curl);
   curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
   return perform(url, headers);
 }
@@ -138,14 +148,21 @@ Result<HttpResponse> HttpClient::post(
   if (curl == nullptr) {
     return make_error("curl handle not initialised");
   }
+  curl_easy_reset(curl);
 
   auto with_type = headers;
   with_type["Content-Type"] = content_type;
 
   curl_easy_setopt(curl, CURLOPT_POST, 1L);
-  // COPYPOSTFIELDS copies the buffer, so `body` need not outlive the call.
-  curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, body.c_str());
+  // ORDER MATTERS. CURLOPT_POSTFIELDSIZE must be set BEFORE
+  // CURLOPT_COPYPOSTFIELDS: the copy uses the already-known size, and setting
+  // the size afterwards invalidates the copied buffer. libcurl then falls back
+  // to its default read callback — which reads from STDIN — and the process
+  // blocks forever inside curl_easy_perform with an established connection and
+  // no request body. That failure looks like a network hang and is not.
   curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+  // COPYPOSTFIELDS copies the buffer, so `body` need not outlive the call.
+  curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, body.data());
 
   return perform(url, with_type);
 }
