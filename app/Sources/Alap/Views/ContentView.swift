@@ -297,14 +297,17 @@ private struct MessageListPane: View {
         }
         Spacer(minLength: Theme.Space.base)
 
-        toolbarButton("checkmark.square", "Select all (⌘A)") { store.selectAll() }
-        toolbarButton("archivebox", "Archive") {
+        toolbarButton("checkmark.square", "Select all (⌘A)",
+                      isEnabled: store.canSelectAll) { store.selectAll() }
+        toolbarButton("archivebox", "Archive",
+                      isEnabled: store.hasSelection) {
           Task { await store.archiveSelection() }
         }
-        toolbarButton("envelope.open", "Toggle read") {
+        toolbarButton("envelope.open", "Toggle read",
+                      isEnabled: store.hasSelection) {
           Task { await store.markSelectionRead() }
         }
-        toolbarButton("flag", "Flag") {
+        toolbarButton("flag", "Flag", isEnabled: store.hasSelection) {
           Task { await store.toggleFlagOnSelection() }
         }
       }
@@ -376,19 +379,28 @@ private struct MessageListPane: View {
     }
   }
 
+  /// - Parameter isEnabled: Stated per button rather than shared.
+  ///
+  /// This used to be one rule for all of them — `selectedThread == nil` — which
+  /// was wrong in two directions at once. It disabled Select All exactly when
+  /// nothing was selected, which is the only time it is useful; and it disabled
+  /// every bulk action once SEVERAL were selected, because `selectedThread` is
+  /// deliberately nil in that case. Both were invisible while the app
+  /// auto-selected a thread on launch.
   private func toolbarButton(
-    _ symbol: String, _ help: String, action: @escaping () -> Void
+    _ symbol: String, _ help: String, isEnabled: Bool,
+    action: @escaping () -> Void
   ) -> some View {
     Button(action: action) {
       Image(systemName: symbol)
         .font(.system(size: Theme.Size.icon - 2))
-        .foregroundStyle(Theme.Ink.secondary)
+        .foregroundStyle(isEnabled ? Theme.Ink.secondary : Theme.Ink.tertiary.opacity(0.4))
         .padding(.horizontal, Theme.Space.base)
         .padding(.vertical, Theme.Space.snug)
         .contentShape(.rect)
     }
     .buttonStyle(.plain)
-    .disabled(store.selectedThread == nil)
+    .disabled(!isEnabled)
     .help(help)
   }
 

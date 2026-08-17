@@ -110,6 +110,19 @@ final class MailStore {
   }
 
   var selectionCount: Int { selection.count }
+
+  /// Whether an action that operates on the selection can run.
+  ///
+  /// NOT `selectedThread != nil`. That is the SINGLE selected thread, which is
+  /// deliberately nil once several are selected — so testing it disabled every
+  /// bulk action during exactly the operation those actions exist for.
+  var hasSelection: Bool { !selection.isEmpty }
+
+  /// Whether there is anything to select.
+  ///
+  /// Select All is the one action that must work when nothing is selected yet,
+  /// which is precisely when a shared "requires a selection" rule disables it.
+  var canSelectAll: Bool { !threads.isEmpty && selection.count < threads.count }
   var hasMultipleSelected: Bool { selection.count > 1 }
 
   /// Threads currently selected, in list order.

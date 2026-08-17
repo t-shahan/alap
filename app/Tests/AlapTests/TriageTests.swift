@@ -554,3 +554,69 @@ struct InitialSelectionTests {
     #expect(store.selectedThreadID == nil)
   }
 }
+
+/// When toolbar actions are available.
+///
+/// These pin the predicates the buttons are enabled by. The bug they exist to
+/// catch was one shared rule — `selectedThread == nil` — used for every button,
+/// which disabled Select All exactly when nothing was selected and disabled
+/// every bulk action once several were. Both stayed invisible while the app
+/// auto-selected a thread on launch, so the rule was never wrong in practice
+/// until that stopped.
+@MainActor
+struct ToolbarAvailabilityTests {
+  private func store(_ ids: [String]) -> (MailStore, FakeBridge) {
+    let bridge = FakeBridge()
+    let store = MailStore(bridge: bridge, openFile: { _ in })
+    store.start()
+    bridge.push("accounts", json: Fixtures.account())
+    bridge.push("labels", json: Fixtures.labels())
+    bridge.push("threads", json: Fixtures.threadList(ids))
+    return (store, bridge)
+  }
+
+  @Test("Select All works when nothing is selected — which is the whole point")
+  func selectAllAvailableFromEmpty() {
+    let (store, _) = store(["a", "b", "c"])
+    #expect(store.selection.isEmpty)
+    #expect(store.canSelectAll)
+  }
+
+  @Test("Select All is unavailable once everything already is")
+  func selectAllUnavailableWhenComplete() {
+    let (store, _) = store(["a", "b"])
+    store.selectAll()
+    #expect(!store.canSelectAll)
+  }
+
+  @Test("Select All is unavailable in an empty mailbox")
+  func selectAllUnavailableWhenEmpty() {
+    let (store, _) = store([])
+    #expect(!store.canSelectAll)
+  }
+
+  @Test("Bulk actions stay available with several selected")
+  func bulkActionsAvailableDuringMultiSelect() {
+    // The regression: `selectedThread` is deliberately nil past one selection,
+    // so a rule keyed on it switched the actions off during precisely the
+    // operation they exist for.
+    let (store, _) = store(["a", "b", "c"])
+    store.selectAll()
+
+    #expect(store.selectedThread == nil, "no single thread when several are selected")
+    #expect(store.hasSelection, "but the actions must still be available")
+  }
+
+  @Test("Bulk actions are available for a single selection too")
+  func bulkActionsAvailableForOne() {
+    let (store, _) = store(["a", "b"])
+    store.selectedThreadID = "a"
+    #expect(store.hasSelection)
+  }
+
+  @Test("Bulk actions are unavailable with nothing selected")
+  func bulkActionsUnavailableWhenEmpty() {
+    let (store, _) = store(["a", "b"])
+    #expect(!store.hasSelection)
+  }
+}
