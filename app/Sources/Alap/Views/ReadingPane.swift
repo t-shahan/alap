@@ -22,7 +22,12 @@ struct ReadingPane: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      if let thread = store.selectedThread {
+      if store.hasMultipleSelected {
+        // The pane used to say "No message selected" here, which was true of a
+        // single message and useless during a bulk operation — while being the
+        // only part of the window with room to run one.
+        BulkActionPanel(store: store)
+      } else if let thread = store.selectedThread {
         toolbar
         Divider().overlay(Theme.Surface.border.opacity(0.5))
         content(for: thread)

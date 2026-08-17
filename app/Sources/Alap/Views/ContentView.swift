@@ -238,9 +238,6 @@ private struct MessageListPane: View {
   var body: some View {
     VStack(spacing: 0) {
       toolbar
-      if store.hasMultipleSelected {
-        SelectionBar(store: store)
-      }
       Divider().overlay(Theme.Surface.border.opacity(0.5))
       list
     }
@@ -273,10 +270,19 @@ private struct MessageListPane: View {
 
       HStack {
         Text(countLabel)
-          .font(Theme.Font.caption)
-          .fontWeight(.regular)
-          .foregroundStyle(Theme.Ink.secondary)
-        Spacer()
+          .font(store.hasMultipleSelected ? Theme.Font.caption : Theme.Font.caption)
+          .fontWeight(store.hasMultipleSelected ? .semibold : .regular)
+          .foregroundStyle(store.hasMultipleSelected ? Theme.Accent.blue
+                                                     : Theme.Ink.secondary)
+          .lineLimit(1)
+        if store.hasMultipleSelected {
+          Button("Clear") { store.clearSelection() }
+            .buttonStyle(.plain)
+            .font(Theme.Font.caption)
+            .fontWeight(.regular)
+            .foregroundStyle(Theme.Ink.tertiary)
+        }
+        Spacer(minLength: Theme.Space.base)
 
         toolbarButton("checkmark.square", "Select all (⌘A)") { store.selectAll() }
         toolbarButton("archivebox", "Archive") {
@@ -521,76 +527,3 @@ private struct ConnectionIndicator: View {
   }
 }
 
-/// The bulk action bar, shown only while several conversations are selected.
-///
-/// A distinct bar rather than relabelled toolbar buttons. Acting on fifty
-/// conversations at once is not the same gesture as acting on the one you are
-/// reading, and it should not be one hover-tooltip away from it: the bar states
-/// the count, states the actions in words, and offers an obvious way out.
-///
-/// Trash is separated and tinted red. It is the only action here that is not
-/// trivially reversible from inside the app, and it is about to happen to
-/// everything selected.
-private struct SelectionBar: View {
-  @Bindable var store: MailStore
-
-  var body: some View {
-    HStack(spacing: Theme.Space.base) {
-      Image(systemName: "checkmark.circle.fill")
-        .font(.system(size: Theme.Size.smallIcon))
-        .foregroundStyle(Theme.Accent.blue)
-
-      Text("\(store.selectionCount) selected")
-        .font(Theme.Font.smallEmphasis)
-        .foregroundStyle(Theme.Ink.primary)
-
-      Spacer(minLength: Theme.Space.base)
-
-      action("Archive", symbol: "archivebox") {
-        Task { await store.archiveSelection() }
-      }
-      action("Read", symbol: "envelope.open") {
-        Task { await store.markSelectionRead() }
-      }
-      action("Flag", symbol: "flag") {
-        Task { await store.toggleFlagOnSelection() }
-      }
-      action("Trash", symbol: "trash", tint: Theme.Accent.red) {
-        Task { await store.trashSelection() }
-      }
-
-      Button {
-        store.clearSelection()
-      } label: {
-        Image(systemName: "xmark")
-          .font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(Theme.Ink.secondary)
-          .frame(width: 20, height: 20)
-          .contentShape(.rect)
-      }
-      .buttonStyle(.plain)
-      .help("Deselect all (⇧⌘A)")
-    }
-    .padding(.horizontal, Theme.Space.loose)
-    .padding(.vertical, Theme.Space.snug)
-    .background(Theme.Surface.selection)
-  }
-
-  private func action(_ title: String, symbol: String,
-                      tint: Color = Theme.Ink.primary,
-                      run: @escaping () -> Void) -> some View {
-    Button(action: run) {
-      HStack(spacing: Theme.Space.tight) {
-        Image(systemName: symbol).font(.system(size: Theme.Size.smallIcon - 2))
-        Text(title).font(Theme.Font.small)
-      }
-      .foregroundStyle(tint)
-      .padding(.horizontal, Theme.Space.base)
-      .padding(.vertical, Theme.Space.tight)
-      .background(Theme.Surface.raised.opacity(0.6),
-                  in: .rect(cornerRadius: Theme.Radius.control))
-      .contentShape(.rect)
-    }
-    .buttonStyle(.plain)
-  }
-}

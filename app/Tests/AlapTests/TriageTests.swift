@@ -418,3 +418,88 @@ struct SelectionVisibilityTests {
     #expect(store.selection.isEmpty)
   }
 }
+
+/// What the bulk panel tells you before you act.
+///
+/// The panel exists because a bulk action is the one place a mistake is
+/// multiplied. "2 selected" is a count; knowing WHICH two, and what the action
+/// would actually change, is a confirmation.
+@MainActor
+struct BulkPanelTests {
+  private func store(_ specs: [(id: String, unread: Bool, flagged: Bool)])
+    -> (MailStore, FakeBridge)
+  {
+    let bridge = FakeBridge()
+    let store = MailStore(bridge: bridge, openFile: { _ in })
+    store.start()
+    bridge.push("accounts", json: Fixtures.account())
+    bridge.push("labels", json: Fixtures.labels())
+    let rows = specs.map {
+      Fixtures.thread(id: $0.id, unreadCount: $0.unread ? 1 : 0, isStarred: $0.flagged)
+    }
+    bridge.push("threads", json: "[\(rows.joined(separator: ","))]")
+    return (store, bridge)
+  }
+
+  @Test("Selected threads are exposed in list order, not set order")
+  func selectedThreadsAreOrdered() {
+    // The panel lists them. A Set has no order, so reading it directly would
+    // shuffle the preview between renders.
+    let (store, _) = store([("a", true, false), ("b", false, false), ("c", true, false)])
+    store.selection = ["c", "a"]
+
+    #expect(store.selectedThreads.map(\.id) == ["a", "c"])
+  }
+
+  @Test("Mark read resolves to one direction for a mixed selection")
+  func markReadDirection() async {
+    // Any unread row means the action is "mark read". The panel's label has to
+    // agree with what the action does, or it misreports its own effect.
+    let (store, bridge) = store([("a", true, false), ("b", false, false)])
+    store.selectAll()
+    bridge.reset()
+
+    await store.markSelectionRead()
+
+    #expect(bridge.mutations(named: "threads.setRead").first?.args["isRead"] == .bool(true))
+  }
+
+  @Test("An all-read selection marks unread instead")
+  func allReadFlips() async {
+    let (store, bridge) = store([("a", false, false), ("b", false, false)])
+    store.selectAll()
+    bridge.reset()
+
+    await store.markSelectionRead()
+
+    #expect(bridge.mutations(named: "threads.setRead").first?.args["isRead"] == .bool(false))
+  }
+
+  @Test("The panel replaces the reading pane only past one selection")
+  func panelOnlyForRealBulk() {
+    // One selected row is ordinary reading and must still open the message.
+    let (store, _) = store([("a", true, false), ("b", true, false)])
+
+    store.selection = ["a"]
+    #expect(!store.hasMultipleSelected)
+    #expect(store.selectedThreadID == "a")
+
+    store.selection = ["a", "b"]
+    #expect(store.hasMultipleSelected)
+  }
+
+  @Test("Acting from the panel returns to reading the next conversation")
+  func actingReturnsToReading() async {
+    // Not an empty selection — the successor is focused, exactly as a single
+    // archive advances. That leaves ONE row selected, so the panel closes and
+    // the reading pane shows the next message rather than an empty state. The
+    // point of triage is that the next thing is already in front of you.
+    let (store, _) = store([("a", true, false), ("b", true, false), ("c", true, false)])
+    store.selection = ["a", "b"]
+
+    await store.archiveSelection()
+
+    #expect(!store.hasMultipleSelected, "the panel should no longer be showing")
+    #expect(store.selectedThreadID == "c", "focus should advance past the archived block")
+  }
+}
