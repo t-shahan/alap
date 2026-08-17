@@ -14,12 +14,16 @@ struct ReadingPane: View {
   /// Starts at a screenful so the pane does not visibly jump on first paint;
   /// the real value arrives a frame later.
   @State private var bodyHeight: CGFloat = 400
-  /// Per-thread, and deliberately not remembered.
-  ///
-  /// Consenting to load one sender's images is not consent for the next one's,
-  /// and a preference that quietly persisted would turn a single decision into
-  /// a standing one.
-  @State private var showsRemoteImages = false
+  @State private var settings = ReadingSettings.shared
+  /// A one-off "Load images" for this thread, used only while the standing
+  /// preference is off. It resets when the thread changes: consenting to load
+  /// one sender's images is not consent for the next one's.
+  @State private var loadsImagesForThisThread = false
+
+  /// Whether this message's remote images should render.
+  private var showsRemoteImages: Bool {
+    settings.loadsRemoteImages || loadsImagesForThisThread
+  }
 
   var body: some View {
     VStack(spacing: 0) {
@@ -110,7 +114,7 @@ struct ReadingPane: View {
     .id(thread.id)  // reset scroll when switching threads
     .onChange(of: thread.id) { _, _ in
       bodyHeight = 400
-      showsRemoteImages = false
+      loadsImagesForThisThread = false
     }
   }
 
@@ -136,7 +140,7 @@ struct ReadingPane: View {
       if let detail = store.detail, !detail.messages.isEmpty {
         if !showsRemoteImages, blockedImages > 0 {
           RemoteImageBanner(count: blockedImages) {
-            withAnimation(Theme.Motion.quick) { showsRemoteImages = true }
+            withAnimation(Theme.Motion.quick) { loadsImagesForThisThread = true }
           }
         }
 

@@ -76,6 +76,23 @@ struct SanitizeResult {
 /// raw entity, which looks broken. Decoding happens once on ingest.
 [[nodiscard]] std::string unescape_entities(const std::string& text);
 
+/// @brief Collapses runs of invisible preheader padding.
+///
+/// Bulk senders pad the inbox preview with long runs of characters that render
+/// to nothing — `&shy;`, `&zwnj;`, `&#847;`, `&#8199;` — so the preview shows
+/// their tagline instead of the body. It is meant to be invisible, and mostly
+/// is, but it leaves a wall of whitespace above the message, and a sender that
+/// double-encodes it (`&amp;shy;`) turns the padding into visible literal text.
+///
+/// Only DENSE runs are collapsed. A lone `&shy;` is a hyphenation hint and a
+/// lone `&nbsp;` is a meaningful space; both survive. A run has to carry
+/// several invisible characters before it is treated as padding.
+///
+/// Tag-aware: markup passes through byte-identical, so this is safe to run
+/// over already-sanitised HTML where `data-blocked-src` holds the only copy of
+/// a blocked image URL.
+[[nodiscard]] std::string collapse_padding(const std::string& html);
+
 /// @brief Escapes text so it cannot be interpreted as markup.
 [[nodiscard]] std::string escape_text(const std::string& text);
 

@@ -354,3 +354,75 @@ TEST(Sanitize, DropsSenderSuppliedDataAttributes) {
   EXPECT_FALSE(contains(html, "data-anything"));
   EXPECT_TRUE(contains(html, "alt=")) << "allowed attributes must survive";
 }
+
+// MARK: - Preheader padding
+//
+// Bulk senders pad the inbox preview with long runs of invisible characters so
+// the preview shows their tagline rather than body text. 996 messages in a real
+// mailbox carry it. It is meant to be invisible, and usually is — but it leaves
+// a wall of whitespace at the top of the body, and one sender double-encoded it
+// (`&amp;shy;`) so it rendered as the literal text "&shy; &shy; &shy;".
+
+TEST(Padding, CollapsesRunsOfInvisibleEntities) {
+  const std::string padded =
+      "Ordered: item&#847; &zwnj; &nbsp; &#8199; &shy;&#847; &zwnj; &nbsp; "
+      "&#8199; &shy;&#847; &zwnj; &nbsp; &#8199; &shy;Real body text";
+  const std::string out = collapse_padding(padded);
+  EXPECT_FALSE(contains(out, "shy"));
+  EXPECT_FALSE(contains(out, "zwnj"));
+  EXPECT_TRUE(contains(out, "Ordered: item"));
+  EXPECT_TRUE(contains(out, "Real body text"));
+}
+
+TEST(Padding, CollapsesDoubleEncodedPadding) {
+  // The exact shape of the message that rendered visible "&shy;" text.
+  const std::string out =
+      collapse_padding("Hi&amp;shy; &amp;shy; &amp;shy; &amp;shy; &amp;shy; there");
+  EXPECT_FALSE(contains(out, "shy"));
+  EXPECT_TRUE(contains(out, "Hi"));
+  EXPECT_TRUE(contains(out, "there"));
+}
+
+TEST(Padding, CollapsesLiteralInvisibleCharacters) {
+  // Already-decoded form: U+00AD soft hyphen and U+200C zero-width non-joiner.
+  const std::string out =
+      collapse_padding("Hi­ ‌   ­ ‌ ­ there");
+  EXPECT_TRUE(contains(out, "Hi"));
+  EXPECT_TRUE(contains(out, "there"));
+  EXPECT_EQ(out.find("­"), std::string::npos);
+}
+
+TEST(Padding, LeavesOrdinaryTextAlone) {
+  EXPECT_EQ(collapse_padding("Hello, world."), "Hello, world.");
+  EXPECT_EQ(collapse_padding("a &amp; b"), "a &amp; b");
+  // Ordinary non-breaking spaces are meaningful and must survive.
+  EXPECT_EQ(collapse_padding("10&nbsp;kg"), "10&nbsp;kg");
+  EXPECT_EQ(collapse_padding("Mr&nbsp;Smith and Mrs&nbsp;Jones"),
+            "Mr&nbsp;Smith and Mrs&nbsp;Jones");
+}
+
+TEST(Padding, LeavesOccasionalSoftHyphensAlone) {
+  // A soft hyphen used for its actual purpose is a hyphenation hint, not
+  // padding. Only a dense run is padding.
+  EXPECT_EQ(collapse_padding("hy&shy;phen&shy;ation"), "hy&shy;phen&shy;ation");
+}
+
+TEST(Padding, DoesNotTouchMarkup) {
+  // Tags must survive byte-identical: this runs over already-sanitised bodies
+  // where `data-blocked-src` holds the only copy of a blocked image URL.
+  const std::string html =
+      "<img data-blocked=\"remote\" data-blocked-src=\"https://x.test/a.png\" />"
+      "text&shy; &shy; &shy; &shy; &shy; after";
+  const std::string out = collapse_padding(html);
+  EXPECT_TRUE(contains(out, "data-blocked-src=\"https://x.test/a.png\""));
+  EXPECT_TRUE(contains(out, "<img"));
+  EXPECT_FALSE(contains(out, "shy;"));
+}
+
+TEST(Padding, SanitizeCollapsesPadding) {
+  const auto result =
+      sanitize("<p>Deal&shy; &zwnj; &shy; &zwnj; &shy; &zwnj; inside</p>");
+  EXPECT_FALSE(contains(result.html, "shy"));
+  EXPECT_TRUE(contains(result.html, "Deal"));
+  EXPECT_TRUE(contains(result.html, "inside"));
+}

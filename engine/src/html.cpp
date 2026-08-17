@@ -119,7 +119,207 @@ std::string normalise_scheme_prefix(const std::string& url) {
   return out;
 }
 
+
+// MARK: - Preheader padding
+
+/// Characters that occupy no width at all.
+///
+/// Each of these is used by bulk senders to pad the inbox preview. None of
+/// them carries meaning in a message body, which is why a dense run of them is
+/// safe to discard entirely.
+bool is_invisible_codepoint(long cp) {
+  switch (cp) {
+    case 0x00AD:  // soft hyphen
+    case 0x034F:  // combining grapheme joiner, sent as &#847;
+    case 0x061C:  // arabic letter mark
+    case 0x180E:  // mongolian vowel separator
+    case 0x200B:  // zero-width space
+    case 0x200C:  // zero-width non-joiner
+    case 0x200D:  // zero-width joiner
+    case 0x200E:  // left-to-right mark
+    case 0x200F:  // right-to-left mark
+    case 0x2060:  // word joiner
+    case 0xFEFF:  // zero-width no-break space
+      return true;
+    default:
+      return false;
+  }
+}
+
+/// Characters that render as blank space.
+///
+/// These are NOT padding on their own — `10&nbsp;kg` is a real space doing a
+/// real job. They only count as part of a run that already contains invisible
+/// characters, which is what lets a padding block collapse whole.
+bool is_blank_codepoint(long cp) {
+  switch (cp) {
+    case 0x0009: case 0x000A: case 0x000D: case 0x0020:
+    case 0x00A0:  // no-break space
+    case 0x2002: case 0x2003: case 0x2007:  // en, em, figure space
+    case 0x2009: case 0x200A:               // thin, hair space
+      return true;
+    default:
+      return false;
+  }
+}
+
+/// Codepoint for a named reference, or -1. Only names that can appear in
+/// padding need resolving here; everything else falls through as ordinary text.
+long padding_entity_codepoint(const std::string& name) {
+  static const std::unordered_map<std::string, long> named = {
+      {"shy", 0x00AD},   {"zwnj", 0x200C},  {"zwj", 0x200D},
+      {"lrm", 0x200E},   {"rlm", 0x200F},   {"zwsp", 0x200B},
+      {"wj", 0x2060},    {"feff", 0xFEFF},  {"nbsp", 0x00A0},
+      {"ensp", 0x2002},  {"emsp", 0x2003},  {"numsp", 0x2007},
+      {"thinsp", 0x2009},{"hairsp", 0x200A},
+  };
+  const auto found = named.find(to_lower(name));
+  return found == named.end() ? -1 : found->second;
+}
+
+/// Reads one character reference at `at`, returning its codepoint and length.
+/// Returns false when `at` does not begin a reference this cares about.
+bool read_reference(const std::string& text, size_t at, long& cp, size_t& length) {
+  if (text[at] != '&') return false;
+  const size_t semicolon = text.find(';', at + 1);
+  if (semicolon == std::string::npos || semicolon - at > 12) return false;
+
+  const std::string body = text.substr(at + 1, semicolon - at - 1);
+  if (body.empty()) return false;
+  length = semicolon - at + 1;
+
+  if (body[0] == '#') {
+    const bool hex = body.size() > 1 && (body[1] == 'x' || body[1] == 'X');
+    const std::string digits = body.substr(hex ? 2 : 1);
+    if (digits.empty()) return false;
+    const char* allowed = hex ? "0123456789abcdefABCDEF" : "0123456789";
+    if (digits.find_first_not_of(allowed) != std::string::npos) return false;
+    cp = std::strtol(digits.c_str(), nullptr, hex ? 16 : 10);
+    return true;
+  }
+
+  cp = padding_entity_codepoint(body);
+  return cp >= 0;
+}
+
+/// Decodes one UTF-8 sequence at `at`.
+bool read_utf8(const std::string& text, size_t at, long& cp, size_t& length) {
+  const auto byte = static_cast<unsigned char>(text[at]);
+  const size_t n = text.size();
+  auto continuation = [&](size_t k) {
+    return at + k < n && (static_cast<unsigned char>(text[at + k]) & 0xC0) == 0x80;
+  };
+  auto tail = [&](size_t k) { return static_cast<long>(text[at + k] & 0x3F); };
+
+  if (byte < 0x80) { cp = byte; length = 1; return true; }
+  if ((byte & 0xE0) == 0xC0 && continuation(1)) {
+    cp = ((byte & 0x1FL) << 6) | tail(1);
+    length = 2;
+    return true;
+  }
+  if ((byte & 0xF0) == 0xE0 && continuation(1) && continuation(2)) {
+    cp = ((byte & 0x0FL) << 12) | (tail(1) << 6) | tail(2);
+    length = 3;
+    return true;
+  }
+  return false;
+}
+
+/// How many invisible characters make a run padding rather than typography.
+///
+/// Ordinary prose can carry one soft hyphen as a hyphenation hint, or a
+/// zero-width joiner inside an emoji sequence. Four of them inside a single
+/// run of otherwise-blank text is not typography; it is padding.
+constexpr int kPaddingThreshold = 4;
+
+/// Rewrites the padding runs in a stretch of text.
+std::string collapse_padding_in_text(const std::string& text) {
+  std::string out;
+  out.reserve(text.size());
+
+  size_t i = 0;
+  const size_t n = text.size();
+
+  while (i < n) {
+    // Try to open a run at `i`.
+    size_t scan = i;
+    int invisible = 0;
+
+    while (scan < n) {
+      long cp = -1;
+      size_t length = 0;
+
+      // `&amp;shy;` — the double-encoded form. The `&amp;` decodes to a bare
+      // ampersand which then re-reads as the entity that follows it.
+      if (text.compare(scan, 5, "&amp;") == 0) {
+        long inner = -1;
+        size_t inner_length = 0;
+        const std::string rebuilt = "&" + text.substr(scan + 5, 12);
+        if (read_reference(rebuilt, 0, inner, inner_length) &&
+            (is_invisible_codepoint(inner) || is_blank_codepoint(inner))) {
+          cp = inner;
+          length = 5 + inner_length - 1;
+        }
+      }
+
+      if (cp < 0 && !read_reference(text, scan, cp, length) &&
+          !read_utf8(text, scan, cp, length)) {
+        break;
+      }
+
+      if (is_invisible_codepoint(cp)) {
+        ++invisible;
+      } else if (!is_blank_codepoint(cp)) {
+        break;
+      }
+      scan += length;
+    }
+
+    if (invisible >= kPaddingThreshold) {
+      // The whole run goes, replaced by the single space it was pretending to
+      // be. Anything less dense is left byte-identical.
+      out += ' ';
+      i = scan;
+      continue;
+    }
+
+    out += text[i];
+    ++i;
+  }
+
+  return out;
+}
+
 }  // namespace
+
+std::string collapse_padding(const std::string& html) {
+  std::string out;
+  out.reserve(html.size());
+
+  size_t i = 0;
+  const size_t n = html.size();
+
+  while (i < n) {
+    if (html[i] == '<') {
+      // Markup is copied verbatim, byte for byte. This runs over
+      // already-sanitised bodies, where `data-blocked-src` holds the only
+      // surviving copy of a blocked image URL.
+      const size_t end = html.find('>', i);
+      if (end == std::string::npos) {
+        out += html.substr(i);
+        break;
+      }
+      out += html.substr(i, end - i + 1);
+      i = end + 1;
+      continue;
+    }
+    const size_t start = i;
+    while (i < n && html[i] != '<') ++i;
+    out += collapse_padding_in_text(html.substr(start, i - start));
+  }
+
+  return out;
+}
 
 std::string unescape_entities(const std::string& text) {
   static const std::unordered_map<std::string, std::string> named = {
@@ -290,7 +490,7 @@ SanitizeResult sanitize(const std::string& input, const SanitizeOptions& options
       // nothing here can be read as markup.
       const size_t start = i;
       while (i < n && input[i] != '<') ++i;
-      out += escape_text(input.substr(start, i - start));
+      out += escape_text(collapse_padding_in_text(input.substr(start, i - start)));
       continue;
     }
 

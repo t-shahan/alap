@@ -228,15 +228,28 @@ struct RemoteImageTests {
     #expect(MessageDocument.blockedImageCount(in: [none]) == 0)
   }
 
-  @Test("By default the URL is present but inert")
-  func defaultDocumentCannotLoadRemoteImages() throws {
-    let document = MessageDocument.build(for: [try message(html: blocked)], isDark: true)
+  @Test("While blocking, the URL is present but inert")
+  func blockedDocumentCannotLoadRemoteImages() throws {
+    let document = MessageDocument.build(
+      for: [try message(html: blocked)], isDark: true, showRemoteImages: false)
 
     // The URL survives so it CAN be restored...
     #expect(document.contains("data-blocked-src="))
     // ...but nothing will fetch it: no live src, and the CSP forbids https.
     #expect(!document.contains(" src=\"https://"))
     #expect(!document.contains("img-src cid: data: https:"))
+  }
+
+  @Test("Images load by default")
+  func imagesLoadByDefault() throws {
+    // This assertion used to read the other way. Mail is built out of its
+    // images, and withholding them leaves a skeleton of empty cells rather
+    // than a clean text version — so the default changed and the privacy
+    // control moved into Settings, where it says what it costs.
+    let document = MessageDocument.build(for: [try message(html: blocked)], isDark: true)
+
+    #expect(document.contains("src=\"https://t.example/a.gif\""))
+    #expect(document.contains("img-src cid: data: https:"))
   }
 
   @Test("Loading images restores the src and widens the CSP together")

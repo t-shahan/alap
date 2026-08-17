@@ -35,6 +35,7 @@ struct AlapApp: App {
   @State private var store = MailStore()
   @State private var themes = ThemeController.shared
   @State private var daemon = SyncDaemon()
+  @State private var settings = ReadingSettings.shared
 
   var body: some Scene {
     WindowGroup {
@@ -61,6 +62,12 @@ struct AlapApp: App {
     .commands {
       MailCommands(store: store)
       ThemeCommands(themes: themes)
+    }
+
+    // ⌘, for free, and the standard place a Mac user looks for a preference.
+    Settings {
+      SettingsView(settings: settings, themes: themes)
+        .preferredColorScheme(themes.theme.colorScheme)
     }
   }
 }

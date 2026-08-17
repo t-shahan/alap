@@ -206,11 +206,12 @@ enum MessageDocument {
   }
 
   /// - Parameter showRemoteImages: Restores the URLs the sanitiser withheld.
-  ///   Off by default: a remote image in mail is a tracking pixel far more
-  ///   often than it is a picture, and loading one tells the sender the
-  ///   message was opened, by whom, and roughly from where.
+  ///   Defaults to on, following `ReadingSettings.loadsRemoteImages`. Mail is
+  ///   built out of its images; withholding them does not leave a clean text
+  ///   version behind, it leaves a skeleton of empty cells. The privacy cost is
+  ///   real and the setting states it plainly, but it is no longer the default.
   static func build(for messages: [MessageRow], isDark: Bool,
-                    showRemoteImages: Bool = false) -> String {
+                    showRemoteImages: Bool = true) -> String {
     let showHeaders = messages.count > 1
 
     let bodies = messages.map { message -> String in
@@ -293,8 +294,18 @@ enum MessageDocument {
       table { border-collapse: collapse; }
       td, th { padding: 4px 8px; }
       pre { white-space: pre-wrap; word-wrap: break-word; }
-      /* Images the sanitiser blocked leave a marker rather than a broken icon. */
-      img[data-blocked] { display: none; }
+      /* A blocked image keeps its box rather than collapsing to nothing.
+         `display: none` removed the element from layout entirely, so a message
+         laid out as a table of image slices fell apart into stray padding and
+         orphaned cells — which reads as a broken client rather than a private
+         one. A dashed placeholder holds the space the sender reserved.
+         Tracking pixels are 1x1 and stay invisible either way. */
+      img[data-blocked] {
+        background: \(rule);
+        border: 1px dashed \(rule);
+        border-radius: 3px;
+        min-width: 0; min-height: 0;
+      }
       """
   }
 

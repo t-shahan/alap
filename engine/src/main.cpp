@@ -73,6 +73,7 @@ int usage() {
                "  daemon [seconds]      supervise every connected account\n"
                "  search <account-id> <query>    full-text search the local index\n"
                "  reindex <account-id>  rebuild the search index from Postgres\n"
+               "  normalize <account-id>   collapse marketing preheader padding in stored bodies\n"
                "  resanitize <account-id>  sanitize HTML bodies stored before sanitising existed\n"
                "  bench-search [counts...]  measure search latency at scale\n"
                "  version\n";
@@ -699,6 +700,49 @@ int cmd_resanitize(const std::string& account_id) {
   return 0;
 }
 
+/// Collapses preheader padding in HTML bodies already in Postgres.
+///
+/// Separate from `resanitize` on purpose. That command re-runs the full
+/// sanitiser, which would drop `data-blocked-src` — the attribute is written by
+/// the sanitiser but is not in its own allowlist, so a second pass discards the
+/// only surviving copy of every blocked image URL. This pass rewrites text
+/// nodes and leaves every tag byte-identical.
+int cmd_normalize(const std::string& account_id) {
+  mailengine::PostgresStore store;
+  if (!connect_store(store)) return 1;
+
+  auto rows = store.query(
+      R"(SELECT b.message_id, b.html_body
+         FROM message_body b
+         WHERE b.account_id = $1 AND b.html_body IS NOT NULL AND b.html_body <> '')",
+      {account_id});
+  if (!rows) {
+    std::cerr << "error: " << rows.error().message << "\n";
+    return 1;
+  }
+
+  int64_t changed = 0;
+  int64_t bytes_saved = 0;
+
+  for (const auto& row : *rows) {
+    if (row.size() < 2) continue;
+    const std::string collapsed = mailengine::html::collapse_padding(row[1]);
+    if (collapsed == row[1]) continue;
+
+    if (store.exec("UPDATE message_body SET html_body = $2 WHERE message_id = $1",
+                   {row[0], collapsed})
+            .has_value()) {
+      ++changed;
+      bytes_saved += static_cast<int64_t>(row[1].size() - collapsed.size());
+    }
+  }
+
+  std::cout << "  examined  " << rows->size() << "\n"
+            << "  rewritten " << changed << "\n"
+            << "  padding removed " << bytes_saved << " bytes\n";
+  return 0;
+}
+
 int cmd_auth(const std::string& account_id) {
   const mailengine::OAuthClient client(config_from_env());
 
@@ -1150,6 +1194,10 @@ int main(int argc, char** argv) {
     for (int i = 2; i < argc; ++i) sizes.push_back(std::atoll(argv[i]));
     if (sizes.empty()) sizes = {1000, 10000, 50000, 200000};
     return cmd_bench_search(sizes);
+  }
+  if (command == "normalize") {
+    if (argc < 3) { usage(); return 2; }
+    return cmd_normalize(argv[2]);
   }
   if (command == "resanitize") {
     if (argc < 3) return usage();
