@@ -125,13 +125,46 @@ struct MessageWebView: NSViewRepresentable {
       }
     }
 
+    /// Scales an over-wide document down to fit, then reports its height.
+    ///
+    /// Marketing mail is laid out for a 600px canvas that it states in fixed
+    /// pixels. When the reading pane is narrower, `max-width: 100%` cannot
+    /// always rescue it — a 52px headline has a min-content width of its own,
+    /// and a table will not shrink below that — so the document simply ran off
+    /// the right edge and the last word of the headline was cut in half.
+    ///
+    /// Scaling is what Apple Mail does, and it is the only option that keeps
+    /// the sender's layout intact: wrapping their headline differently changes
+    /// their design, and a horizontal scrollbar inside a message is worse than
+    /// either.
+    ///
+    /// Runs in the same pass as the height measurement because the height is
+    /// only meaningful AFTER the scale is applied.
+    private static let fitAndMeasure = """
+      (function () {
+        var body = document.body;
+        if (!body) { return 0; }
+        body.style.zoom = '';
+        var available = document.documentElement.clientWidth;
+        var content = body.scrollWidth;
+        // A width of zero means the view has not been laid out yet. Dividing
+        // by it would scale every message to the 0.5 floor below and shrink a
+        // perfectly ordinary message to half size.
+        if (!(available > 0) || !(content > 0)) { return 0; }
+        var scale = content > available ? available / content : 1;
+        // Below this the message is unreadable and fitting it is not a
+        // kindness; let it clip rather than shrink to nothing.
+        if (scale < 0.5) { scale = 0.5; }
+        if (scale < 1) { body.style.zoom = scale; }
+        return Math.ceil(document.documentElement.scrollHeight * (scale < 1 ? scale : 1));
+      })()
+      """
+
     private func measure(_ webView: WKWebView) {
       // `evaluateJavaScript` is host-initiated and still runs with
       // `allowsContentJavaScript` disabled — that flag governs the PAGE's own
       // scripts, which remain blocked both there and by the CSP.
-      webView.evaluateJavaScript(
-        "Math.ceil(document.documentElement.scrollHeight)"
-      ) { [weak self] value, _ in
+      webView.evaluateJavaScript(Coordinator.fitAndMeasure) { [weak self] value, _ in
         // JavaScript numbers arrive as NSNumber regardless of how they look.
         guard let self, let number = value as? NSNumber else { return }
         let height = CGFloat(number.doubleValue)
