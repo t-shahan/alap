@@ -328,3 +328,93 @@ struct BulkActionTests {
     #expect(store.selection == ["t3"], "J/K should move, not accumulate")
   }
 }
+
+/// Selection as the UI presents it.
+///
+/// These pin the states the interface has to draw. The bug they exist to catch
+/// was not a wrong action — it was selection that worked and rendered nothing,
+/// because the row background only ever consulted the single focused id.
+@MainActor
+struct SelectionVisibilityTests {
+  private func store(threadCount: Int) -> (MailStore, FakeBridge) {
+    let bridge = FakeBridge()
+    let store = MailStore(bridge: bridge, openFile: { _ in })
+    store.start()
+    bridge.push("accounts", json: Fixtures.account())
+    bridge.push("labels", json: Fixtures.labels())
+    bridge.push("threads", json: Fixtures.threadList((0..<threadCount).map { "t\($0)" }))
+    return (store, bridge)
+  }
+
+  @Test("A selected row is in the selection even when it is not the focused one")
+  func selectedRowsAreQueryable() {
+    // The row background asks `selection.contains`. If membership were only
+    // knowable through `selectedThreadID`, every row but one would draw as
+    // unselected — which is exactly what happened.
+    let (store, _) = store(threadCount: 5)
+    store.selection = ["t1", "t3"]
+
+    #expect(store.selection.contains("t1"))
+    #expect(store.selection.contains("t3"))
+    #expect(!store.selection.contains("t2"))
+    #expect(store.selectedThreadID == nil, "no single row is focused")
+  }
+
+  @Test("Toggling extends the selection without moving the reading pane")
+  func toggleDoesNotNavigate() {
+    // A checkbox adds to a selection; it does not navigate. Ticking a second
+    // row while reading the first must not change what is being read.
+    let (store, _) = store(threadCount: 5)
+    store.selectedThreadID = "t0"
+
+    store.toggleSelection(of: "t2")
+
+    #expect(store.selection == ["t0", "t2"])
+  }
+
+  @Test("Toggling a selected thread removes it")
+  func toggleRemoves() {
+    let (store, _) = store(threadCount: 5)
+    store.selection = ["t1", "t2"]
+
+    store.toggleSelection(of: "t1")
+
+    #expect(store.selection == ["t2"])
+  }
+
+  @Test("The bulk bar appears only once there is more than one")
+  func barAppearsForRealBulk() {
+    // One selected row is ordinary reading, not a bulk operation, and a bar
+    // over it would be chrome announcing nothing.
+    let (store, _) = store(threadCount: 5)
+
+    #expect(!store.hasMultipleSelected)
+    store.selection = ["t1"]
+    #expect(!store.hasMultipleSelected)
+    store.selection = ["t1", "t2"]
+    #expect(store.hasMultipleSelected)
+  }
+
+  @Test("Clearing the selection also releases the reading pane")
+  func clearingResetsEverything() {
+    let (store, _) = store(threadCount: 5)
+    store.selectAll()
+
+    store.clearSelection()
+
+    #expect(store.selection.isEmpty)
+    #expect(store.selectedThreadID == nil)
+  }
+
+  @Test("Selecting all then acting leaves nothing selected")
+  func selectionEmptiesAfterABulkAction() async {
+    // A stale selection after the rows are gone would leave the bar claiming a
+    // count for threads that are no longer in the list.
+    let (store, _) = store(threadCount: 6)
+    store.selectAll()
+
+    await store.archiveSelection()
+
+    #expect(store.selection.isEmpty)
+  }
+}

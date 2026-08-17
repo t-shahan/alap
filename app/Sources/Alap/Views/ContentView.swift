@@ -238,6 +238,9 @@ private struct MessageListPane: View {
   var body: some View {
     VStack(spacing: 0) {
       toolbar
+      if store.hasMultipleSelected {
+        SelectionBar(store: store)
+      }
       Divider().overlay(Theme.Surface.border.opacity(0.5))
       list
     }
@@ -272,35 +275,18 @@ private struct MessageListPane: View {
         Text(countLabel)
           .font(Theme.Font.caption)
           .fontWeight(.regular)
-          .foregroundStyle(store.hasMultipleSelected ? Theme.Accent.blue
-                                                     : Theme.Ink.secondary)
-        if store.hasMultipleSelected {
-          Button("Clear") { store.clearSelection() }
-            .buttonStyle(.plain)
-            .font(Theme.Font.caption)
-            .fontWeight(.regular)
-            .foregroundStyle(Theme.Ink.tertiary)
-        }
+          .foregroundStyle(Theme.Ink.secondary)
         Spacer()
 
-        // Every action here operates on the SELECTION, one row or fifty. The
-        // buttons do not change between the two cases — only how many threads
-        // they touch — so there is no separate bulk mode to enter or leave.
-        toolbarButton("archivebox", store.hasMultipleSelected
-                        ? "Archive \(store.selectionCount)" : "Archive") {
+        toolbarButton("checkmark.square", "Select all (⌘A)") { store.selectAll() }
+        toolbarButton("archivebox", "Archive") {
           Task { await store.archiveSelection() }
         }
-        toolbarButton("envelope.open", store.hasMultipleSelected
-                        ? "Mark \(store.selectionCount) read" : "Toggle read") {
+        toolbarButton("envelope.open", "Toggle read") {
           Task { await store.markSelectionRead() }
         }
-        toolbarButton("flag", store.hasMultipleSelected
-                        ? "Flag \(store.selectionCount)" : "Flag") {
+        toolbarButton("flag", "Flag") {
           Task { await store.toggleFlagOnSelection() }
-        }
-        toolbarButton("trash", store.hasMultipleSelected
-                        ? "Trash \(store.selectionCount)" : "Trash") {
-          Task { await store.trashSelection() }
         }
       }
     }
@@ -328,8 +314,14 @@ private struct MessageListPane: View {
   /// Extracted from `threadList` because the combined modifier chain exceeded
   /// the type-checker's budget.
   private func row(for thread: ThreadRow) -> some View {
-    ThreadListRow(thread: thread, accountTint: store.tint(forAccount: thread.accountId))
-      .tag(thread.id)
+    ThreadListRow(
+      thread: thread,
+      accountTint: store.tint(forAccount: thread.accountId),
+      isSelected: store.selection.contains(thread.id),
+      isSelecting: !store.selection.isEmpty,
+      toggle: { store.toggleSelection(of: thread.id) }
+    )
+    .tag(thread.id)
       // List is lazy, so a row appearing IS the viewport reaching it. That
       // makes this the cheapest possible scroll signal — no offset tracking,
       // no content-height measurement per frame.
@@ -339,8 +331,19 @@ private struct MessageListPane: View {
       .contextMenu { menu(for: thread) }
   }
 
+  /// Two distinct states, not one.
+  ///
+  /// A row can be SELECTED (part of a bulk action) and separately FOCUSED (the
+  /// one in the reading pane). With several selected there is no focused row,
+  /// and the previous version only ever drew the focused one — so selecting
+  /// two rows made the highlight vanish entirely.
+  ///
+  /// The listRowBackground also has to carry this itself: an opaque background
+  /// masks List's own selection highlight, so nothing else is going to draw it.
   private func background(for thread: ThreadRow) -> Color {
-    thread.id == store.selectedThreadID ? Theme.Surface.selection : Theme.Surface.base
+    if thread.id == store.selectedThreadID { return Theme.Surface.selection }
+    if store.selection.contains(thread.id) { return Theme.Surface.selection.opacity(0.55) }
+    return Theme.Surface.base
   }
 
   @ViewBuilder
@@ -404,6 +407,16 @@ private struct ThreadListRow: View {
   /// pure noise, and every row carrying it would be a decoration that means
   /// nothing. It appears exactly when it starts carrying information.
   let accountTint: Color?
+  let isSelected: Bool
+  /// True once anything is selected.
+  ///
+  /// Once a selection exists, every checkbox stays visible — otherwise
+  /// extending it means hunting for a control that only appears under the
+  /// pointer, one row at a time.
+  let isSelecting: Bool
+  let toggle: () -> Void
+
+  @State private var isHovering = false
 
   var body: some View {
     HStack(spacing: 0) {
@@ -415,8 +428,24 @@ private struct ThreadListRow: View {
         .frame(width: 2)
         .padding(.vertical, Theme.Space.tight)
 
+      // Appears on hover, and stays for every row once a selection exists.
+      // Without it, multi-select is discoverable only by knowing to hold ⌘ —
+      // which is a feature nobody finds.
+      if isSelecting || isHovering {
+        Button(action: toggle) {
+          Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+            .font(.system(size: 13))
+            .foregroundStyle(isSelected ? Theme.Accent.blue : Theme.Ink.tertiary)
+            .frame(width: 22)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, Theme.Space.snug)
+      }
+
       rowContent
     }
+    .onHover { isHovering = $0 }
   }
 
   private var rowContent: some View {
@@ -489,5 +518,79 @@ private struct ConnectionIndicator: View {
     case .connecting: Theme.Accent.flag
     default: Theme.Accent.red
     }
+  }
+}
+
+/// The bulk action bar, shown only while several conversations are selected.
+///
+/// A distinct bar rather than relabelled toolbar buttons. Acting on fifty
+/// conversations at once is not the same gesture as acting on the one you are
+/// reading, and it should not be one hover-tooltip away from it: the bar states
+/// the count, states the actions in words, and offers an obvious way out.
+///
+/// Trash is separated and tinted red. It is the only action here that is not
+/// trivially reversible from inside the app, and it is about to happen to
+/// everything selected.
+private struct SelectionBar: View {
+  @Bindable var store: MailStore
+
+  var body: some View {
+    HStack(spacing: Theme.Space.base) {
+      Image(systemName: "checkmark.circle.fill")
+        .font(.system(size: Theme.Size.smallIcon))
+        .foregroundStyle(Theme.Accent.blue)
+
+      Text("\(store.selectionCount) selected")
+        .font(Theme.Font.smallEmphasis)
+        .foregroundStyle(Theme.Ink.primary)
+
+      Spacer(minLength: Theme.Space.base)
+
+      action("Archive", symbol: "archivebox") {
+        Task { await store.archiveSelection() }
+      }
+      action("Read", symbol: "envelope.open") {
+        Task { await store.markSelectionRead() }
+      }
+      action("Flag", symbol: "flag") {
+        Task { await store.toggleFlagOnSelection() }
+      }
+      action("Trash", symbol: "trash", tint: Theme.Accent.red) {
+        Task { await store.trashSelection() }
+      }
+
+      Button {
+        store.clearSelection()
+      } label: {
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(Theme.Ink.secondary)
+          .frame(width: 20, height: 20)
+          .contentShape(.rect)
+      }
+      .buttonStyle(.plain)
+      .help("Deselect all (⇧⌘A)")
+    }
+    .padding(.horizontal, Theme.Space.loose)
+    .padding(.vertical, Theme.Space.snug)
+    .background(Theme.Surface.selection)
+  }
+
+  private func action(_ title: String, symbol: String,
+                      tint: Color = Theme.Ink.primary,
+                      run: @escaping () -> Void) -> some View {
+    Button(action: run) {
+      HStack(spacing: Theme.Space.tight) {
+        Image(systemName: symbol).font(.system(size: Theme.Size.smallIcon - 2))
+        Text(title).font(Theme.Font.small)
+      }
+      .foregroundStyle(tint)
+      .padding(.horizontal, Theme.Space.base)
+      .padding(.vertical, Theme.Space.tight)
+      .background(Theme.Surface.raised.opacity(0.6),
+                  in: .rect(cornerRadius: Theme.Radius.control))
+      .contentShape(.rect)
+    }
+    .buttonStyle(.plain)
   }
 }

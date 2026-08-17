@@ -952,6 +952,20 @@ final class MailStore {
     selection = Set(threads.map(\.id))
   }
 
+  /// Adds or removes one thread from the selection.
+  ///
+  /// Separate from assigning `selectedThreadID`, which MOVES the selection.
+  /// This is what a checkbox does: extend or reduce without changing where the
+  /// reading pane is pointed, so ticking a second row does not navigate away
+  /// from the one being read.
+  func toggleSelection(of threadID: String) {
+    if selection.contains(threadID) {
+      selection.remove(threadID)
+    } else {
+      selection.insert(threadID)
+    }
+  }
+
   func clearSelection() {
     selection = []
     selectedThreadID = nil

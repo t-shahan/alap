@@ -82,9 +82,11 @@ struct MailCommands: Commands {
   var body: some Commands {
     // Replaces the New Item slot that was emptied in MailApp: ⌘N is what
     // every mail client on this platform binds to composing.
-    // ⌘A over the message list. Replaces the system Select All, which would
-    // otherwise try to select text in whatever field last had focus.
-    CommandGroup(replacing: .textEditing) {
+    // ADDED to the pasteboard group, never replacing .textEditing — that group
+    // is Cut, Copy, Paste and Select All, and replacing it removed copy and
+    // paste from the whole application.
+    CommandGroup(after: .pasteboard) {
+      Divider()
       Button("Select All Conversations") { store.selectAll() }
         .keyboardShortcut("a", modifiers: .command)
       Button("Deselect All") { store.clearSelection() }
