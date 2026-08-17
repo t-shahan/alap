@@ -204,6 +204,14 @@ function receive(json: string): void {
         preloads.get(cmd.id)?.cleanup()
         preloads.delete(cmd.id)
         break
+      case 'reconnect':
+        // Zero halts reconnection attempts after a fatal error. This is the
+        // only way back short of relaunching the app.
+        // Resumes only from needs-auth or error, which are exactly the two
+        // states Zero refuses to retry from on its own.
+        void zero.connection.connect()
+        break
+
       case 'mutate':
         void mutate(cmd).catch(err => {
           emit({type: 'mutateResult', id: cmd.id, ok: false, error: String(err)})

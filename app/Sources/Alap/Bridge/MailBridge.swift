@@ -32,6 +32,9 @@ protocol MailBridge: AnyObject {
   /// Loads the client bundle. Safe to call more than once.
   func start()
 
+  /// Resumes a connection Zero has stopped retrying.
+  func reconnect()
+
   func subscribe<Row: Decodable>(
     id: String,
     query: String,

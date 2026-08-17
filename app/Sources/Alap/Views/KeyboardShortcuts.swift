@@ -85,6 +85,14 @@ struct MailCommands: Commands {
     // ADDED to the pasteboard group, never replacing .textEditing — that group
     // is Cut, Copy, Paste and Select All, and replacing it removed copy and
     // paste from the whole application.
+    // Replaces the system Undo, which has nothing to undo here — the app has
+    // no text document, and the actions worth reversing are mailbox ones.
+    CommandGroup(replacing: .undoRedo) {
+      Button("Undo") { Task { await store.undoStack.undo() } }
+        .keyboardShortcut("z", modifiers: .command)
+        .disabled(store.undoStack.top == nil)
+    }
+
     CommandGroup(after: .pasteboard) {
       Divider()
       Button("Select All Conversations") { store.selectAll() }

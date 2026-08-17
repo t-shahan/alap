@@ -42,6 +42,18 @@ export type Command =
       readonly args?: unknown
     }
   | {
+      /**
+       * Reconnect after a fatal connection error.
+       *
+       * Zero stops retrying entirely once it reaches `error` or `needs-auth` —
+       * "no connection retries will be made until the host application calls
+       * connect() again". Without this command the client stays dead until the
+       * app is relaunched, while looking otherwise healthy.
+       */
+      readonly type: 'reconnect'
+      readonly id: string
+    }
+  | {
       readonly type: 'mutate'
       readonly id: string
       /** Dotted path into the mutator registry, e.g. `threads.archive`. */

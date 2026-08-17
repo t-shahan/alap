@@ -168,8 +168,53 @@ struct ComposerPanel: View {
               .allowsHitTesting(false)
           }
         }
+
+      // The quote is shown but not editable, and collapsed by default. It is
+      // context rather than something being written — and keeping it out of the
+      // text field means it cannot be half-deleted, which is how quoted replies
+      // usually end up mangled.
+      if !composer.quotedBody.isEmpty {
+        Divider().overlay(Theme.Surface.border.opacity(0.4))
+        quote
+      }
     }
     .background(Theme.Surface.raised)
+  }
+
+  private var quote: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Button {
+        withAnimation(Theme.Motion.quick) { composer.showsQuote.toggle() }
+      } label: {
+        HStack(spacing: Theme.Space.snug) {
+          Image(systemName: composer.showsQuote ? "chevron.down" : "chevron.right")
+            .font(.system(size: 9, weight: .semibold))
+          Text(composer.showsQuote ? "Hide quoted text" : "Show quoted text")
+            .font(Theme.Font.small)
+          Spacer()
+        }
+        .foregroundStyle(Theme.Ink.tertiary)
+        .padding(.horizontal, Theme.Space.loose)
+        .frame(height: 28)
+        .contentShape(.rect)
+      }
+      .buttonStyle(.plain)
+
+      if composer.showsQuote {
+        ScrollView {
+          Text(composer.quotedBody)
+            .font(Theme.Font.small)
+            .fontWeight(.regular)
+            .foregroundStyle(Theme.Ink.secondary)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Theme.Space.loose)
+            .padding(.bottom, Theme.Space.base)
+        }
+        .frame(maxHeight: 120)
+      }
+    }
+    .background(Theme.Surface.sunken.opacity(0.5))
   }
 
   // MARK: - Footer

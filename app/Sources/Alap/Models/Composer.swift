@@ -50,6 +50,23 @@ final class Composer {
 
   /// Non-nil when replying. Also pins the sending account.
   private(set) var replyContext: ReplyContext?
+
+  /// The parent message, quoted. Appended at send time rather than typed into.
+  private(set) var quotedBody = ""
+
+  /// Whether the quote is shown in the composer.
+  ///
+  /// Collapsed by default behind a control, as every mail client does — the
+  /// quote is context, not something being written, and showing it by default
+  /// would mean scrolling past it to reach the message.
+  var showsQuote = false
+
+  /// The body as it will actually be sent.
+  var composedBody: String {
+    let written = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !quotedBody.isEmpty else { return written }
+    return written + "\n\n" + quotedBody
+  }
   /// Account to send from. For a reply this is the thread's account.
   var accountId: String?
 
@@ -87,12 +104,22 @@ final class Composer {
   /// Recipients and threading are resolved by the caller, which has the thread
   /// loaded; recomputing them here would mean handing the composer the whole
   /// store.
-  func reply(to recipients: [String], subject: String, context: ReplyContext) {
+  /// - Parameter quoting: The parent, already formatted for quoting.
+  ///   Placed BELOW two blank lines with the cursor above it, which is where
+  ///   people write — top-posting is what mail clients on this platform do, and
+  ///   fighting it would only make the composer feel wrong.
+  func reply(to recipients: [String], subject: String, quoting quoted: String,
+             context: ReplyContext) {
     reset()
     self.to = recipients.joined(separator: ", ")
     self.subject = subject
     self.replyContext = context
     self.accountId = context.accountId
+    self.quotedBody = quoted
+    // The body starts EMPTY rather than pre-filled with the quote. The quote is
+    // appended at send time, so it cannot be half-deleted by editing, and the
+    // composer shows what was actually written rather than a wall of `>`.
+    self.body = ""
     presentation = .open
   }
 
@@ -107,7 +134,9 @@ final class Composer {
 
   private func reset() {
     to = ""; cc = ""; subject = ""; body = ""
+    quotedBody = ""
     showsCc = false
+    showsQuote = false
     replyContext = nil
     accountId = nil
     status = .editing

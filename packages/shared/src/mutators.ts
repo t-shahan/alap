@@ -169,6 +169,60 @@ export const mutators = defineMutators({
     ),
 
     /**
+     * Puts threads back in the inbox.
+     *
+     * The inverse of both archive and trash, which is why it is one mutator
+     * rather than two: archive removes INBOX, trash removes INBOX and adds
+     * TRASH, and restoring means adding INBOX and removing TRASH in either
+     * case. Adding a label that is already absent, or removing one already
+     * gone, is a no-op in Gmail — which is what lets one call undo both.
+     *
+     * This is what makes triage safe to do quickly. Without it, a mis-keyed
+     * archive can only be repaired by leaving the app and finding the message
+     * in Gmail.
+     */
+    restore: defineMutator(
+      z.object({
+        ...outboxArgs,
+        threadIds: z.array(z.string()).min(1),
+        inboxLabelId: z.string(),
+      }),
+      async ({tx, args: {accountId, threadIds, inboxLabelId, idempotencyKey}}) => {
+        const messages = await tx.run(zql.message.where('threadId', 'IN', threadIds))
+        if (messages.length === 0) {
+          throw new Error(`restore: no messages in ${threadIds.length} thread(s)`)
+        }
+
+        // Re-create the INBOX links the archive deleted. The id is derived the
+        // same way it was when the link was first written, so this restores the
+        // exact row rather than a duplicate.
+        for (const m of messages) {
+          await tx.mutate.messageLabel.insert({
+            id: messageLabelId(m.id, inboxLabelId),
+            accountId,
+            messageId: m.id,
+            labelId: inboxLabelId,
+          })
+        }
+
+        await tx.mutate.outbox.insert({
+          id: idempotencyKey,
+          accountId,
+          op: 'modify_labels',
+          payload: {
+            messageIds: messages.map(m => m.remoteMessageId),
+            addLabelIds: ['INBOX'],
+            removeLabelIds: ['TRASH'],
+          },
+          status: 'pending',
+          attempts: 0,
+          idempotencyKey,
+          ...timestamps(),
+        })
+      },
+    ),
+
+    /**
      * Mark every message in a thread read or unread.
      *
      * Note there is no explicit counter bookkeeping here. Flipping

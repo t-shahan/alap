@@ -14,7 +14,7 @@ import Foundation
 /// heterogeneous per query and has to pass through as arbitrary JSON.
 struct Command {
   enum Kind: String {
-    case subscribe, unsubscribe, mutate, preload
+    case subscribe, unsubscribe, mutate, preload, reconnect
   }
 
   let kind: Kind

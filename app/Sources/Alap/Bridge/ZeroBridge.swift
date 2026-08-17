@@ -41,6 +41,8 @@ final class ZeroBridge {
   /// it can sit forever without loading or executing. `BridgeHost` mounts it
   /// at zero size, so it is hosted but invisible.
   @ObservationIgnored private(set) var webView: WKWebView?
+  @ObservationIgnored private var reconnectTask: Task<Void, Never>?
+  @ObservationIgnored private var reconnectAttempt = 0
   @ObservationIgnored private var handler: ScriptMessageRelay?
 
   /// Decoders for active subscriptions, keyed by subscription id. Each closure
@@ -190,6 +192,16 @@ final class ZeroBridge {
     send(Command(kind: .preload, id: id, path: query, args: args))
   }
 
+  /// Resumes a connection Zero has stopped retrying.
+  ///
+  /// `error` and `needs-auth` are terminal until the host asks again — Zero
+  /// makes no further attempts on its own. Without this the client stays dead
+  /// while the rest of the app looks healthy: the list still renders from the
+  /// local replica, so nothing appears wrong except that mail stops arriving.
+  func reconnect() {
+    send(Command(kind: .reconnect, id: UUID().uuidString, path: nil, args: nil))
+  }
+
   func unsubscribe(id: String) {
     sinks.removeValue(forKey: id)
     send(Command(kind: .unsubscribe, id: id, path: nil, args: nil))
@@ -215,6 +227,34 @@ final class ZeroBridge {
   }
 
   // MARK: - Transport
+
+  /// Retries a stalled connection, backing off.
+  ///
+  /// Zero halts on `error` and `needs-auth`, so recovery has to be driven from
+  /// here. Backed off rather than immediate: the usual cause is a service that
+  /// is down, and hammering it every frame helps nobody.
+  ///
+  /// Capped rather than unbounded — past a minute the problem is not going to
+  /// resolve itself, and the indicator is clickable so a person can force it.
+  private func scheduleReconnectIfStalled(_ state: ConnectionState) {
+    guard state == .error || state == .needsAuth else {
+      // Any other state means Zero is managing itself again.
+      reconnectAttempt = 0
+      reconnectTask?.cancel()
+      reconnectTask = nil
+      return
+    }
+    guard reconnectTask == nil else { return }
+
+    let delay = min(pow(2, Double(reconnectAttempt)), 60)
+    reconnectAttempt += 1
+    reconnectTask = Task { [weak self] in
+      try? await Task.sleep(for: .seconds(delay))
+      guard !Task.isCancelled else { return }
+      self?.reconnectTask = nil
+      self?.reconnect()
+    }
+  }
 
   private func send(_ command: Command) {
     guard let json = try? command.jsonString() else {
@@ -284,6 +324,7 @@ final class ZeroBridge {
     case .connection(let state, let reason):
       bridgeLog.info("connection: \(state.rawValue, privacy: .public) \(reason ?? "", privacy: .public)")
       connection = state
+      scheduleReconnectIfStalled(state)
 
     case .failure(_, let message):
       bridgeLog.error("bridge error: \(message, privacy: .public)")

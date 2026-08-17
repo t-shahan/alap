@@ -168,7 +168,8 @@ struct ComposerTests {
       accountId: "acct_1", remoteThreadId: "t1",
       inReplyTo: "parent@example.com", references: ["parent@example.com"])
 
-    composer.reply(to: ["ada@example.com"], subject: "Re: Design", context: context)
+    composer.reply(to: ["ada@example.com"], subject: "Re: Design",
+                   quoting: "> original", context: context)
 
     #expect(composer.to == "ada@example.com")
     #expect(composer.subject == "Re: Design")

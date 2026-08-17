@@ -32,6 +32,17 @@ struct ContentView: View {
     // Bottom-trailing overlay rather than a sheet: the mailbox behind stays
     // live and clickable, so looking something up mid-message does not mean
     // discarding the draft.
+    .overlay(alignment: .bottomLeading) {
+      // Bottom-LEADING, clear of the composer's corner: an undo notice hidden
+      // behind the composer would be an offer nobody could take.
+      if let entry = store.undoStack.banner {
+        UndoBanner(
+          entry: entry,
+          undo: { Task { await store.undoStack.undo() } },
+          dismiss: { store.undoStack.dismissBanner() }
+        )
+      }
+    }
     .overlay(alignment: .bottomTrailing) {
       if store.composer.isVisible {
         ComposerPanel(store: store, composer: store.composer)
@@ -72,7 +83,9 @@ private struct Sidebar: View {
       Spacer(minLength: 0)
 
       HStack(spacing: Theme.Space.base) {
-        ConnectionIndicator(state: store.bridge.connection)
+        ConnectionIndicator(state: store.bridge.connection) {
+          store.bridge.reconnect()
+        }
         Spacer(minLength: 0)
         ThemeSwitcher()
       }
@@ -504,6 +517,7 @@ private struct ThreadListRow: View {
 
 private struct ConnectionIndicator: View {
   let state: ConnectionState
+  var reconnect: (() -> Void)?
 
   var body: some View {
     HStack(spacing: Theme.Space.snug) {
@@ -516,6 +530,14 @@ private struct ConnectionIndicator: View {
         .foregroundStyle(Theme.Ink.tertiary)
     }
     .animation(Theme.Motion.quick, value: state)
+    // Clickable in the two states Zero refuses to retry from. Automatic
+    // recovery backs off to a minute; past that a person watching it should
+    // not have to wait for the timer.
+    .onTapGesture {
+      if state == .error || state == .needsAuth { reconnect?() }
+    }
+    .help(state == .error || state == .needsAuth
+          ? "Click to reconnect" : state.label)
   }
 
   private var indicatorColor: Color {
@@ -527,3 +549,47 @@ private struct ConnectionIndicator: View {
   }
 }
 
+
+/// Reports what just happened, and offers to take it back.
+///
+/// Placed bottom-left, clear of the composer's corner. Deliberately transient:
+/// it is a notice, not a dialog, and it must not require dismissing before the
+/// mailbox can be used again — the whole point of fast triage is that nothing
+/// interrupts it.
+///
+/// The offer outlives the notice. ⌘Z keeps working after the banner fades,
+/// because letting the message expire is not the same as declining it.
+struct UndoBanner: View {
+  let entry: UndoStack.Entry
+  let undo: () -> Void
+  let dismiss: () -> Void
+
+  var body: some View {
+    HStack(spacing: Theme.Space.loose) {
+      Text(entry.description)
+        .font(Theme.Font.small)
+        .foregroundStyle(Theme.Ink.primary)
+        .lineLimit(1)
+
+      Button("Undo", action: undo)
+        .buttonStyle(.plain)
+        .font(Theme.Font.smallEmphasis)
+        .foregroundStyle(Theme.Accent.blue)
+
+      Button(action: dismiss) {
+        Image(systemName: "xmark")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(Theme.Ink.tertiary)
+          .contentShape(.rect)
+      }
+      .buttonStyle(.plain)
+    }
+    .padding(.horizontal, Theme.Space.wide)
+    .frame(height: 36)
+    .background(Theme.Surface.control, in: .capsule)
+    .overlay { Capsule().strokeBorder(Theme.Surface.border, lineWidth: 1) }
+    .shadow(color: .black.opacity(0.28), radius: 14, y: 5)
+    .padding(Theme.Space.section)
+    .transition(.move(edge: .bottom).combined(with: .opacity))
+  }
+}

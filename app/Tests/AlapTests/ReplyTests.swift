@@ -173,7 +173,13 @@ struct ReplyTests {
 
     await sendReply(store, body: "\n  Sounds good.  \n")
 
-    #expect(reply(bridge)?["body"] == .string("Sounds good."))
+    // The WRITTEN part is trimmed. The quoted parent follows it, so an exact
+    // equality here would be asserting that replies carry no context.
+    guard case .string(let sent)? = reply(bridge)?["body"] else {
+      Issue.record("no body sent"); return
+    }
+    #expect(sent.hasPrefix("Sounds good."))
+    #expect(!sent.hasPrefix(" "), "leading whitespace survived")
   }
 
   @Test("Nothing is sent when no thread is selected")
@@ -221,5 +227,108 @@ struct ReplyTests {
     }
     #expect(store.composer.body == "Ack.", "a failed send must not lose the draft")
     #expect(store.composer.isVisible, "the composer must stay open to retry")
+  }
+}
+
+/// Quoting the parent beneath a reply.
+///
+/// Its absence was not neutral: a reply with no context reads as abrupt, and
+/// in a long exchange the recipient loses the thread — especially on a phone,
+/// where the conversation view is often just the latest message.
+@MainActor
+struct QuotedReplyTests {
+  private func store(parentBody: String = "Original message body.")
+    -> (MailStore, FakeBridge)
+  {
+    let bridge = FakeBridge()
+    let store = MailStore(bridge: bridge, openFile: { _ in })
+    store.start()
+    bridge.push("accounts", json: Fixtures.account())
+    bridge.push("labels", json: Fixtures.labels())
+    bridge.push("threads", json: Fixtures.threadList(["th1"]))
+    store.selectedThreadID = "th1"
+    store.flushPendingSubscriptions()
+
+    let message = """
+      {"id":"m1","threadId":"th1","fromName":"Ada Okonkwo",
+       "fromEmail":"ada@example.com","toRecipients":[{"name":"Me","email":"me@example.com"}],
+       "ccRecipients":[],"subject":"Design review","snippet":"s",
+       "sentAt":1700000000000,"isRead":true,"isStarred":false,"hasAttachments":false,
+       "rfc822MessageId":"parent@example.com",
+       "body":{"messageId":"m1","htmlBody":null,"textBody":"\(parentBody)"},
+       "attachments":[]}
+      """
+    bridge.push("detail", json: Fixtures.detail(messages: [message]))
+    return (store, bridge)
+  }
+
+  @Test("A reply carries the parent, attributed")
+  func quotesTheParent() async {
+    let (store, bridge) = store()
+    store.startReply()
+    store.composer.body = "Sounds good."
+    await store.sendComposed()
+
+    guard case .string(let sent)? =
+            bridge.mutations(named: "compose.send").first?.args["body"] else {
+      Issue.record("no body sent"); return
+    }
+    #expect(sent.hasPrefix("Sounds good."), "what was written comes first")
+    #expect(sent.contains("Ada Okonkwo <ada@example.com> wrote:"))
+    #expect(sent.contains("> Original message body."))
+  }
+
+  @Test("The composer's body holds only what was written")
+  func bodyFieldExcludesTheQuote() async {
+    // The quote is appended at SEND time, not typed into the field. Pre-filling
+    // it means it can be half-deleted, which is how quoted replies usually end
+    // up mangled — and it buries the cursor under a wall of `>`.
+    let (store, _) = store()
+    store.startReply()
+
+    #expect(store.composer.body.isEmpty)
+    #expect(!store.composer.quotedBody.isEmpty)
+  }
+
+  @Test("A new message quotes nothing")
+  func newMessagesAreNotQuoted() async {
+    let (store, bridge) = store()
+    store.startNewMessage()
+    store.composer.to = "ada@example.com"
+    store.composer.body = "Hello."
+    await store.sendComposed()
+
+    guard case .string(let sent)? =
+            bridge.mutations(named: "compose.send").first?.args["body"] else {
+      Issue.record("no body sent"); return
+    }
+    #expect(sent == "Hello.")
+    #expect(!sent.contains("wrote:"))
+  }
+
+  @Test("Quoting is plain-text, since the engine sends text/plain")
+  func quotingIsPlainText() async {
+    // Quoting with markup a text/plain message cannot carry would put visible
+    // tags in the recipient's inbox.
+    let (store, _) = store()
+    store.startReply()
+
+    let quote = store.composer.quotedBody
+    #expect(quote.contains("> "))
+    #expect(!quote.contains("<blockquote"))
+    #expect(!quote.contains("<div"))
+  }
+
+  @Test("A very long parent is truncated rather than quoted whole")
+  func longParentsAreTruncated() async {
+    // Machine-generated digests run to thousands of lines. Quoting all of it
+    // buries the reply and inflates every later message in the thread.
+    let long = (0..<400).map { "line \($0)" }.joined(separator: "\\n")
+    let (store, _) = store(parentBody: long)
+    store.startReply()
+
+    let lines = store.composer.quotedBody.split(separator: "\n").count
+    #expect(lines < 200, "quoted \(lines) lines")
+    #expect(store.composer.quotedBody.contains("[…]"))
   }
 }

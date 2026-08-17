@@ -357,7 +357,6 @@ final class MailStore {
       self?.threadsLoaded = true
       self?.isGrowingThreads = false
       self?.reconcileSelection()
-      self?.selectFirstIfNeeded()
     }
   }
 
@@ -385,15 +384,6 @@ final class MailStore {
   /// Must match `MAX_THREAD_LIMIT` in queries.ts, which rejects anything above
   /// it — exceeding it would fail the query rather than return fewer rows.
   static let maxThreadLimit = 50_000
-
-  /// Selects the first thread when a mailbox loads with nothing selected.
-  ///
-  /// Without this the reading pane sits empty until the user clicks, and the
-  /// keyboard shortcuts have no anchor to move from.
-  private func selectFirstIfNeeded() {
-    guard selectedThreadID == nil, let first = threads.first else { return }
-    selectedThreadID = first.id
-  }
 
   /// Unread count for a sidebar row, or nil when it should show no badge.
   ///
@@ -550,11 +540,19 @@ final class MailStore {
     if let current = selectedThread, trashed.contains(current.id) {
       selectedThread = nil
     }
+
+    undoStack.record(rows.count == 1 ? "Trashed 1 conversation"
+                                     : "Trashed \(rows.count) conversations") {
+      [weak self] in await self?.restore(rows)
+    }
   }
 
 
   /// The composer panel's state. Owned here so menu commands can reach it.
   let composer = Composer()
+
+  /// The last reversible action.
+  let undoStack = UndoStack()
 
   /// Opens the composer as a reply to the selected thread.
   ///
@@ -587,6 +585,7 @@ final class MailStore {
     composer.reply(
       to: recipients,
       subject: MailStore.replySubject(parent.subject),
+      quoting: MailStore.quotedBody(of: parent),
       context: Composer.ReplyContext(
         accountId: sendingAccount,
         remoteThreadId: thread.remoteThreadId,
@@ -614,6 +613,40 @@ final class MailStore {
     }
     return thread.accountId
   }
+
+  /// The parent message, quoted beneath a reply.
+  ///
+  /// Every other mail client does this, and its absence is not neutral: a reply
+  /// with no quoted context reads as abrupt, and in a long exchange the
+  /// recipient loses the thread entirely — particularly on a phone, where the
+  /// conversation view is often just the latest message.
+  ///
+  /// Plain-text `>` quoting rather than HTML, because the engine composes
+  /// single-part text/plain. Quoting with markup a text/plain message cannot
+  /// carry would put visible tags in the recipient's inbox.
+  static func quotedBody(of parent: MessageRow) -> String {
+    let attribution = "On \(parent.sentDate.formatted(date: .long, time: .shortened)), "
+      + "\(parent.displayName) <\(parent.fromEmail)> wrote:"
+
+    // The body is already plain text — `displayBody` converts HTML on decode,
+    // once, rather than on every render.
+    let quoted = parent.displayBody
+      .split(separator: "\n", omittingEmptySubsequences: false)
+      .prefix(MailStore.maxQuotedLines)
+      .map { $0.isEmpty ? ">" : "> \($0)" }
+      .joined(separator: "\n")
+
+    let truncated = parent.displayBody
+      .split(separator: "\n", omittingEmptySubsequences: false).count
+      > MailStore.maxQuotedLines
+    return attribution + "\n" + quoted + (truncated ? "\n> […]" : "")
+  }
+
+  /// Lines of the parent carried into a reply.
+  ///
+  /// A machine-generated digest can run to thousands of lines, and quoting all
+  /// of it would bury the actual reply and inflate every message in the thread.
+  static let maxQuotedLines = 120
 
   /// Mirrors the engine's `compose::reply_subject` — adds `Re:` only when it
   /// is absent, so a few round trips do not produce "Re: Re: Re:".
@@ -662,7 +695,7 @@ final class MailStore {
           "to": .array(to.map { .string($0) }),
           "cc": .array(composer.recipients(from: composer.cc).map { .string($0) }),
           "subject": .string(composer.subject),
-          "body": .string(composer.body.trimmingCharacters(in: .whitespacesAndNewlines)),
+          "body": .string(composer.composedBody),
           "remoteThreadId": .string(context?.remoteThreadId ?? ""),
           "inReplyTo": .string(context?.inReplyTo ?? ""),
           "references": .array((context?.references ?? []).map { .string($0) }),
@@ -900,6 +933,30 @@ final class MailStore {
     if let current = selectedThread, archived.contains(current.id) {
       selectedThread = nil
     }
+
+    undoStack.record(rows.count == 1 ? "Archived 1 conversation"
+                                     : "Archived \(rows.count) conversations") {
+      [weak self] in await self?.restore(rows)
+    }
+  }
+
+  /// Puts threads back in the inbox — the inverse of archive and of trash.
+  func restore(_ rows: [ThreadRow]) async {
+    for (accountId, group) in Dictionary(grouping: rows, by: \.accountId) {
+      guard let inbox = labels.first(where: {
+        $0.remoteId == "INBOX" && $0.accountId == accountId
+      }) else { continue }
+
+      try? await bridge.mutate(
+        "threads.restore",
+        args: [
+          "accountId": .string(accountId),
+          "threadIds": .array(group.map { .string($0.id) }),
+          "inboxLabelId": .string(inbox.id),
+          "idempotencyKey": .string(UUID().uuidString.lowercased()),
+        ]
+      )
+    }
   }
 
   func setRead(_ thread: ThreadRow, isRead: Bool) async {
@@ -907,7 +964,7 @@ final class MailStore {
   }
 
   /// Marks many threads read or unread, one mutation per account.
-  func setRead(_ rows: [ThreadRow], isRead: Bool) async {
+  func setRead(_ rows: [ThreadRow], isRead: Bool, recordUndo: Bool = true) async {
     for (accountId, group) in Dictionary(grouping: rows, by: \.accountId) {
       try? await bridge.mutate(
         "threads.setRead",
@@ -919,6 +976,14 @@ final class MailStore {
         ]
       )
     }
+
+    guard recordUndo else { return }
+    let verb = isRead ? "read" : "unread"
+    undoStack.record("Marked \(rows.count) \(verb)") { [weak self] in
+      // recordUndo: false — otherwise undoing would itself become the newest
+      // undoable action, and ⌘Z would flip back and forth forever.
+      await self?.setRead(rows, isRead: !isRead, recordUndo: false)
+    }
   }
 
   func toggleStar(_ thread: ThreadRow) async {
@@ -926,7 +991,7 @@ final class MailStore {
   }
 
   /// Flags or unflags many threads, one mutation per account.
-  func setStarred(_ rows: [ThreadRow], isStarred: Bool) async {
+  func setStarred(_ rows: [ThreadRow], isStarred: Bool, recordUndo: Bool = true) async {
     for (accountId, group) in Dictionary(grouping: rows, by: \.accountId) {
       try? await bridge.mutate(
         "threads.setStarred",
@@ -937,6 +1002,12 @@ final class MailStore {
           "idempotencyKey": .string(UUID().uuidString.lowercased()),
         ]
       )
+    }
+
+    guard recordUndo else { return }
+    undoStack.record((isStarred ? "Flagged " : "Unflagged ") + "\(rows.count)") {
+      [weak self] in
+      await self?.setStarred(rows, isStarred: !isStarred, recordUndo: false)
     }
   }
 

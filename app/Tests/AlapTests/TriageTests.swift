@@ -503,3 +503,54 @@ struct BulkPanelTests {
     #expect(store.selectedThreadID == "c", "focus should advance past the archived block")
   }
 }
+
+/// Nothing is selected until the user selects something.
+@MainActor
+struct InitialSelectionTests {
+  @Test("A loaded mailbox selects nothing")
+  func doesNotAutoSelect() {
+    // The app used to open with the newest conversation already displayed. It
+    // was justified as giving the keyboard "an anchor to move from", which was
+    // simply wrong — moveSelection already selects the first row when nothing
+    // is selected. So it opened someone's mail for them for no reason.
+    let bridge = FakeBridge()
+    let store = MailStore(bridge: bridge, openFile: { _ in })
+    store.start()
+    bridge.push("accounts", json: Fixtures.account())
+    bridge.push("labels", json: Fixtures.labels())
+    bridge.push("threads", json: Fixtures.threadList(["a", "b", "c"]))
+
+    #expect(store.selectedThreadID == nil)
+    #expect(store.selection.isEmpty)
+  }
+
+  @Test("The keyboard still works from nothing selected")
+  func arrowKeysStillHaveAnAnchor() {
+    let bridge = FakeBridge()
+    let store = MailStore(bridge: bridge, openFile: { _ in })
+    store.start()
+    bridge.push("accounts", json: Fixtures.account())
+    bridge.push("labels", json: Fixtures.labels())
+    bridge.push("threads", json: Fixtures.threadList(["a", "b", "c"]))
+
+    store.moveSelection(by: 1)
+
+    #expect(store.selectedThreadID == "a")
+  }
+
+  @Test("Switching mailbox does not open a message either")
+  func mailboxChangeDoesNotAutoSelect() {
+    let bridge = FakeBridge()
+    let store = MailStore(bridge: bridge, openFile: { _ in })
+    store.start()
+    bridge.push("accounts", json: Fixtures.account())
+    bridge.push("labels", json: Fixtures.labels())
+    bridge.push("threads", json: Fixtures.threadList(["a", "b"]))
+    store.selectedThreadID = "a"
+
+    store.selectedMailbox = .archived
+    bridge.push("threads", json: Fixtures.threadList(["x", "y"]))
+
+    #expect(store.selectedThreadID == nil)
+  }
+}

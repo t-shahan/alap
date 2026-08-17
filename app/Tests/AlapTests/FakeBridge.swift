@@ -31,6 +31,8 @@ final class FakeBridge: MailBridge {
 
   func start() { sent.append(Sent(kind: "start", name: "", args: [:])) }
 
+  func reconnect() { sent.append(Sent(kind: "reconnect", name: "", args: [:])) }
+
   func subscribe<Row: Decodable>(
     id: String, query: String, args: [String: JSONValue],
     as rowType: Row.Type, onUpdate: @escaping ([Row], Bool) -> Void
