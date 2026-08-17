@@ -159,6 +159,7 @@ final class MailStore {
         selection = []
       }
       scheduleDetailSubscription()
+      scheduleMarkRead()
     }
   }
 
@@ -291,6 +292,55 @@ final class MailStore {
       try? await Task.sleep(for: MailStore.detailDebounce)
       guard !Task.isCancelled else { return }
       self?.subscribeDetailNow()
+    }
+  }
+
+  /// How long a conversation must stay open before it counts as read.
+  ///
+  /// Not zero. Holding ↓ moves through the list far faster than anyone reads,
+  /// and marking each row as it flashes past would silently clear the unread
+  /// state of everything between where you started and where you stopped — at
+  /// 500 rows that is not a mistake anyone can undo row by row.
+  ///
+  /// Long enough to survive a keypress, short enough that landing on a message
+  /// and looking at it counts. Apple Mail and Outlook both settled on a dwell
+  /// for the same reason.
+  static let defaultMarkReadDwell = Duration.milliseconds(600)
+
+  /// Overridable so tests can use a short dwell.
+  ///
+  /// Tests that waited out the real 600ms passed alone and failed in the full
+  /// suite: Swift Testing runs suites in parallel, and a contended MainActor
+  /// resumes the sleep late enough to blow any fixed tolerance. A short dwell
+  /// plus polling for the result removes the race rather than padding it.
+  @ObservationIgnored var markReadDwell = MailStore.defaultMarkReadDwell
+
+  @ObservationIgnored private var markReadTask: Task<Void, Never>?
+
+  /// Marks the open conversation read once it has been open long enough.
+  ///
+  /// Cancelled and rescheduled on every selection change, so only the row the
+  /// selection comes to REST on is ever marked.
+  private func scheduleMarkRead() {
+    markReadTask?.cancel()
+
+    // Ticking checkboxes to archive a batch is not reading them, so this only
+    // fires for a single open conversation.
+    guard selection.count == 1, let thread = selectedThread, thread.isUnread else {
+      return
+    }
+
+    let dwell = markReadDwell
+    markReadTask = Task { [weak self] in
+      try? await Task.sleep(for: dwell)
+      guard !Task.isCancelled else { return }
+      // The selection may have moved on while the dwell elapsed.
+      guard self?.selectedThreadID == thread.id else { return }
+      // recordUndo: false — auto-marking is a side effect of looking at
+      // something, not an action the user took. Recording it would mean ⌘Z
+      // after reading a message un-reads it instead of undoing the archive
+      // that came before, which is both surprising and destructive.
+      await self?.setRead([thread], isRead: true, recordUndo: false)
     }
   }
 
