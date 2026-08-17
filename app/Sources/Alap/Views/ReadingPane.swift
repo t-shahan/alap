@@ -8,6 +8,11 @@ import SwiftUI
 struct ReadingPane: View {
   @Bindable var store: MailStore
   @Environment(\.colorScheme) private var colorScheme
+  /// Height of the rendered message, measured by the web view.
+  ///
+  /// Starts at a screenful so the pane does not visibly jump on first paint;
+  /// the real value arrives a frame later.
+  @State private var bodyHeight: CGFloat = 400
 
   var body: some View {
     VStack(spacing: 0) {
@@ -79,9 +84,13 @@ struct ReadingPane: View {
           MessageWebView(
             html: MessageDocument.build(for: detail.messages,
                                         isDark: colorScheme == .dark),
-            inlineImages: store.inlineImages
+            inlineImages: store.inlineImages,
+            onHeightChange: { bodyHeight = $0 }
           )
-          .frame(minHeight: 240)
+          // Exactly the document's height, so the OUTER scroll view does all
+          // the scrolling. A fixed minHeight gave short messages dead space
+          // below them and long ones a second scrollbar inside the first.
+          .frame(height: max(bodyHeight, 200))
 
           let attachments = detail.messages.flatMap { $0.attachments }
             .filter { !$0.isInline }
@@ -105,6 +114,7 @@ struct ReadingPane: View {
       .frame(maxWidth: .infinity, alignment: .leading)
     }
     .id(thread.id)  // reset scroll when switching threads
+    .onChange(of: thread.id) { _, _ in bodyHeight = 400 }
   }
 
   private func header(for thread: ThreadRow) -> some View {

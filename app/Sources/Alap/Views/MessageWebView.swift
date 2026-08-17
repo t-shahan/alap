@@ -33,6 +33,18 @@ struct MessageWebView: NSViewRepresentable {
   let html: String
   /// Content-ID → downloaded file, for the thread being shown.
   var inlineImages: [String: URL] = [:]
+  /// Reports the rendered document's height back to the layout.
+  ///
+  /// A `WKWebView` has no intrinsic content size, so SwiftUI has nothing to
+  /// size it by and falls back to whatever the parent proposes. That produced
+  /// both failure modes at once: short messages left a screenful of dead space
+  /// below them, and long ones got their own inner scrollbar inside the pane's
+  /// scrollbar.
+  ///
+  /// Measuring the document and handing the height up means the OUTER scroll
+  /// view does all the scrolling, and the body occupies exactly the room it
+  /// needs — no more, no less.
+  var onHeightChange: ((CGFloat) -> Void)?
 
   func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -55,6 +67,8 @@ struct MessageWebView: NSViewRepresentable {
   }
 
   func updateNSView(_ webView: WKWebView, context: Context) {
+    context.coordinator.onHeightChange = onHeightChange
+
     // The handler must know the new thread's images BEFORE the document that
     // references them is loaded, or every cid: request in the first layout
     // resolves against the previous conversation.
@@ -79,6 +93,39 @@ struct MessageWebView: NSViewRepresentable {
     var loadedHTML: String?
     var loadedImages: String?
     let imageHandler = InlineImageHandler()
+    var onHeightChange: ((CGFloat) -> Void)?
+    private var lastReported: CGFloat = 0
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+      measure(webView)
+      // Inline images resolve after first paint and change the height when
+      // they land. Re-measuring shortly afterwards catches that without a
+      // ResizeObserver, which the document's own CSP forbids anyway.
+      for delay in [0.05, 0.25, 0.8] {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak webView] in
+          guard let webView else { return }
+          self.measure(webView)
+        }
+      }
+    }
+
+    private func measure(_ webView: WKWebView) {
+      // `evaluateJavaScript` is host-initiated and still runs with
+      // `allowsContentJavaScript` disabled — that flag governs the PAGE's own
+      // scripts, which remain blocked both there and by the CSP.
+      webView.evaluateJavaScript(
+        "Math.ceil(document.documentElement.scrollHeight)"
+      ) { [weak self] value, _ in
+        // JavaScript numbers arrive as NSNumber regardless of how they look.
+        guard let self, let number = value as? NSNumber else { return }
+        let height = CGFloat(number.doubleValue)
+        // Ignore noise: re-laying out for a one-point change would thrash the
+        // scroll position while images settle.
+        guard height > 0, abs(height - self.lastReported) > 2 else { return }
+        self.lastReported = height
+        self.onHeightChange?(height)
+      }
+    }
 
     func webView(
       _ webView: WKWebView,
