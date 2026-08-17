@@ -29,6 +29,22 @@ import WebKit
 ///   - JavaScript disabled at the WebKit level
 ///   - navigation intercepted: links open in the browser, and nothing may
 ///     replace the pane's own document
+/// A web view that refuses to scroll itself.
+///
+/// `WKWebView` consumes scroll wheel events over its own bounds. That was
+/// invisible while the view was short and had its own scrollbar — it simply
+/// scrolled internally. Once it is sized to its full content it has nothing
+/// left to scroll, so those events were swallowed and the enclosing scroll view
+/// never saw them: a message taller than the pane could not be scrolled at all.
+///
+/// Forwarding to `nextResponder` hands every scroll to the SwiftUI `ScrollView`
+/// that contains it, which is the only thing that should be scrolling here.
+private final class PassThroughWebView: WKWebView {
+  override func scrollWheel(with event: NSEvent) {
+    nextResponder?.scrollWheel(with: event)
+  }
+}
+
 struct MessageWebView: NSViewRepresentable {
   let html: String
   /// Content-ID → downloaded file, for the thread being shown.
@@ -60,7 +76,7 @@ struct MessageWebView: NSViewRepresentable {
     // right shape here.
     config.setURLSchemeHandler(context.coordinator.imageHandler, forURLScheme: "cid")
 
-    let webView = WKWebView(frame: .zero, configuration: config)
+    let webView = PassThroughWebView(frame: .zero, configuration: config)
     webView.navigationDelegate = context.coordinator
     webView.setValue(false, forKey: "drawsBackground")  // inherit app background
     return webView
