@@ -181,10 +181,17 @@ final class MailStore {
 
   /// Rows fetched initially, and added per growth.
   ///
-  /// 200 rather than 100: two screenfuls means the first growth happens while
-  /// there is still material to scroll, so the list never visibly stalls at the
-  /// bottom waiting for more.
-  static let threadPageSize = 200
+  /// 500, not 200. A real inbox here matches 17,683 threads, so at 200 a page
+  /// reaching the thousandth conversation meant five separate scroll-triggered
+  /// fetches — and every one of them depended on a scroll signal arriving.
+  /// Fewer, larger pages means fewer chances to stall.
+  static let threadPageSize = 500
+
+  /// Rows added per growth, once past the first page.
+  ///
+  /// Larger than the initial page: the first is on the critical path to
+  /// painting the window, later ones are not.
+  static let threadGrowthSize = 1000
 
   /// Rows from the end at which more are requested.
   ///
@@ -370,6 +377,7 @@ final class MailStore {
       break
     }
 
+    storeLog.info("subscribe \(self.selectedMailbox.queryName, privacy: .public) limit=\(self.threadLimit, privacy: .public)")
     bridge.subscribe(
       id: threadSubscriptionID,
       query: selectedMailbox.queryName,
@@ -380,6 +388,7 @@ final class MailStore {
       // locally-cached rows immediately and the server confirmation follows,
       // but `resultType` has never reported `complete` through the bridge — so
       // gating on it left the UI saying "Loading…" permanently.
+      storeLog.info("threads update: \(rows.count, privacy: .public) rows")
       self?.threads = rows
       self?.threadsLoaded = true
       self?.isGrowingThreads = false
@@ -403,10 +412,45 @@ final class MailStore {
           index >= threads.count - MailStore.growthTrigger
     else { return }
 
+    storeLog.info("grow: \(self.threadLimit, privacy: .public) -> \(self.threadLimit + MailStore.threadPageSize, privacy: .public)")
+    growThreads()
+  }
+
+  /// Loads the next page, whatever triggered it.
+  ///
+  /// Public because scrolling is not the only way to ask: the list carries an
+  /// explicit control, so a stalled or missed scroll signal is never the end of
+  /// the road. That was the actual failure — growth depended entirely on a row
+  /// near the end appearing, and when that did not happen the mailbox simply
+  /// ended at 200 with nothing to say otherwise.
+  func growThreads() {
+    guard canGrowThreads else { return }
     isGrowingThreads = true
-    threadLimit += MailStore.threadPageSize
+    threadLimit = min(threadLimit + MailStore.threadGrowthSize,
+                      MailStore.maxThreadLimit)
+    storeLog.info("grow -> limit \(self.threadLimit, privacy: .public)")
     resubscribeThreads()
   }
+
+  /// Clears the in-flight flag without a bridge round trip.
+  ///
+  /// Exists so a test can drive repeated growth; production clears it when the
+  /// larger page actually arrives.
+  func markGrowthFinishedForTesting() { isGrowingThreads = false }
+
+  /// Whether more conversations may exist beyond those loaded.
+  ///
+  /// A full page means there is probably more; a short one is the whole
+  /// result. This drives the footer, so the list can SAY that it is not
+  /// showing everything rather than just ending.
+  var hasMoreThreads: Bool {
+    threads.count >= threadLimit && threadLimit < MailStore.maxThreadLimit
+  }
+
+  var canGrowThreads: Bool { hasMoreThreads && !isGrowingThreads }
+
+  /// True while a larger page is in flight, so the footer can say so.
+  var isLoadingMoreThreads: Bool { isGrowingThreads }
 
   /// Must match `MAX_THREAD_LIMIT` in queries.ts, which rejects anything above
   /// it — exceeding it would fail the query rather than return fewer rows.

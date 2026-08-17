@@ -324,8 +324,26 @@ private struct MessageListPane: View {
   private var threadList: some View {
     // Set-valued selection is what enables ⌘-click and shift-click; AppKit
     // handles both once the binding is a Set.
-    List(store.threads, selection: $store.selection) { thread in
-      row(for: thread)
+    List(selection: $store.selection) {
+      ForEach(store.threads) { thread in
+        row(for: thread)
+      }
+
+      // A sentinel at the very end, rather than relying on a row 40 from it.
+      // This is BOTH the scroll trigger and a visible control: growth used to
+      // depend entirely on a near-the-end row appearing, and when that signal
+      // did not arrive the mailbox simply stopped at 200 with nothing to
+      // indicate that 17,000 more existed.
+      if store.hasMoreThreads {
+        LoadMoreRow(
+          isLoading: store.isLoadingMoreThreads,
+          loaded: store.threads.count,
+          load: { store.growThreads() }
+        )
+        .listRowInsets(EdgeInsets())
+        .listRowBackground(Theme.Surface.base)
+        .onAppear { store.growThreads() }
+      }
     }
     .listStyle(.plain)
     .scrollContentBackground(.hidden)
@@ -604,5 +622,46 @@ struct UndoBanner: View {
     .shadow(color: .black.opacity(0.28), radius: 14, y: 5)
     .padding(Theme.Space.section)
     .transition(.move(edge: .bottom).combined(with: .opacity))
+  }
+}
+
+/// The end of the loaded list, and the way past it.
+///
+/// Serves two purposes that used to have none. It TELLS you the list is not
+/// the whole mailbox — previously it just ended, indistinguishable from having
+/// reached the last conversation — and it gives an explicit way to continue
+/// when the scroll trigger does not fire.
+private struct LoadMoreRow: View {
+  let isLoading: Bool
+  let loaded: Int
+  let load: () -> Void
+
+  var body: some View {
+    HStack(spacing: Theme.Space.base) {
+      Spacer()
+      if isLoading {
+        ProgressView().controlSize(.small)
+        Text("Loading more…")
+          .font(Theme.Font.small)
+          .foregroundStyle(Theme.Ink.tertiary)
+      } else {
+        Button(action: load) {
+          Text("Load more")
+            .font(Theme.Font.smallEmphasis)
+            .foregroundStyle(Theme.Accent.blue)
+            .padding(.horizontal, Theme.Space.wide)
+            .padding(.vertical, Theme.Space.snug)
+            .background(Theme.Accent.blue.opacity(0.12),
+                        in: .rect(cornerRadius: Theme.Radius.control))
+        }
+        .buttonStyle(.plain)
+        Text("\(loaded.formatted()) loaded")
+          .font(Theme.Font.micro)
+          .fontWeight(.regular)
+          .foregroundStyle(Theme.Ink.tertiary)
+      }
+      Spacer()
+    }
+    .padding(.vertical, Theme.Space.loose)
   }
 }

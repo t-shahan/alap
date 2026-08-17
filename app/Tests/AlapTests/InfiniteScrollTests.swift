@@ -43,8 +43,11 @@ struct InfiniteScrollTests {
 
     store.growThreadsIfNeeded(reaching: "t\(full - 1)")
 
-    #expect(store.threadLimit == full + MailStore.threadPageSize)
-    #expect(lastLimit(bridge) == Double(full + MailStore.threadPageSize))
+    // Growth adds threadGrowthSize, which is larger than the first page: the
+    // initial page is on the critical path to painting the window, later ones
+    // are not.
+    #expect(store.threadLimit == full + MailStore.threadGrowthSize)
+    #expect(lastLimit(bridge) == Double(full + MailStore.threadGrowthSize))
   }
 
   @Test("Rows far from the end ask for nothing")
@@ -84,7 +87,7 @@ struct InfiniteScrollTests {
       store.growThreadsIfNeeded(reaching: "t\(full - offset)")
     }
 
-    #expect(store.threadLimit == full + MailStore.threadPageSize)
+    #expect(store.threadLimit == full + MailStore.threadGrowthSize)
     #expect(bridge.sent.filter { $0.kind == "subscribe" }.count == 1)
   }
 
@@ -95,13 +98,13 @@ struct InfiniteScrollTests {
     store.growThreadsIfNeeded(reaching: "t\(full - 1)")
 
     // The bigger page lands.
-    let grown = full + MailStore.threadPageSize
+    let grown = full + MailStore.threadGrowthSize
     bridge.push("threads", json: Fixtures.threadList((0..<grown).map { "t\($0)" }))
     bridge.reset()
 
     store.growThreadsIfNeeded(reaching: "t\(grown - 1)")
 
-    #expect(store.threadLimit == grown + MailStore.threadPageSize)
+    #expect(store.threadLimit == grown + MailStore.threadGrowthSize)
   }
 
   @Test("Changing mailbox resets the limit")
@@ -138,5 +141,90 @@ struct InfiniteScrollTests {
     store.selectedMailbox = mailbox
 
     #expect(lastLimit(bridge) == Double(MailStore.threadPageSize))
+  }
+}
+
+/// The escape hatch that makes growth reliable.
+///
+/// Growth used to depend entirely on a row within 40 of the end appearing. When
+/// that signal did not arrive the list simply ended — indistinguishable from
+/// having reached the last conversation, with 17,000 more sitting unreachable
+/// behind it.
+@MainActor
+struct LoadMoreTests {
+  private func store(threadCount: Int) -> (MailStore, FakeBridge) {
+    let bridge = FakeBridge()
+    let store = MailStore(bridge: bridge, openFile: { _ in })
+    store.start()
+    bridge.push("accounts", json: Fixtures.account())
+    bridge.push("labels", json: Fixtures.labels())
+    bridge.push("threads", json: Fixtures.threadList((0..<threadCount).map { "t\($0)" }))
+    return (store, bridge)
+  }
+
+  @Test("A full page means the list says there is more")
+  func fullPageOffersMore() {
+    let (store, _) = store(threadCount: MailStore.threadPageSize)
+    #expect(store.hasMoreThreads)
+    #expect(store.canGrowThreads)
+  }
+
+  @Test("A short page is the whole mailbox and offers nothing")
+  func shortPageIsComplete() {
+    // Otherwise the footer would sit at the end of every mailbox promising
+    // conversations that do not exist.
+    let (store, _) = store(threadCount: 12)
+    #expect(!store.hasMoreThreads)
+  }
+
+  @Test("Loading more works without any scroll signal")
+  func explicitLoadWorks() {
+    // The whole point: pressing the control is independent of whether a row
+    // near the end ever appeared.
+    let (store, bridge) = store(threadCount: MailStore.threadPageSize)
+    bridge.reset()
+
+    store.growThreads()
+
+    #expect(store.threadLimit == MailStore.threadPageSize + MailStore.threadGrowthSize)
+    #expect(bridge.sent.contains { $0.kind == "subscribe" })
+  }
+
+  @Test("Pressing it twice while in flight loads one page")
+  func explicitLoadCoalesces() {
+    let (store, bridge) = store(threadCount: MailStore.threadPageSize)
+    bridge.reset()
+
+    store.growThreads()
+    store.growThreads()
+    store.growThreads()
+
+    #expect(bridge.sent.filter { $0.kind == "subscribe" }.count == 1)
+    #expect(store.isLoadingMoreThreads)
+  }
+
+  @Test("A page in flight is reported, so the footer can say so")
+  func loadingIsObservable() {
+    let (store, _) = store(threadCount: MailStore.threadPageSize)
+    #expect(!store.isLoadingMoreThreads)
+
+    store.growThreads()
+
+    #expect(store.isLoadingMoreThreads)
+  }
+
+  @Test("Growth stops at the ceiling rather than sending a rejected limit")
+  func stopsAtTheCeiling() {
+    // Above MAX_THREAD_LIMIT the query is REJECTED rather than clamped, so
+    // overshooting would empty the list instead of merely ending growth.
+    let (store, _) = store(threadCount: MailStore.threadPageSize)
+    var guardRail = 0
+    while store.canGrowThreads, guardRail < 200 {
+      store.growThreads()
+      // Simulate the page arriving full, so it keeps offering more.
+      store.markGrowthFinishedForTesting()
+      guardRail += 1
+    }
+    #expect(store.threadLimit <= MailStore.maxThreadLimit)
   }
 }
