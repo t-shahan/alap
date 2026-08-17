@@ -75,92 +75,78 @@ struct ReadingPane: View {
 
   private func content(for thread: ThreadRow) -> some View {
     ScrollView {
-      VStack(alignment: .leading, spacing: Theme.Space.pane) {
-        header(for: thread)
+      // Lazy so the section header can pin. The subject scrolls away and the
+      // sender row stays: on a long message you always know whose it is and
+      // when it arrived, which is exactly the thing you lose scrolling a
+      // newsletter, without spending permanent height on a subject you have
+      // already read.
+      LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+        subject(for: thread)
 
-        Divider().overlay(Theme.Surface.border)
-
-        if let detail = store.detail, !detail.messages.isEmpty {
-          MessageWebView(
-            html: MessageDocument.build(for: detail.messages,
-                                        isDark: colorScheme == .dark),
-            inlineImages: store.inlineImages,
-            onHeightChange: { bodyHeight = $0 }
-          )
-          // Exactly the document's height, so the OUTER scroll view does all
-          // the scrolling. A fixed minHeight gave short messages dead space
-          // below them and long ones a second scrollbar inside the first.
-          .frame(height: max(bodyHeight, 200))
-
-          let attachments = detail.messages.flatMap { $0.attachments }
-            .filter { !$0.isInline }
-          if !attachments.isEmpty {
-            AttachmentStrip(store: store, attachments: attachments)
-          }
-        } else if store.detailLoaded {
-          Text("This thread has no messages.")
-            .font(Theme.Font.body)
-            .foregroundStyle(Theme.Ink.secondary)
-        } else {
-          // Reads hit the local cache first, so this is usually one frame.
-          HStack(spacing: Theme.Space.base) {
-            ProgressView().controlSize(.small)
-            Text("Loading…").font(Theme.Font.small)
-              .foregroundStyle(Theme.Ink.secondary)
-          }
+        Section {
+          messageBody
+        } header: {
+          SenderBar(thread: thread, newest: store.detail?.messages.last)
         }
       }
-      .padding(Theme.Space.pane)
       .frame(maxWidth: .infinity, alignment: .leading)
     }
     .id(thread.id)  // reset scroll when switching threads
     .onChange(of: thread.id) { _, _ in bodyHeight = 400 }
   }
 
-  private func header(for thread: ThreadRow) -> some View {
-    let newest = store.detail?.messages.last
+  private func subject(for thread: ThreadRow) -> some View {
+    Text(store.detail?.subject ?? thread.subject)
+      .font(Theme.Font.title)
+      .foregroundStyle(Theme.Ink.primary)
+      .textSelection(.enabled)
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.horizontal, Theme.Space.pane)
+      .padding(.top, Theme.Space.pane)
+      .padding(.bottom, Theme.Space.wide)
+      .frame(maxWidth: .infinity, alignment: .leading)
+  }
 
-    return VStack(alignment: .leading, spacing: Theme.Space.loose) {
-      Text(store.detail?.subject ?? thread.subject)
-        .font(Theme.Font.title)
-        .foregroundStyle(Theme.Ink.primary)
-        .textSelection(.enabled)
-        .fixedSize(horizontal: false, vertical: true)
+  @ViewBuilder
+  private var messageBody: some View {
+    VStack(alignment: .leading, spacing: Theme.Space.pane) {
+      if let detail = store.detail, !detail.messages.isEmpty {
+        MessageWebView(
+          html: MessageDocument.build(for: detail.messages,
+                                      isDark: colorScheme == .dark),
+          inlineImages: store.inlineImages,
+          onHeightChange: { bodyHeight = $0 }
+        )
+        // Exactly the document's height, so the OUTER scroll view does all
+        // the scrolling. A fixed minHeight gave short messages dead space
+        // below them and long ones a second scrollbar inside the first.
+        .frame(height: max(bodyHeight, 200))
 
-      HStack(alignment: .center, spacing: Theme.Space.loose) {
-        AvatarBubble(name: newest?.displayName ?? thread.displayName)
-
-        VStack(alignment: .leading, spacing: Theme.Space.hair) {
-          HStack(spacing: Theme.Space.tight) {
-            Text(newest?.displayName ?? thread.displayName)
-              .font(Theme.Font.bodyEmphasis)
-              .foregroundStyle(Theme.Ink.primary)
-            if let email = newest?.fromEmail {
-              Text("<\(email)>")
-                .font(Theme.Font.body)
-                .fontWeight(.regular)
-                .foregroundStyle(Theme.Ink.secondary)
-                .lineLimit(1)
-            }
-          }
-          if let recipients = newest?.toRecipients, !recipients.isEmpty {
-            Text("To: " + recipients.map { $0.email }.joined(separator: ", "))
-              .font(Theme.Font.small)
-              .foregroundStyle(Theme.Ink.tertiary)
-              .lineLimit(1)
-          }
+        let attachments = detail.messages.flatMap { $0.attachments }
+          .filter { !$0.isInline }
+        if !attachments.isEmpty {
+          AttachmentStrip(store: store, attachments: attachments)
         }
-
-        Spacer(minLength: Theme.Space.wide)
-
-        if let sent = newest?.sentDate {
-          Text(sent.formatted(date: .abbreviated, time: .shortened))
-            .font(Theme.Font.small)
-            .foregroundStyle(Theme.Ink.tertiary)
+      } else if store.detailLoaded {
+        Text("This thread has no messages.")
+          .font(Theme.Font.body)
+          .foregroundStyle(Theme.Ink.secondary)
+      } else {
+        // Reads hit the local cache first, so this is usually one frame.
+        HStack(spacing: Theme.Space.base) {
+          ProgressView().controlSize(.small)
+          Text("Loading…").font(Theme.Font.small)
+            .foregroundStyle(Theme.Ink.secondary)
         }
       }
     }
+    .padding(.horizontal, Theme.Space.pane)
+    .padding(.top, Theme.Space.wide)
+    .padding(.bottom, Theme.Space.pane)
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
+
+
 }
 
 // MARK: - Pieces
@@ -446,3 +432,63 @@ private struct FlowRow: Layout {
   }
 }
 
+
+/// The sender row, pinned to the top of the reading pane while the body
+/// scrolls beneath it.
+///
+/// Two details make the difference between "sticky" and "broken":
+///
+///   - The background is OPAQUE. A pinned header over a scroll view shows the
+///     content sliding underneath it otherwise, which reads as a rendering
+///     glitch rather than a design.
+///   - A hairline sits along the bottom edge at all times. Without it the row
+///     has no boundary once content is behind it, and the sender's name
+///     appears to be part of the message.
+private struct SenderBar: View {
+  let thread: ThreadRow
+  let newest: MessageRow?
+
+  var body: some View {
+    HStack(alignment: .center, spacing: Theme.Space.loose) {
+      AvatarBubble(name: newest?.displayName ?? thread.displayName)
+
+      VStack(alignment: .leading, spacing: Theme.Space.hair) {
+        HStack(spacing: Theme.Space.tight) {
+          Text(newest?.displayName ?? thread.displayName)
+            .font(Theme.Font.bodyEmphasis)
+            .foregroundStyle(Theme.Ink.primary)
+          if let email = newest?.fromEmail {
+            Text("<\(email)>")
+              .font(Theme.Font.body)
+              .fontWeight(.regular)
+              .foregroundStyle(Theme.Ink.secondary)
+              .lineLimit(1)
+          }
+        }
+        if let recipients = newest?.toRecipients, !recipients.isEmpty {
+          Text("To: " + recipients.map(\.email).joined(separator: ", "))
+            .font(Theme.Font.small)
+            .foregroundStyle(Theme.Ink.tertiary)
+            .lineLimit(1)
+        }
+      }
+
+      Spacer(minLength: Theme.Space.wide)
+
+      if let sent = newest?.sentDate {
+        Text(sent.formatted(date: .abbreviated, time: .shortened))
+          .font(Theme.Font.small)
+          .foregroundStyle(Theme.Ink.tertiary)
+      }
+    }
+    .padding(.horizontal, Theme.Space.pane)
+    .padding(.vertical, Theme.Space.loose)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(Theme.Surface.raised)
+    .overlay(alignment: .bottom) {
+      Rectangle()
+        .fill(Theme.Surface.border)
+        .frame(height: 1)
+    }
+  }
+}
