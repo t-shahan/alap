@@ -118,11 +118,20 @@ final class MailStore {
   /// bulk action during exactly the operation those actions exist for.
   var hasSelection: Bool { !selection.isEmpty }
 
-  /// Whether there is anything to select.
+  /// Whether the select-all control does anything.
   ///
-  /// Select All is the one action that must work when nothing is selected yet,
-  /// which is precisely when a shared "requires a selection" rule disables it.
-  var canSelectAll: Bool { !threads.isEmpty && selection.count < threads.count }
+  /// True whenever there are threads at all, because the control TOGGLES: with
+  /// nothing selected it selects everything, and with anything selected it
+  /// clears. It is never a dead end, so it is never disabled for having already
+  /// done its job.
+  var canSelectAll: Bool { !threads.isEmpty }
+
+  /// What the select-all control will do if pressed.
+  ///
+  /// Any selection at all means the next press clears — including a partial
+  /// one. Selecting the remainder is not what someone reaches for after
+  /// picking a few by hand; getting back to nothing is.
+  var selectAllWouldClear: Bool { !selection.isEmpty }
   var hasMultipleSelected: Bool { selection.count > 1 }
 
   /// Threads currently selected, in list order.
@@ -1047,6 +1056,19 @@ final class MailStore {
       selection.remove(threadID)
     } else {
       selection.insert(threadID)
+    }
+  }
+
+  /// Selects everything, or clears if anything is already selected.
+  ///
+  /// One control rather than two. Pressing it twice returns you to where you
+  /// started, which is what a person expects from a button that just selected
+  /// everything — hunting for a separate Clear to undo it is a detour.
+  func toggleSelectAll() {
+    if selection.isEmpty {
+      selectAll()
+    } else {
+      clearSelection()
     }
   }
 

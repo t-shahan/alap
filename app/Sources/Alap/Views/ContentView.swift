@@ -297,8 +297,14 @@ private struct MessageListPane: View {
         }
         Spacer(minLength: Theme.Space.base)
 
-        toolbarButton("checkmark.square", "Select all (⌘A)",
-                      isEnabled: store.canSelectAll) { store.selectAll() }
+        // The icon states what the press will DO, not what is currently true:
+        // filled means "this will clear", empty means "this will select all".
+        toolbarButton(
+          store.selectAllWouldClear ? "checkmark.square.fill" : "checkmark.square",
+          store.selectAllWouldClear ? "Deselect all" : "Select all (⌘A)",
+          isEnabled: store.canSelectAll,
+          tint: store.selectAllWouldClear ? Theme.Accent.blue : nil
+        ) { store.toggleSelectAll() }
         toolbarButton("archivebox", "Archive",
                       isEnabled: store.hasSelection) {
           Task { await store.archiveSelection() }
@@ -389,12 +395,14 @@ private struct MessageListPane: View {
   /// auto-selected a thread on launch.
   private func toolbarButton(
     _ symbol: String, _ help: String, isEnabled: Bool,
+    tint: Color? = nil,
     action: @escaping () -> Void
   ) -> some View {
     Button(action: action) {
       Image(systemName: symbol)
         .font(.system(size: Theme.Size.icon - 2))
-        .foregroundStyle(isEnabled ? Theme.Ink.secondary : Theme.Ink.tertiary.opacity(0.4))
+        .foregroundStyle(isEnabled ? (tint ?? Theme.Ink.secondary)
+                                   : Theme.Ink.tertiary.opacity(0.4))
         .padding(.horizontal, Theme.Space.base)
         .padding(.vertical, Theme.Space.snug)
         .contentShape(.rect)

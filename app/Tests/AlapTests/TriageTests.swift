@@ -582,11 +582,48 @@ struct ToolbarAvailabilityTests {
     #expect(store.canSelectAll)
   }
 
-  @Test("Select All is unavailable once everything already is")
-  func selectAllUnavailableWhenComplete() {
+  @Test("The control stays live once everything is selected — it clears")
+  func selectAllStaysLiveWhenComplete() {
+    // It toggles, so it is never a dead end and never disabled for having
+    // already done its job.
     let (store, _) = store(["a", "b"])
     store.selectAll()
-    #expect(!store.canSelectAll)
+    #expect(store.canSelectAll)
+    #expect(store.selectAllWouldClear)
+  }
+
+  @Test("Pressing it twice returns to nothing selected")
+  func toggleRoundTrips() {
+    let (store, _) = store(["a", "b", "c"])
+
+    store.toggleSelectAll()
+    #expect(store.selectionCount == 3)
+
+    store.toggleSelectAll()
+    #expect(store.selection.isEmpty)
+  }
+
+  @Test("A partial selection clears rather than completing")
+  func partialSelectionClears() {
+    // Selecting the remainder is not what anyone reaches for after picking a
+    // few by hand — getting back to nothing is.
+    let (store, _) = store(["a", "b", "c", "d"])
+    store.selection = ["a", "b"]
+
+    #expect(store.selectAllWouldClear)
+    store.toggleSelectAll()
+    #expect(store.selection.isEmpty)
+  }
+
+  @Test("A single selection clears too")
+  func singleSelectionClears() {
+    let (store, _) = store(["a", "b"])
+    store.selectedThreadID = "a"
+
+    store.toggleSelectAll()
+
+    #expect(store.selection.isEmpty)
+    #expect(store.selectedThreadID == nil)
   }
 
   @Test("Select All is unavailable in an empty mailbox")
