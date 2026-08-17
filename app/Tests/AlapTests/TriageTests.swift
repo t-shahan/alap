@@ -132,7 +132,7 @@ struct TriageTests {
 
     let calls = bridge.mutations(named: "threads.archive")
     #expect(calls.count == 1)
-    #expect(calls.first?.args["threadId"] == .string("a"))
+    #expect(calls.first?.args["threadIds"] == .array([.string("a")]))
   }
 
   // MARK: - Mailboxes
@@ -165,5 +165,166 @@ struct TriageTests {
     let (store, _) = store(threads: [])
     store.searchText = text
     #expect(store.isSearching == expected)
+  }
+}
+
+/// Selecting several conversations and acting on all of them.
+///
+/// The expensive mistake here is not a wrong result, it is a wrong SHAPE:
+/// looping a single-thread mutation over fifty rows produces fifty outbox rows
+/// and fifty Gmail calls, when batchModify takes a thousand ids at once.
+@MainActor
+struct BulkActionTests {
+  private func store(threadCount: Int, accounts: [String] = ["acct_1"])
+    -> (MailStore, FakeBridge)
+  {
+    let bridge = FakeBridge()
+    let store = MailStore(bridge: bridge, openFile: { _ in })
+    store.start()
+    bridge.push("accounts", json: Fixtures.account())
+
+    let labelJSON = accounts.map { Fixtures.labels(accountId: $0) }
+      .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "[]\n ")) }
+      .joined(separator: ",")
+    bridge.push("labels", json: "[\(labelJSON)]")
+
+    let rows = (0..<threadCount).map { index -> String in
+      Fixtures.thread(id: "t\(index)", accountId: accounts[index % accounts.count])
+    }
+    bridge.push("threads", json: "[\(rows.joined(separator: ","))]")
+    return (store, bridge)
+  }
+
+  @Test("Selecting all takes every loaded thread")
+  func selectAllTakesEverything() {
+    // Every LOADED thread. The list grows as it scrolls, so "all" cannot
+    // honestly mean rows that were never fetched.
+    let (store, _) = store(threadCount: 12)
+    store.selectAll()
+    #expect(store.selectionCount == 12)
+  }
+
+  @Test("A bulk archive is ONE mutation, not one per thread")
+  func archiveIsBatched() async {
+    let (store, bridge) = store(threadCount: 40)
+    store.selectAll()
+    bridge.reset()
+
+    await store.archiveSelection()
+
+    let calls = bridge.mutations(named: "threads.archive")
+    #expect(calls.count == 1, "40 threads produced \(calls.count) mutations")
+    guard case .array(let ids)? = calls.first?.args["threadIds"] else {
+      Issue.record("no threadIds sent"); return
+    }
+    #expect(ids.count == 40)
+  }
+
+  @Test("Threads are grouped by account, since a Gmail call belongs to one")
+  func groupsByAccount() async {
+    // The INBOX label id differs per mailbox and batchModify addresses a single
+    // account, so one mutation per account is the floor — not one overall.
+    let (store, bridge) = store(threadCount: 6, accounts: ["acct_1", "acct_2"])
+    store.selectAll()
+    bridge.reset()
+
+    await store.archiveSelection()
+
+    #expect(bridge.mutations(named: "threads.archive").count == 2)
+  }
+
+  @Test("Trash actually trashes rather than archiving")
+  func trashIsNotArchive() async {
+    // It used to call threads.archive, which only removes INBOX — so Trash
+    // filed mail into All Mail and deleted nothing.
+    let (store, bridge) = store(threadCount: 3)
+    store.selectAll()
+    bridge.reset()
+
+    await store.trashSelection()
+
+    #expect(bridge.mutations(named: "threads.trash").count == 1)
+    #expect(bridge.mutations(named: "threads.archive").isEmpty)
+  }
+
+  @Test("A mixed selection flags rather than inverting row by row")
+  func flaggingPicksOneDirection() async {
+    // Toggling each row independently turns a mixed selection into a
+    // differently-mixed one, which is not what "flag these" means.
+    let bridge = FakeBridge()
+    let store = MailStore(bridge: bridge, openFile: { _ in })
+    store.start()
+    bridge.push("accounts", json: Fixtures.account())
+    bridge.push("labels", json: Fixtures.labels())
+    bridge.push("threads", json: """
+      [\(Fixtures.thread(id: "a", isStarred: true)),\(Fixtures.thread(id: "b"))]
+      """)
+    store.selectAll()
+    bridge.reset()
+
+    await store.toggleFlagOnSelection()
+
+    let call = bridge.mutations(named: "threads.setStarred").first
+    #expect(call?.args["isStarred"] == .bool(true), "any unflagged row means flag")
+  }
+
+  @Test("An all-flagged selection unflags")
+  func allFlaggedUnflags() async {
+    let bridge = FakeBridge()
+    let store = MailStore(bridge: bridge, openFile: { _ in })
+    store.start()
+    bridge.push("accounts", json: Fixtures.account())
+    bridge.push("labels", json: Fixtures.labels())
+    bridge.push("threads", json: """
+      [\(Fixtures.thread(id: "a", isStarred: true)),\(Fixtures.thread(id: "b", isStarred: true))]
+      """)
+    store.selectAll()
+    bridge.reset()
+
+    await store.toggleFlagOnSelection()
+
+    #expect(bridge.mutations(named: "threads.setStarred").first?.args["isStarred"]
+            == .bool(false))
+  }
+
+  @Test("Acting on an empty selection does nothing")
+  func emptySelectionIsANoOp() async {
+    let (store, bridge) = store(threadCount: 5)
+    store.clearSelection()
+    bridge.reset()
+
+    await store.archiveSelection()
+    await store.trashSelection()
+    await store.toggleFlagOnSelection()
+
+    #expect(bridge.sent.filter { $0.kind == "mutate" }.isEmpty)
+  }
+
+  @Test("Selecting one thread still drives the reading pane")
+  func singleSelectionStillOpensAThread() {
+    // Multi-select must not cost the ordinary case: one selected row is still
+    // one message in the reading pane.
+    let (store, _) = store(threadCount: 5)
+    store.selection = ["t2"]
+    #expect(store.selectedThreadID == "t2")
+    #expect(!store.hasMultipleSelected)
+  }
+
+  @Test("Several selected means no single message to show")
+  func multiSelectionClearsTheReadingPane() {
+    let (store, _) = store(threadCount: 5)
+    store.selection = ["t1", "t2"]
+    #expect(store.selectedThreadID == nil)
+    #expect(store.hasMultipleSelected)
+  }
+
+  @Test("Keyboard navigation collapses the selection rather than adding to it")
+  func keyboardNavigationCollapses() {
+    let (store, _) = store(threadCount: 5)
+    store.selectAll()
+
+    store.selectedThreadID = "t3"
+
+    #expect(store.selection == ["t3"], "J/K should move, not accumulate")
   }
 }

@@ -74,16 +74,22 @@ export const mutators = defineMutators({
     archive: defineMutator(
       z.object({
         ...outboxArgs,
-        threadId: z.string(),
+        /**
+         * One or many. Bulk is not a separate mutator because Gmail's
+         * batchModify takes up to 1000 message ids in a single call — so
+         * archiving fifty threads should be ONE outbox row and ONE API round
+         * trip, not fifty of each.
+         */
+        threadIds: z.array(z.string()).min(1),
         /** The account's INBOX label row id, e.g. `acct_1|INBOX`. */
         inboxLabelId: z.string(),
       }),
-      async ({tx, args: {accountId, threadId, inboxLabelId, idempotencyKey}}) => {
-        // Read the thread's messages so we know which junction rows to drop.
+      async ({tx, args: {accountId, threadIds, inboxLabelId, idempotencyKey}}) => {
+        // Read the threads' messages so we know which junction rows to drop.
         // On the client this reads the local store and returns instantly.
-        const messages = await tx.run(zql.message.where('threadId', threadId))
+        const messages = await tx.run(zql.message.where('threadId', 'IN', threadIds))
         if (messages.length === 0) {
-          throw new Error(`archive: thread ${threadId} has no messages`)
+          throw new Error(`archive: no messages in ${threadIds.length} thread(s)`)
         }
 
         // 1. The user-visible change: unlink INBOX from each message.
@@ -114,6 +120,55 @@ export const mutators = defineMutators({
     ),
 
     /**
+     * Move threads to Trash.
+     *
+     * Genuinely distinct from archive, which this used to be implemented as —
+     * archive merely removes INBOX, so "Trash" filed mail away and left it in
+     * All Mail rather than deleting it. Trashing ADDS the TRASH label, which is
+     * what Gmail treats as deleted and what auto-purges after 30 days.
+     *
+     * Reversible until Gmail purges it: the same call with the labels swapped
+     * puts it back.
+     */
+    trash: defineMutator(
+      z.object({
+        ...outboxArgs,
+        threadIds: z.array(z.string()).min(1),
+        /** The account's INBOX label row id, so the local links can be cut. */
+        inboxLabelId: z.string(),
+      }),
+      async ({tx, args: {accountId, threadIds, inboxLabelId, idempotencyKey}}) => {
+        const messages = await tx.run(zql.message.where('threadId', 'IN', threadIds))
+        if (messages.length === 0) {
+          throw new Error(`trash: no messages in ${threadIds.length} thread(s)`)
+        }
+
+        // Locally, dropping INBOX is what removes it from the list. The TRASH
+        // link is not created here: the label row exists per account and the
+        // junction id would have to be fabricated, so the authoritative version
+        // arrives from Gmail on the next poll.
+        for (const m of messages) {
+          await tx.mutate.messageLabel.delete({id: messageLabelId(m.id, inboxLabelId)})
+        }
+
+        await tx.mutate.outbox.insert({
+          id: idempotencyKey,
+          accountId,
+          op: 'modify_labels',
+          payload: {
+            messageIds: messages.map(m => m.remoteMessageId),
+            addLabelIds: ['TRASH'],
+            removeLabelIds: ['INBOX'],
+          },
+          status: 'pending',
+          attempts: 0,
+          idempotencyKey,
+          ...timestamps(),
+        })
+      },
+    ),
+
+    /**
      * Mark every message in a thread read or unread.
      *
      * Note there is no explicit counter bookkeeping here. Flipping
@@ -124,12 +179,12 @@ export const mutators = defineMutators({
     setRead: defineMutator(
       z.object({
         ...outboxArgs,
-        threadId: z.string(),
+        threadIds: z.array(z.string()).min(1),
         isRead: z.boolean(),
       }),
-      async ({tx, args: {accountId, threadId, isRead, idempotencyKey}}) => {
+      async ({tx, args: {accountId, threadIds, isRead, idempotencyKey}}) => {
         const messages = await tx.run(
-          zql.message.where('threadId', threadId).where('isRead', !isRead),
+          zql.message.where('threadId', 'IN', threadIds).where('isRead', !isRead),
         )
         // Already in the desired state — do not emit a pointless Gmail call.
         if (messages.length === 0) {
@@ -162,18 +217,15 @@ export const mutators = defineMutators({
     setStarred: defineMutator(
       z.object({
         ...outboxArgs,
-        threadId: z.string(),
+        threadIds: z.array(z.string()).min(1),
         isStarred: z.boolean(),
       }),
-      async ({tx, args: {accountId, threadId, isStarred, idempotencyKey}}) => {
-        const thread = await tx.run(zql.thread.where('id', threadId).one())
-        if (!thread) {
-          throw new Error(`setStarred: unknown thread ${threadId}`)
+      async ({tx, args: {accountId, threadIds, isStarred, idempotencyKey}}) => {
+        for (const id of threadIds) {
+          await tx.mutate.thread.update({id, isStarred})
         }
 
-        await tx.mutate.thread.update({id: threadId, isStarred})
-
-        const messages = await tx.run(zql.message.where('threadId', threadId))
+        const messages = await tx.run(zql.message.where('threadId', 'IN', threadIds))
         for (const m of messages) {
           await tx.mutate.message.update({id: m.id, isStarred})
         }

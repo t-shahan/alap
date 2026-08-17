@@ -120,7 +120,7 @@ describe('mutators (integration)', {concurrency: false}, async () => {
         zero!.mutate(
           mutators.threads.archive({
             accountId,
-            threadId: tid,
+            threadIds: [tid],
             inboxLabelId: labelId(accountId, 'INBOX'),
             idempotencyKey,
           }),
@@ -174,7 +174,7 @@ describe('mutators (integration)', {concurrency: false}, async () => {
         zero!.mutate(
           mutators.threads.setRead({
             accountId,
-            threadId: tid,
+            threadIds: [tid],
             isRead: true,
             idempotencyKey: crypto.randomUUID(),
           }),
@@ -210,7 +210,7 @@ describe('mutators (integration)', {concurrency: false}, async () => {
           zero!.mutate(
             mutators.threads.archive({
               accountId,
-              threadId: tid,
+              threadIds: [tid],
               inboxLabelId: labelId(accountId, 'INBOX'),
               idempotencyKey,
             }),

@@ -82,6 +82,16 @@ struct MailCommands: Commands {
   var body: some Commands {
     // Replaces the New Item slot that was emptied in MailApp: ⌘N is what
     // every mail client on this platform binds to composing.
+    // ⌘A over the message list. Replaces the system Select All, which would
+    // otherwise try to select text in whatever field last had focus.
+    CommandGroup(replacing: .textEditing) {
+      Button("Select All Conversations") { store.selectAll() }
+        .keyboardShortcut("a", modifiers: .command)
+      Button("Deselect All") { store.clearSelection() }
+        .keyboardShortcut("a", modifiers: [.command, .shift])
+        .disabled(store.selection.isEmpty)
+    }
+
     CommandGroup(replacing: .newItem) {
       Button("New Message") { store.startNewMessage() }
         .keyboardShortcut("n", modifiers: .command)

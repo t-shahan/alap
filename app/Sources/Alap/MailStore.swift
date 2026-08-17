@@ -94,10 +94,43 @@ final class MailStore {
   /// `ThreadRow` hashes every field including the participants array, so
   /// binding the struct made arrow-key navigation quadratic in row size. A
   /// String is a single cheap comparison.
+  /// Every selected thread.
+  ///
+  /// The SOURCE OF TRUTH for selection, including the single-selection case.
+  /// Keeping a separate `selectedThreadID` as the real value and deriving the
+  /// set from it would mean two representations that can disagree, and every
+  /// bulk action would have to ask which one to trust.
+  var selection: Set<String> = [] {
+    didSet {
+      guard selection != oldValue else { return }
+      // The reading pane shows one message; with several selected there is no
+      // single message to show, so it shows the count instead.
+      selectedThreadID = selection.count == 1 ? selection.first : nil
+    }
+  }
+
+  var selectionCount: Int { selection.count }
+  var hasMultipleSelected: Bool { selection.count > 1 }
+
+  /// Threads currently selected, in list order.
+  ///
+  /// Ordered so bulk actions read predictably in the UI and so the successor
+  /// after a bulk archive is chosen from a stable position.
+  var selectedThreads: [ThreadRow] {
+    threads.filter { selection.contains($0.id) }
+  }
+
   var selectedThreadID: String? {
     didSet {
       guard selectedThreadID != oldValue else { return }
       selectedThread = threads.first { $0.id == selectedThreadID }
+      // Keyboard navigation assigns a single id. Collapsing the set to match
+      // is what makes J/K feel like moving rather than accumulating.
+      if let id = selectedThreadID, selection != [id] {
+        selection = [id]
+      } else if selectedThreadID == nil, selection.count <= 1 {
+        selection = []
+      }
       scheduleDetailSubscription()
     }
   }
@@ -487,27 +520,38 @@ final class MailStore {
   /// so it goes through the same batchModify path as archive. Permanent
   /// deletion (`delete_forever`) is a different API and is not implemented.
   func trashSelected() async {
-    guard let thread = selectedThread, let index = selectedIndex else { return }
-    let successor: String? =
-      index + 1 < threads.count ? threads[index + 1].id
-      : (index > 0 ? threads[index - 1].id : nil)
-
-    let messages = detail?.messages ?? []
-    guard !messages.isEmpty else { return }
-
-    try? await bridge.mutate(
-      "threads.archive",  // removes INBOX; TRASH is added by payload below
-      args: [
-        "accountId": .string(thread.accountId),
-        "threadId": .string(thread.id),
-        "inboxLabelId": .string(labels.first {
-          $0.remoteId == "INBOX" && $0.accountId == thread.accountId
-        }?.id ?? ""),
-        "idempotencyKey": .string(UUID().uuidString.lowercased()),
-      ]
-    )
-    selectedThreadID = successor
+    guard let thread = selectedThread else { return }
+    await trash([thread])
   }
+
+  /// Moves threads to Trash.
+  ///
+  /// A real trash, not an archive. This used to call `threads.archive`, which
+  /// only removes INBOX — so "Trash" filed mail away into All Mail and deleted
+  /// nothing. Adding the TRASH label is what Gmail treats as deleted.
+  func trash(_ rows: [ThreadRow]) async {
+    for (accountId, group) in Dictionary(grouping: rows, by: \.accountId) {
+      guard let inbox = labels.first(where: {
+        $0.remoteId == "INBOX" && $0.accountId == accountId
+      }) else { continue }
+
+      try? await bridge.mutate(
+        "threads.trash",
+        args: [
+          "accountId": .string(accountId),
+          "threadIds": .array(group.map { .string($0.id) }),
+          "inboxLabelId": .string(inbox.id),
+          "idempotencyKey": .string(UUID().uuidString.lowercased()),
+        ]
+      )
+    }
+    let trashed = Set(rows.map(\.id))
+    selection.subtract(trashed)
+    if let current = selectedThread, trashed.contains(current.id) {
+      selectedThread = nil
+    }
+  }
+
 
   /// The composer panel's state. Owned here so menu commands can reach it.
   let composer = Composer()
@@ -826,44 +870,151 @@ final class MailStore {
   /// the row disappears from the list via the same reactive path as any other
   /// change. No manual list manipulation.
   func archive(_ thread: ThreadRow) async {
-    guard let inbox = labels.first(where: {
-      $0.remoteId == "INBOX" && $0.accountId == thread.accountId
-    }) else {
-      return
+    await archive([thread])
+  }
+
+  /// Archives many threads.
+  ///
+  /// Grouped by account because the INBOX label id differs per mailbox and a
+  /// Gmail call belongs to exactly one account. Within an account it is ONE
+  /// mutation and one outbox row, so archiving fifty threads is one batchModify
+  /// rather than fifty.
+  func archive(_ rows: [ThreadRow]) async {
+    for (accountId, group) in Dictionary(grouping: rows, by: \.accountId) {
+      guard let inbox = labels.first(where: {
+        $0.remoteId == "INBOX" && $0.accountId == accountId
+      }) else { continue }
+
+      try? await bridge.mutate(
+        "threads.archive",
+        args: [
+          "accountId": .string(accountId),
+          "threadIds": .array(group.map { .string($0.id) }),
+          "inboxLabelId": .string(inbox.id),
+          "idempotencyKey": .string(UUID().uuidString.lowercased()),
+        ]
+      )
     }
-    try? await bridge.mutate(
-      "threads.archive",
-      args: [
-        "accountId": .string(thread.accountId),
-        "threadId": .string(thread.id),
-        "inboxLabelId": .string(inbox.id),
-        "idempotencyKey": .string(UUID().uuidString.lowercased()),
-      ]
-    )
-    if selectedThread == thread { selectedThread = nil }
+    let archived = Set(rows.map(\.id))
+    selection.subtract(archived)
+    if let current = selectedThread, archived.contains(current.id) {
+      selectedThread = nil
+    }
   }
 
   func setRead(_ thread: ThreadRow, isRead: Bool) async {
-    try? await bridge.mutate(
-      "threads.setRead",
-      args: [
-        "accountId": .string(thread.accountId),
-        "threadId": .string(thread.id),
-        "isRead": .bool(isRead),
-        "idempotencyKey": .string(UUID().uuidString.lowercased()),
-      ]
-    )
+    await setRead([thread], isRead: isRead)
+  }
+
+  /// Marks many threads read or unread, one mutation per account.
+  func setRead(_ rows: [ThreadRow], isRead: Bool) async {
+    for (accountId, group) in Dictionary(grouping: rows, by: \.accountId) {
+      try? await bridge.mutate(
+        "threads.setRead",
+        args: [
+          "accountId": .string(accountId),
+          "threadIds": .array(group.map { .string($0.id) }),
+          "isRead": .bool(isRead),
+          "idempotencyKey": .string(UUID().uuidString.lowercased()),
+        ]
+      )
+    }
   }
 
   func toggleStar(_ thread: ThreadRow) async {
-    try? await bridge.mutate(
-      "threads.setStarred",
-      args: [
-        "accountId": .string(thread.accountId),
-        "threadId": .string(thread.id),
-        "isStarred": .bool(!thread.isStarred),
-        "idempotencyKey": .string(UUID().uuidString.lowercased()),
-      ]
-    )
+    await setStarred([thread], isStarred: !thread.isStarred)
+  }
+
+  /// Flags or unflags many threads, one mutation per account.
+  func setStarred(_ rows: [ThreadRow], isStarred: Bool) async {
+    for (accountId, group) in Dictionary(grouping: rows, by: \.accountId) {
+      try? await bridge.mutate(
+        "threads.setStarred",
+        args: [
+          "accountId": .string(accountId),
+          "threadIds": .array(group.map { .string($0.id) }),
+          "isStarred": .bool(isStarred),
+          "idempotencyKey": .string(UUID().uuidString.lowercased()),
+        ]
+      )
+    }
+  }
+
+  // MARK: - Bulk actions on the selection
+
+  /// Selects every loaded thread.
+  ///
+  /// Every LOADED thread, not every thread in the mailbox. The list grows as
+  /// it is scrolled, so "all" can only honestly mean what has been fetched —
+  /// and an action that silently applied to 30,000 rows the user has never
+  /// seen would be worse than one that admits its scope.
+  func selectAll() {
+    selection = Set(threads.map(\.id))
+  }
+
+  func clearSelection() {
+    selection = []
+    selectedThreadID = nil
+  }
+
+  /// Marks the selection read or unread.
+  func setReadOnSelection(_ isRead: Bool) async {
+    await setRead(selectedThreads, isRead: isRead)
+  }
+
+  /// Marks the selection read, or unread when all of it is already read.
+  ///
+  /// One direction for the whole selection, decided by whether any of it is
+  /// still unread — the same reasoning as flagging. Toggling each row
+  /// independently would turn a mixed selection into a differently-mixed one.
+  func markSelectionRead() async {
+    let rows = selectedThreads
+    guard !rows.isEmpty else { return }
+    await setRead(rows, isRead: rows.contains { $0.isUnread })
+  }
+
+  /// Flags or unflags the selection.
+  ///
+  /// One flag state for the whole selection rather than toggling each row
+  /// independently: a mixed selection toggled per-row would invert into a
+  /// differently-mixed selection, which is not what anyone means by "flag
+  /// these". Any unflagged row means the action is "flag".
+  func toggleFlagOnSelection() async {
+    let rows = selectedThreads
+    guard !rows.isEmpty else { return }
+    let shouldFlag = rows.contains { !$0.isStarred }
+    await setStarred(rows, isStarred: shouldFlag)
+  }
+
+  /// Archives the selection, then moves to what follows it.
+  func archiveSelection() async {
+    let rows = selectedThreads
+    guard !rows.isEmpty else { return }
+
+    // The successor is chosen BEFORE the mutation, while the rows still exist.
+    let successor = threadAfter(rows)
+    await archive(rows)
+    selectedThreadID = successor
+  }
+
+  /// Trashes the selection.
+  func trashSelection() async {
+    let rows = selectedThreads
+    guard !rows.isEmpty else { return }
+    let successor = threadAfter(rows)
+    await trash(rows)
+    selectedThreadID = successor
+  }
+
+  /// The first thread below the removed block, else the one above it.
+  private func threadAfter(_ removed: [ThreadRow]) -> String? {
+    let going = Set(removed.map(\.id))
+    guard let lastIndex = threads.lastIndex(where: { going.contains($0.id) })
+    else { return nil }
+
+    if let below = threads[(lastIndex + 1)...].first(where: { !going.contains($0.id) }) {
+      return below.id
+    }
+    return threads[..<lastIndex].last(where: { !going.contains($0.id) })?.id
   }
 }

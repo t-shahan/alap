@@ -269,29 +269,55 @@ private struct MessageListPane: View {
       .background(Theme.Surface.sunken, in: .rect(cornerRadius: Theme.Radius.control))
 
       HStack {
-        Text(store.threadsLoaded ? "\(store.threads.count) conversations" : "Loading…")
+        Text(countLabel)
           .font(Theme.Font.caption)
           .fontWeight(.regular)
-          .foregroundStyle(Theme.Ink.secondary)
+          .foregroundStyle(store.hasMultipleSelected ? Theme.Accent.blue
+                                                     : Theme.Ink.secondary)
+        if store.hasMultipleSelected {
+          Button("Clear") { store.clearSelection() }
+            .buttonStyle(.plain)
+            .font(Theme.Font.caption)
+            .fontWeight(.regular)
+            .foregroundStyle(Theme.Ink.tertiary)
+        }
         Spacer()
-        // These act on the current selection. The design shows them operating
-        // on checkbox multi-selection, which the app does not support.
-        toolbarButton("archivebox", "Archive") {
-          Task { await store.archiveSelectedAndAdvance() }
+
+        // Every action here operates on the SELECTION, one row or fifty. The
+        // buttons do not change between the two cases — only how many threads
+        // they touch — so there is no separate bulk mode to enter or leave.
+        toolbarButton("archivebox", store.hasMultipleSelected
+                        ? "Archive \(store.selectionCount)" : "Archive") {
+          Task { await store.archiveSelection() }
         }
-        toolbarButton("envelope.open", "Toggle read") {
-          Task { await store.toggleReadOnSelection() }
+        toolbarButton("envelope.open", store.hasMultipleSelected
+                        ? "Mark \(store.selectionCount) read" : "Toggle read") {
+          Task { await store.markSelectionRead() }
         }
-        toolbarButton("flag", "Flag") {
-          Task { await store.toggleStarOnSelection() }
+        toolbarButton("flag", store.hasMultipleSelected
+                        ? "Flag \(store.selectionCount)" : "Flag") {
+          Task { await store.toggleFlagOnSelection() }
+        }
+        toolbarButton("trash", store.hasMultipleSelected
+                        ? "Trash \(store.selectionCount)" : "Trash") {
+          Task { await store.trashSelection() }
         }
       }
     }
     .padding(Theme.Space.loose)
   }
 
+  private var countLabel: String {
+    if store.hasMultipleSelected {
+      return "\(store.selectionCount) selected"
+    }
+    return store.threadsLoaded ? "\(store.threads.count) conversations" : "Loading…"
+  }
+
   private var threadList: some View {
-    List(store.threads, selection: $store.selectedThreadID) { thread in
+    // Set-valued selection is what enables ⌘-click and shift-click; AppKit
+    // handles both once the binding is a Set.
+    List(store.threads, selection: $store.selection) { thread in
       row(for: thread)
     }
     .listStyle(.plain)
