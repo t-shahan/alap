@@ -218,7 +218,7 @@ final class AccountConnector {
   /// A shipped app will carry its configuration properly; this exists so the
   /// flow works from a development checkout, where the engine's credentials
   /// live in a gitignored `.env` the app was not launched with.
-  private static func loadDotEnv() -> [String: String] {
+  static func loadDotEnv() -> [String: String] {
     let candidate = Bundle.main.bundleURL
       .deletingLastPathComponent()
       .deletingLastPathComponent()

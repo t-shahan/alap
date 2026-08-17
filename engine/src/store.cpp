@@ -387,6 +387,17 @@ Result<std::vector<std::vector<std::string>>> PostgresStore::query(
   return rows;
 }
 
+Result<bool> PostgresStore::try_claim_daemon_lock() {
+  // A fixed application-chosen key. Session-scoped, so it dies with the
+  // connection rather than needing an explicit release.
+  auto rows = query("SELECT pg_try_advisory_lock(4919283746501) AS claimed", {});
+  if (!rows) return rows.error();
+  if (rows->empty() || rows->front().empty()) {
+    return make_error("advisory lock query returned nothing");
+  }
+  return rows->front()[0] == "t";
+}
+
 Result<int64_t> PostgresStore::rewrite_attachment_paths(
     const std::string& old_prefix, const std::string& new_prefix) {
   // Anchored with `LIKE $1 || '%'` would be wrong for the same reason it was

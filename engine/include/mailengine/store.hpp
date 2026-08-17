@@ -139,6 +139,17 @@ class PostgresStore {
       const std::string& attachment_id, const std::string& content_hash,
       const std::string& local_path, int64_t size_bytes);
 
+  /// @brief Claims the single-daemon lock, or reports it already held.
+  ///
+  /// A Postgres session-level advisory lock: it is released automatically when
+  /// the connection drops, including if the process is killed, so a crashed
+  /// daemon never leaves the lock stuck. No file to clean up, no stale pid.
+  ///
+  /// Needed because the app now launches the daemon itself. Anyone who also
+  /// runs one from a terminal would otherwise have two processes polling the
+  /// same mailbox and draining the same outbox.
+  [[nodiscard]] Result<bool> try_claim_daemon_lock();
+
   /// @brief Repoints stored attachment paths after the cache directory moves.
   ///
   /// `local_path` holds ABSOLUTE paths. Moving the cache without this leaves

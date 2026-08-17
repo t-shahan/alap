@@ -36,6 +36,7 @@ The measurable result, against a real 32,000-message mailbox:
 | Gmail backfill | **64 messages/sec** — a 31k mailbox in ~8 minutes |
 | Attachment download, click to open | **268 ms** end to end |
 | Arrow-key triage | 1 query per pause, not 1 per keypress |
+| New mail appearing, no refresh | **~6 s** measured end to end |
 
 ## How it works
 
@@ -63,6 +64,11 @@ Four processes, all on your machine. Nothing is hosted anywhere.
   replica and answers queries from it. This is why reads are instant.
 - **The C++ engine** owns every network call, the Keychain, and the search
   index. It syncs Gmail into Postgres and drains an outbox of pending writes.
+  The app launches it and polls every 10 seconds, so mail arrives without
+  anyone asking. Gmail's push mechanism needs a public HTTPS endpoint for Cloud
+  Pub/Sub to call, which a local-only app does not have — so polling
+  `history.list` is the honest option. It is incremental and costs 2 quota
+  units against a budget of 250 per second.
 - **The SwiftUI app** renders. It never talks to Gmail and never holds a
   credential.
 
@@ -132,13 +138,25 @@ npm run dev                             # postgres + sidecar + zero-cache
 npm run app                             # build and launch Alap.app
 ```
 
-Click **Add Account** in the sidebar to authorise a mailbox, then start the
-sync daemon in a second terminal:
+Click **Add Account** in the sidebar to authorise a mailbox. That is the whole
+setup — the app launches the sync engine itself and polls every 10 seconds for
+as long as it is open, starting with a poll as the window appears.
+
+<details>
+<summary><b>Running the engine manually</b></summary>
+
+Useful for watching what it does, or for syncing without the app open:
 
 ```bash
 set -a && . ./.env && set +a
-./engine/build/mailengined daemon 30
+./engine/build/mailengined daemon 10
 ```
+
+Only one daemon runs at a time — it takes a Postgres advisory lock, so a second
+one exits immediately rather than double-polling. If you start one here, the
+app defers to it.
+
+</details>
 
 <details>
 <summary><b>Why the signing certificate matters</b></summary>

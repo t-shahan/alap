@@ -982,6 +982,19 @@ int cmd_daemon(int interval_seconds) {
   mailengine::PostgresStore directory;
   if (!connect_store(directory)) return 1;
 
+  // Exactly one daemon per database. The app launches one on startup, and
+  // anybody who also runs one from a terminal would otherwise have two
+  // processes polling the same mailbox and racing on the same outbox.
+  //
+  // Not an error: the second one has nothing to do, so it says so and leaves.
+  if (auto claimed = directory.try_claim_daemon_lock(); !claimed) {
+    std::cerr << "error: " << claimed.error().message << "\n";
+    return 1;
+  } else if (!*claimed) {
+    std::cout << "another daemon is already running; nothing to do\n";
+    return 0;
+  }
+
   // Output from several threads interleaves into one terminal, so each worker
   // buffers a full line and takes a mutex to emit it. Writing directly to
   // std::cout would shear lines together and make the log unreadable.
@@ -1122,7 +1135,11 @@ int main(int argc, char** argv) {
   if (command == "daemon") {
     // No account argument: the daemon supervises every connected account.
     // A bare number is still accepted as the poll interval.
-    return cmd_daemon(argc > 2 ? std::atoi(argv[2]) : 15);
+    // 10 seconds by default. Mail arriving up to half a minute late is the
+    // difference between a client that feels live and one that feels like it
+    // needs refreshing. history.list costs 2 quota units against a budget of
+    // 250 per second, so this is nowhere near any limit.
+    return cmd_daemon(argc > 2 ? std::atoi(argv[2]) : 10);
   }
   if (command == "attachment") {
     if (argc < 4) return usage();
