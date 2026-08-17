@@ -24,7 +24,7 @@ const std::unordered_set<std::string>& allowed_tags() {
       "h1", "h2", "h3", "h4", "h5", "h6",
       "ul", "ol", "li", "dl", "dt", "dd",
       "table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption",
-      "a", "img", "figure", "figcaption",
+      "a", "img", "figure", "figcaption", "font", "center",
   };
   return tags;
 }
@@ -53,12 +53,30 @@ const std::unordered_set<std::string>& self_closing_tags() {
 /// can fetch remote resources, overlay content to spoof the interface, and in
 /// some engines execute expressions.
 bool attribute_allowed(std::string_view tag, std::string_view name) {
-  if (name == "title" || name == "alt") return true;
-  if (tag == "a" && (name == "href")) return true;
-  if (tag == "img" && (name == "src" || name == "width" || name == "height")) return true;
+  // Presentational attributes are how mail has always been laid out: table
+  // cells with `bgcolor`, `align` and `width` predate CSS in email and are
+  // still what most senders emit. They carry no behaviour — the values are
+  // escaped on the way out and cannot be read as markup — so the earlier
+  // decision to drop them bought nothing and cost every message its design.
+  if (name == "title" || name == "alt" || name == "dir" || name == "lang") return true;
+  if (name == "style") return true;  // filtered by sanitize_style, not passed through
+  if (name == "align" || name == "valign" || name == "bgcolor") return true;
+  if (name == "width" || name == "height") return true;
+
+  if (tag == "a" && name == "href") return true;
+  if (tag == "img" && (name == "src" || name == "border")) return true;
+  if (tag == "font" && (name == "color" || name == "face" || name == "size")) return true;
   if ((tag == "td" || tag == "th") && (name == "colspan" || name == "rowspan")) {
     return true;
   }
+  if (tag == "table" &&
+      (name == "cellpadding" || name == "cellspacing" || name == "border")) {
+    return true;
+  }
+  // `class` stays out. Without a stylesheet it does nothing, and the only way
+  // to make it do something is to admit <style>, which is a whole CSS surface
+  // — selectors, media queries, @import — that this sanitiser does not parse
+  // and therefore cannot vouch for.
   return false;
 }
 
@@ -467,6 +485,147 @@ bool is_safe_url(const std::string& url) {
          scheme == "cid";
 }
 
+namespace {
+// MARK: - Inline style
+
+/// CSS properties kept.
+///
+/// An allowlist, for the same reason the tag list is one: a blocklist of
+/// dangerous properties fails open on every property nobody thought of.
+///
+/// What is missing is as deliberate as what is here. `position`, `top`,
+/// `left`, `z-index` and `transform` are absent because they let a message
+/// draw on top of the surrounding interface — the mechanism behind a message
+/// that renders fake app chrome asking for a password. `content` is absent
+/// because it injects text that is not in the document. `cursor`, `animation`
+/// and `transition` are absent because they buy nothing in mail.
+bool style_property_allowed(std::string_view name) {
+  static const std::unordered_set<std::string> allowed = {
+      // Colour and type
+      "color", "background", "background-color", "background-image",
+      "background-position", "background-repeat", "background-size",
+      "font", "font-family", "font-size", "font-style", "font-weight",
+      "font-variant", "line-height", "letter-spacing", "word-spacing",
+      "text-align", "text-decoration", "text-indent", "text-transform",
+      "text-overflow", "vertical-align", "white-space", "word-break",
+      "overflow-wrap", "word-wrap", "direction", "opacity",
+      // Box
+      "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+      "padding", "padding-top", "padding-right", "padding-bottom",
+      "padding-left",
+      "border", "border-top", "border-right", "border-bottom", "border-left",
+      "border-color", "border-style", "border-width", "border-radius",
+      "border-collapse", "border-spacing",
+      "width", "height", "max-width", "max-height", "min-width", "min-height",
+      "box-sizing", "display", "float", "clear", "table-layout",
+      "list-style", "list-style-type", "list-style-position",
+  };
+  std::string key = to_lower(name);
+  return allowed.count(key) != 0;
+}
+
+/// True when a declaration value carries something executable or fetchable
+/// that the property allowlist alone would not catch.
+bool style_value_is_dangerous(const std::string& value) {
+  const std::string lowered = to_lower(value);
+  // `expression()` executes in legacy engines. `behavior` and `-moz-binding`
+  // attach code. `@import` pulls in a stylesheet wholesale. A backslash is a
+  // CSS escape, which is the standard way to spell any of the above past a
+  // naive filter — there is no legitimate use of one in mail, so it is
+  // rejected outright rather than decoded and re-checked.
+  for (const char* marker : {"expression", "javascript:", "vbscript:",
+                             "behavior", "binding", "@import", "\\"}) {
+    if (lowered.find(marker) != std::string::npos) return true;
+  }
+  return false;
+}
+
+/// Validates every `url(...)` in a declaration value.
+///
+/// Hero images in mail are CSS backgrounds, so `url()` cannot simply be
+/// banned. The SCHEME is checked here; whether the fetch is permitted at all
+/// is the render-time CSP's decision, which is what keeps the remote-image
+/// preference working on already-stored messages.
+bool style_urls_are_safe(const std::string& value) {
+  const std::string lowered = to_lower(value);
+  size_t at = 0;
+  while ((at = lowered.find("url(", at)) != std::string::npos) {
+    size_t start = at + 4;
+    const size_t end = lowered.find(')', start);
+    if (end == std::string::npos) return false;
+
+    std::string url = value.substr(start, end - start);
+    // Strip surrounding whitespace and quotes.
+    const auto trim = [](std::string& text) {
+      while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
+        text.erase(text.begin());
+      }
+      while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) {
+        text.pop_back();
+      }
+    };
+    trim(url);
+    if (url.size() >= 2 && (url.front() == '"' || url.front() == '\'') &&
+        url.back() == url.front()) {
+      url = url.substr(1, url.size() - 2);
+      trim(url);
+    }
+    if (!is_safe_url(url)) return false;
+    at = end + 1;
+  }
+  return true;
+}
+
+/// Filters a `style` attribute down to its safe declarations.
+///
+/// Returns an empty string when nothing survives, so the caller can omit the
+/// attribute rather than emit `style=""`.
+std::string sanitize_style(const std::string& value, bool& removed_active) {
+  std::string out;
+
+  size_t i = 0;
+  while (i < value.size()) {
+    const size_t end = value.find(';', i);
+    const std::string declaration =
+        value.substr(i, end == std::string::npos ? std::string::npos : end - i);
+    i = end == std::string::npos ? value.size() : end + 1;
+
+    const size_t colon = declaration.find(':');
+    if (colon == std::string::npos) continue;
+
+    std::string name = declaration.substr(0, colon);
+    std::string property_value = declaration.substr(colon + 1);
+    const auto trim = [](std::string& text) {
+      while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
+        text.erase(text.begin());
+      }
+      while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) {
+        text.pop_back();
+      }
+    };
+    trim(name);
+    trim(property_value);
+    if (name.empty() || property_value.empty()) continue;
+
+    if (style_value_is_dangerous(property_value) || style_value_is_dangerous(name)) {
+      removed_active = true;
+      continue;
+    }
+    if (!style_property_allowed(name)) continue;
+    if (!style_urls_are_safe(property_value)) {
+      removed_active = true;
+      continue;
+    }
+
+    if (!out.empty()) out += ";";
+    out += to_lower(name) + ":" + property_value;
+  }
+
+  return out;
+}
+
+}  // namespace
+
 SanitizeResult sanitize(const std::string& input, const SanitizeOptions& options) {
   SanitizeResult result;
   std::string& out = result.html;
@@ -637,6 +796,14 @@ SanitizeResult sanitize(const std::string& input, const SanitizeOptions& options
             continue;
           }
         }
+      }
+
+      if (attribute.name == "style") {
+        const std::string filtered =
+            sanitize_style(attribute.value, result.removed_active_content);
+        if (filtered.empty()) continue;
+        out += " style=\"" + escape_text(filtered) + "\"";
+        continue;
       }
 
       out += " " + attribute.name + "=\"" + escape_text(attribute.value) + "\"";

