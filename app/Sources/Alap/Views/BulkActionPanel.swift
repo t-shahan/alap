@@ -116,6 +116,16 @@ struct BulkActionPanel: View {
   }
 
   private var actions: some View {
+    // Wraps to a second row rather than compressing when the pane is narrow.
+    // The previous bulk bar was an HStack that could not wrap, which is how its
+    // labels ended up broken across lines.
+    ViewThatFits(in: .horizontal) {
+      actionRow
+      VStack(alignment: .leading, spacing: Theme.Space.base) { actionRow }
+    }
+  }
+
+  private var actionRow: some View {
     HStack(spacing: Theme.Space.loose) {
       BulkButton(title: "Archive", symbol: "archivebox", isProminent: true) {
         Task { await store.archiveSelection() }

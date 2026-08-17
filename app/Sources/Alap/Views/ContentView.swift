@@ -11,18 +11,15 @@ import SwiftUI
 struct ContentView: View {
   @Bindable var store: MailStore
   @FocusState private var listFocused: Bool
+  /// Only meaningful on the narrowest windows, where the sidebar is hidden by
+  /// default and this reveals it.
+  @State private var sidebarRevealed = false
 
   var body: some View {
-    HStack(spacing: 0) {
-      Sidebar(store: store)
-        .frame(width: Theme.Size.sidebar)
-
-      MessageListPane(store: store)
-        .frame(width: Theme.Size.list)
-        .triageShortcuts(store: store, listFocused: $listFocused)
-
-      ReadingPane(store: store)
-        .frame(maxWidth: .infinity)
+    GeometryReader { geometry in
+      let layout = PaneLayout.forWidth(geometry.size.width)
+      panes(layout)
+        .environment(\.paneLayout, layout)
     }
     .background(Theme.Surface.base)
     .task { store.start() }
@@ -55,6 +52,31 @@ struct ContentView: View {
 }
 
 // MARK: - Sidebar
+
+extension ContentView {
+  @ViewBuilder
+  fileprivate func panes(_ layout: PaneLayout) -> some View {
+    HStack(spacing: 0) {
+      if layout.showsSidebar || sidebarRevealed {
+        Sidebar(store: store)
+          .frame(width: layout.showsSidebar ? layout.sidebarWidth : 220)
+          .transition(.move(edge: .leading))
+      }
+
+      MessageListPane(store: store, revealSidebar: layout.showsSidebar ? nil : {
+        withAnimation(Theme.Motion.standard) { sidebarRevealed.toggle() }
+      })
+      .frame(width: layout.listWidth)
+      .triageShortcuts(store: store, listFocused: $listFocused)
+
+      ReadingPane(store: store)
+        // A floor rather than only a flexible width: below this the pane stops
+        // being readable, and it is better for the window to refuse to squeeze
+        // it than to render a column two words wide.
+        .frame(minWidth: PaneLayout.minimumReadingWidth, maxWidth: .infinity)
+    }
+  }
+}
 
 private struct Sidebar: View {
   @Bindable var store: MailStore
@@ -247,6 +269,8 @@ private struct BadgePill: View {
 
 private struct MessageListPane: View {
   @Bindable var store: MailStore
+  /// Non-nil only when the sidebar is hidden, in which case this reveals it.
+  var revealSidebar: (() -> Void)?
 
   var body: some View {
     VStack(spacing: 0) {
@@ -260,6 +284,16 @@ private struct MessageListPane: View {
   private var toolbar: some View {
     VStack(spacing: Theme.Space.loose) {
       HStack(spacing: Theme.Space.snug) {
+        if let revealSidebar {
+          Button(action: revealSidebar) {
+            Image(systemName: "sidebar.leading")
+              .font(.system(size: Theme.Size.smallIcon))
+              .foregroundStyle(Theme.Ink.secondary)
+              .contentShape(.rect)
+          }
+          .buttonStyle(.plain)
+          .help("Show mailboxes")
+        }
         Image(systemName: "magnifyingglass")
           .font(.system(size: Theme.Size.smallIcon - 1))
           .foregroundStyle(Theme.Ink.secondary)
@@ -466,6 +500,7 @@ private struct ThreadListRow: View {
   let isSelecting: Bool
   let toggle: () -> Void
 
+  @Environment(\.paneLayout) private var layout
   @State private var isHovering = false
 
   var body: some View {
@@ -528,7 +563,7 @@ private struct ThreadListRow: View {
         Text(thread.snippet)
           .font(Theme.Font.small)
           .foregroundStyle(Theme.Ink.secondary)
-          .lineLimit(2)
+          .lineLimit(layout.showsRowPreview ? 2 : 1)
       }
       .padding(.leading, Theme.Space.wide)
 

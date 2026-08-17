@@ -8,6 +8,7 @@ import SwiftUI
 struct ReadingPane: View {
   @Bindable var store: MailStore
   @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.paneLayout) private var layout
   /// Height of the rendered message, measured by the web view.
   ///
   /// Starts at a screenful so the pane does not visibly jump on first paint;
@@ -54,15 +55,18 @@ struct ReadingPane: View {
       // bottom of this view, which cost ~194pt of reading space on every
       // message whether or not anyone was replying.
       ToolbarPill(symbol: "arrowshape.turn.up.left", title: "Reply",
-                  tint: Theme.Accent.blue, outlined: true) {
+                  tint: Theme.Accent.blue, outlined: true,
+                  showsTitle: layout.showsToolbarLabels) {
         store.startReply()
       }
       .help("Reply (⌘R)")
 
-      ToolbarPill(symbol: "trash", title: "Trash", tint: Theme.Accent.red) {
+      ToolbarPill(symbol: "trash", title: "Trash", tint: Theme.Accent.red,
+                  showsTitle: layout.showsToolbarLabels) {
         Task { await store.trashSelected() }
       }
-      ToolbarPill(symbol: "archivebox", title: "Archive", tint: Theme.Ink.primary) {
+      ToolbarPill(symbol: "archivebox", title: "Archive", tint: Theme.Ink.primary,
+                  showsTitle: layout.showsToolbarLabels) {
         Task { await store.archiveSelectedAndAdvance() }
       }
 
@@ -73,7 +77,8 @@ struct ReadingPane: View {
         title: "Flag",
         tint: store.selectedThread?.isStarred == true
           ? Theme.Accent.flag : Theme.Accent.muted,
-        outlined: true
+        outlined: true,
+        showsTitle: layout.showsToolbarLabels
       ) {
         Task { await store.toggleStarOnSelection() }
       }
@@ -204,13 +209,22 @@ private struct ToolbarPill: View {
   let title: String
   let tint: Color
   var outlined: Bool = false
+  /// Dropped on narrow windows. Four labelled pills want about 400pt; four
+  /// icons want about 150pt and lose only a word that the tooltip still
+  /// carries. Previously the labels stayed and wrapped mid-word — "Re/ply",
+  /// "Tra/sh" — which is worse than not showing them.
+  var showsTitle: Bool = true
   let action: (() -> Void)?
 
   var body: some View {
     Button(action: { action?() }) {
       HStack(spacing: Theme.Space.tight) {
         Image(systemName: symbol).font(.system(size: Theme.Size.icon - 3))
-        Text(title).font(Theme.Font.body)
+        if showsTitle {
+          // fixedSize so it can never wrap: if it does not fit, the layout step
+          // above should have dropped it, and a torn word is not a fallback.
+          Text(title).font(Theme.Font.body).fixedSize()
+        }
       }
       .foregroundStyle(tint)
       .padding(.horizontal, Theme.Space.base)
@@ -472,6 +486,7 @@ private struct FlowRow: Layout {
 private struct SenderBar: View {
   let thread: ThreadRow
   let newest: MessageRow?
+  @Environment(\.paneLayout) private var layout
 
   var body: some View {
     HStack(alignment: .center, spacing: Theme.Space.loose) {
@@ -479,22 +494,34 @@ private struct SenderBar: View {
 
       VStack(alignment: .leading, spacing: Theme.Space.hair) {
         HStack(spacing: Theme.Space.tight) {
+          // The NAME truncates rather than wrapping — it used to break into
+          // "Taylor Shaha / n" in a narrow pane — and the address yields first,
+          // because a truncated address is still recognisable while a
+          // truncated name is not.
           Text(newest?.displayName ?? thread.displayName)
             .font(Theme.Font.bodyEmphasis)
             .foregroundStyle(Theme.Ink.primary)
-          if let email = newest?.fromEmail {
+            .lineLimit(1)
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
+          if let email = newest?.fromEmail, layout.showsToolbarLabels {
             Text("<\(email)>")
               .font(Theme.Font.body)
               .fontWeight(.regular)
               .foregroundStyle(Theme.Ink.secondary)
               .lineLimit(1)
+              .truncationMode(.middle)
           }
         }
-        if let recipients = newest?.toRecipients, !recipients.isEmpty {
+        // Recipients are the first thing to go: on a narrow pane they are a
+        // truncated list of addresses, which tells you less than nothing.
+        if layout.showsRowPreview,
+           let recipients = newest?.toRecipients, !recipients.isEmpty {
           Text("To: " + recipients.map(\.email).joined(separator: ", "))
             .font(Theme.Font.small)
             .foregroundStyle(Theme.Ink.tertiary)
             .lineLimit(1)
+            .truncationMode(.middle)
         }
       }
 

@@ -39,7 +39,10 @@ struct AlapApp: App {
   var body: some Scene {
     WindowGroup {
       ContentView(store: store)
-        .frame(minWidth: 900, minHeight: 560)
+        // The narrowest layout is a hidden sidebar (0) + list (300) + the reading
+        // pane floor (380). Below that something has to be squeezed, so the
+        // window refuses instead.
+        .frame(minWidth: 680, minHeight: 480)
         // Started with the window, so the first incremental poll happens as
         // the app appears — which is what makes opening it show current mail
         // rather than whatever was there when it last closed.
