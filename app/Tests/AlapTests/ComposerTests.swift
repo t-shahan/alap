@@ -208,3 +208,120 @@ struct ComposerTests {
     #expect(store.addressSuggestions(matching: "zzzznotreal").isEmpty)
   }
 }
+
+/// Which address a message is sent FROM.
+///
+/// Only meaningful once several accounts are connected, and getting it wrong
+/// is invisible to the sender: the mistake shows up in the recipient's inbox,
+/// after the message has gone.
+@MainActor
+struct SendingIdentityTests {
+  private let two = [
+    (id: "acct_personal", email: "me@personal.com"),
+    (id: "acct_work", email: "me@work.com"),
+  ]
+
+  private func store() -> (MailStore, FakeBridge) {
+    let bridge = FakeBridge()
+    let store = MailStore(bridge: bridge, openFile: { _ in })
+    store.start()
+
+    let accountJSON = two.map {
+      """
+      {"id":"\($0.id)","emailAddress":"\($0.email)","displayName":"\($0.email)",
+       "provider":"gmail","color":"#4aa3a2","sortOrder":0,"createdAt":0}
+      """
+    }.joined(separator: ",")
+    bridge.push("accounts", json: "[\(accountJSON)]")
+    bridge.push("labels", json: Fixtures.labels(accountId: "acct_personal"))
+    return (store, bridge)
+  }
+
+  /// A thread owned by `owner`, whose newest message was addressed to
+  /// `addressedTo`.
+  private func selectThread(_ store: MailStore, _ bridge: FakeBridge,
+                            owner: String, addressedTo: String) {
+    bridge.push("threads", json: """
+      [{"id":"th1","accountId":"\(owner)","remoteThreadId":"t1","subject":"S",
+        "snippet":"s","participants":[{"name":"Ada","email":"ada@example.com"}],
+        "lastMessageAt":1700000000000,"messageCount":1,"unreadCount":0,
+        "hasAttachments":false,"isStarred":false}]
+      """)
+    store.selectedThreadID = "th1"
+    store.flushPendingSubscriptions()
+    bridge.push("detail", json: Fixtures.detail(messages: [
+      Fixtures.message(id: "m1", fromEmail: "ada@example.com",
+                       to: [("Me", addressedTo)])
+    ]))
+  }
+
+  @Test("A reply comes from the address it was sent to")
+  func repliesFromTheAddressedAccount() {
+    // The thread is OWNED by the personal account, but the message was
+    // addressed to the work address. Answering from the personal address would
+    // be wrong, and only the recipient would ever see it.
+    let (store, bridge) = store()
+    selectThread(store, bridge, owner: "acct_personal", addressedTo: "me@work.com")
+
+    store.startReply()
+
+    #expect(store.composer.accountId == "acct_work")
+  }
+
+  @Test("Casing does not change which identity is chosen")
+  func matchIgnoresCase() {
+    let (store, bridge) = store()
+    selectThread(store, bridge, owner: "acct_personal", addressedTo: "Me@Work.COM")
+
+    store.startReply()
+
+    #expect(store.composer.accountId == "acct_work")
+  }
+
+  @Test("Mail that names none of your addresses falls back to the thread's account")
+  func fallsBackToTheOwningAccount() {
+    // Mailing lists, Bcc, and forwarding aliases all arrive without your
+    // address in To or Cc. The mailbox it landed in is the best answer left.
+    let (store, bridge) = store()
+    selectThread(store, bridge, owner: "acct_work", addressedTo: "list@example.com")
+
+    store.startReply()
+
+    #expect(store.composer.accountId == "acct_work")
+  }
+
+  @Test("The identity can be changed after the composer opens")
+  func identityIsOverridable() {
+    let (store, bridge) = store()
+    selectThread(store, bridge, owner: "acct_personal", addressedTo: "me@work.com")
+    store.startReply()
+
+    store.composer.accountId = "acct_personal"
+
+    #expect(store.composer.accountId == "acct_personal")
+  }
+
+  @Test("The chosen identity is what actually gets sent")
+  func chosenIdentityIsSent() async {
+    // The picker is worthless if the send ignores it.
+    let (store, bridge) = store()
+    selectThread(store, bridge, owner: "acct_personal", addressedTo: "me@work.com")
+    store.startReply()
+    store.composer.accountId = "acct_personal"
+    store.composer.body = "Ack."
+    bridge.reset()
+
+    await store.sendComposed()
+
+    let call = bridge.mutations(named: "compose.send").first
+    #expect(call?.args["accountId"] == .string("acct_personal"))
+    #expect(call?.args["fromEmail"] == .string("me@personal.com"))
+  }
+
+  @Test("A new message defaults to an account rather than none")
+  func newMessageHasAnIdentity() {
+    let (store, _) = store()
+    store.startNewMessage()
+    #expect(store.composer.accountId != nil)
+  }
+}

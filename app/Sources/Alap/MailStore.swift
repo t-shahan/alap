@@ -532,6 +532,8 @@ final class MailStore {
       : [parent.fromEmail]
     guard !recipients.isEmpty else { return }
 
+    let sendingAccount = replyAccount(for: thread, parent: parent)
+
     // References is the ancestry: whatever the parent carried, plus the parent.
     var references: [String] = []
     if let parentId = parent.rfc822MessageId, !parentId.isEmpty {
@@ -542,12 +544,31 @@ final class MailStore {
       to: recipients,
       subject: MailStore.replySubject(parent.subject),
       context: Composer.ReplyContext(
-        accountId: thread.accountId,
+        accountId: sendingAccount,
         remoteThreadId: thread.remoteThreadId,
         inReplyTo: parent.rfc822MessageId ?? "",
         references: references
       )
     )
+  }
+
+  /// Which of your addresses a reply should come from.
+  ///
+  /// Prefers whichever connected address the message was actually ADDRESSED
+  /// to. Mail that arrived at your work address should be answered from your
+  /// work address — replying from the wrong identity is the kind of mistake
+  /// that is only visible to the recipient, and only after it is sent.
+  ///
+  /// Falls back to the account that owns the thread, which is right whenever
+  /// the message reached you some other way: a mailing list, a Bcc, or an
+  /// alias that forwards.
+  func replyAccount(for thread: ThreadRow, parent: MessageRow) -> String {
+    let addressed = Set(
+      (parent.toRecipients + parent.ccRecipients).map { $0.email.lowercased() })
+    if let match = accounts.first(where: { addressed.contains($0.emailAddress.lowercased()) }) {
+      return match.id
+    }
+    return thread.accountId
   }
 
   /// Mirrors the engine's `compose::reply_subject` — adds `Re:` only when it

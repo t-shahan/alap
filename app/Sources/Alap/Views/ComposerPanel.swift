@@ -115,6 +115,14 @@ struct ComposerPanel: View {
 
   private var fields: some View {
     VStack(spacing: 0) {
+      // Only when there is a choice to make. A "From" row above a single
+      // account is a control that can only ever do nothing, and it pushes the
+      // fields that matter further down a panel with limited height.
+      if store.accounts.count > 1 {
+        FromField(accounts: store.accounts, selected: $composer.accountId)
+        Divider().overlay(Theme.Surface.border.opacity(0.4))
+      }
+
       RecipientField(
         label: "To", text: $composer.to, field: .to, focus: $focus,
         suggestions: { store.addressSuggestions(matching: $0) }
@@ -336,5 +344,68 @@ struct ComposeLaunchButton: View {
     }
     .padding(Theme.Space.section)
     .help("New message (⌘N)")
+  }
+}
+
+/// Which address the message is sent from.
+///
+/// Present only when more than one account is connected. Sending from the
+/// wrong identity is a mistake visible only to the recipient, and only after
+/// the message has gone — so with several mailboxes this is worth a row, and
+/// with one it is worth nothing.
+///
+/// The dot carries the same colour as the account's sidebar entry and the
+/// stripe on its threads. That is the whole point of having chosen those
+/// colours: the identity is recognisable here without reading the address.
+private struct FromField: View {
+  let accounts: [AccountRow]
+  @Binding var selected: String?
+
+  private var current: AccountRow? {
+    accounts.first { $0.id == selected } ?? accounts.first
+  }
+
+  var body: some View {
+    HStack(spacing: Theme.Space.base) {
+      Text("From")
+        .font(Theme.Font.small)
+        .foregroundStyle(Theme.Ink.tertiary)
+        .frame(width: 52, alignment: .leading)
+
+      Menu {
+        ForEach(accounts) { account in
+          Button {
+            selected = account.id
+          } label: {
+            // The checkmark is drawn rather than relying on a Picker's
+            // selection styling, which a plain menu label does not get.
+            Label(
+              account.emailAddress,
+              systemImage: account.id == current?.id ? "checkmark.circle.fill" : "circle"
+            )
+          }
+        }
+      } label: {
+        HStack(spacing: Theme.Space.snug) {
+          Circle()
+            .fill(current.flatMap { Color(hex: $0.color) } ?? Theme.Accent.muted)
+            .frame(width: 8, height: 8)
+          Text(current?.emailAddress ?? "No account")
+            .font(Theme.Font.body)
+            .foregroundStyle(Theme.Ink.primary)
+            .lineLimit(1)
+          Image(systemName: "chevron.down")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(Theme.Ink.tertiary)
+          Spacer(minLength: 0)
+        }
+        .contentShape(.rect)
+      }
+      .menuStyle(.borderlessButton)
+      .menuIndicator(.hidden)
+      .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(.horizontal, Theme.Space.loose)
+    .frame(height: 34)
   }
 }
