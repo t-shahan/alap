@@ -198,31 +198,41 @@ export const mutators = defineMutators({
 
   compose: {
     /**
-     * Queues a reply to a thread.
+     * Queues a message.
+     *
+     * One mutator for replies and new messages alike: the only difference is
+     * whether the threading fields are populated, and duplicating everything
+     * else to express that would mean two code paths that must not drift.
      *
      * Writes ONLY an outbox row — no local message is inserted. A sent message
      * comes back from Gmail on the next poll as a real message with a real id,
-     * and inserting an optimistic copy first would duplicate it or leave an
-     * orphan if the send failed. The trade is a short delay before the reply
-     * appears in the thread, which is honest.
+     * and inserting an optimistic copy first would duplicate it, or leave an
+     * orphan if the send failed. The trade is a short delay before it appears
+     * in the thread, which is honest.
      *
      * Threading headers are supplied by the CLIENT because it already has the
-     * thread loaded; the engine would otherwise have to re-fetch the parent
-     * message purely to read its Message-ID.
+     * conversation loaded; the engine would otherwise re-fetch the parent
+     * purely to read its Message-ID.
      */
-    reply: defineMutator(
+    send: defineMutator(
       z.object({
         ...outboxArgs,
-        threadId: z.string(),
-        /** Gmail's thread id, so the reply lands in the same conversation. */
-        remoteThreadId: z.string(),
         fromName: z.string(),
         fromEmail: z.string().email(),
-        to: z.array(z.string()).min(1),
-        cc: z.array(z.string()).default([]),
+        to: z.array(z.string().email()).min(1),
+        cc: z.array(z.string().email()).default([]),
         subject: z.string(),
         body: z.string().min(1),
-        /** Parent's RFC 5322 Message-ID, without angle brackets. */
+
+        /**
+         * Threading. All absent for a new message.
+         *
+         * `remoteThreadId` is Gmail's own id, which is what makes a reply land
+         * in the existing conversation in Gmail's UI. The In-Reply-To and
+         * References headers do the same job for every OTHER mail client, so
+         * both are needed — neither is redundant.
+         */
+        remoteThreadId: z.string().default(''),
         inReplyTo: z.string().default(''),
         references: z.array(z.string()).default([]),
       }),

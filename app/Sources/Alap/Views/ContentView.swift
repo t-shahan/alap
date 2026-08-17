@@ -29,6 +29,16 @@ struct ContentView: View {
     // `.task` runs before the window becomes key, so assigning focus there is
     // silently dropped and shortcuts do nothing until the user clicks a row.
     .defaultFocus($listFocused, true)
+    // Bottom-trailing overlay rather than a sheet: the mailbox behind stays
+    // live and clickable, so looking something up mid-message does not mean
+    // discarding the draft.
+    .overlay(alignment: .bottomTrailing) {
+      if store.composer.isVisible {
+        ComposerPanel(store: store, composer: store.composer)
+      } else {
+        ComposeLaunchButton { store.startNewMessage() }
+      }
+    }
     .background(BridgeHost(bridge: store.bridge).frame(width: 0, height: 0))
   }
 }
@@ -78,32 +88,37 @@ private struct Sidebar: View {
     .background(Theme.Surface.sunken)
   }
 
-  /// Compose is not implemented — the engine's `send` outbox op returns 501 —
-  /// so this is visibly disabled rather than silently doing nothing.
+  /// Starts a new message.
+  ///
+  /// It used to be a dimmed `HStack` with no action at all — it read as a
+  /// disabled menu item rather than the primary action in the window. Now it
+  /// is a real button, filled rather than outlined so it reads as the one thing
+  /// on this pane you do rather than navigate to.
   private var newMessageButton: some View {
-    HStack(spacing: Theme.Space.base) {
-      Image(systemName: "square.and.pencil")
-        .font(.system(size: Theme.Size.smallIcon))
-      Text("New Message").font(Theme.Font.bodyEmphasis)
+    Button {
+      store.startNewMessage()
+    } label: {
+      HStack(spacing: Theme.Space.base) {
+        Image(systemName: "square.and.pencil")
+          .font(.system(size: Theme.Size.smallIcon, weight: .medium))
+        Text("New Message").font(Theme.Font.bodyEmphasis)
+        Spacer(minLength: 0)
+      }
+      .foregroundStyle(.white)
+      .padding(.horizontal, Theme.Space.loose)
+      .frame(height: 34)
+      .background(Theme.Accent.blue, in: .rect(cornerRadius: Theme.Radius.panel))
+      .contentShape(.rect)
     }
-    .foregroundStyle(Theme.Accent.blue)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, Theme.Space.loose)
-    .frame(height: 36)
-    .background(Theme.Surface.control, in: .rect(cornerRadius: Theme.Radius.panel))
-    .overlay(
-      RoundedRectangle(cornerRadius: Theme.Radius.panel)
-        .stroke(Theme.Surface.border, lineWidth: 1)
-    )
-    .opacity(0.45)
-    .help("Composing is not implemented yet")
+    .buttonStyle(.plain)
+    .help("New message (⌘N)")
   }
 
   /// One row per connected mailbox, plus the way to add another.
   ///
-  /// The colour dot is the whole point: once two accounts are unified into one
-  /// inbox, the only cheap way to tell whose mail you are looking at is a
-  /// consistent colour, and it has to be the SAME colour here and in the list.
+  /// The colour dot is the point: once several accounts are unified into one
+  /// inbox, colour is the only cheap way to tell whose mail a row belongs to —
+  /// so the same value drives the stripe in the thread list.
   private var accountsSection: some View {
     VStack(alignment: .leading, spacing: Theme.Space.tight) {
       Text("ACCOUNTS")

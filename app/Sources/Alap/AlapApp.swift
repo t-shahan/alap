@@ -37,7 +37,6 @@ struct AlapApp: App {
     // surface rather than three stacked panels with a heavy header.
     .windowStyle(.hiddenTitleBar)
     .commands {
-      CommandGroup(replacing: .newItem) {}
       MailCommands(store: store)
       ThemeCommands(themes: themes)
     }

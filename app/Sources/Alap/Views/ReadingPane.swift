@@ -8,9 +8,6 @@ import SwiftUI
 struct ReadingPane: View {
   @Bindable var store: MailStore
   @Environment(\.colorScheme) private var colorScheme
-  /// Owned here rather than inside the pane so the Reply button can move focus
-  /// into it — `@FocusState` can only be declared by a view, not passed up.
-  @FocusState private var replyFocused: Bool
 
   var body: some View {
     VStack(spacing: 0) {
@@ -18,15 +15,6 @@ struct ReadingPane: View {
         toolbar
         Divider().overlay(Theme.Surface.border.opacity(0.5))
         content(for: thread)
-        QuickReplyPane(
-          recipient: store.detail?.messages.last?.displayName,
-          focus: $replyFocused,
-          send: { try await store.sendReply(body: $0) }
-        )
-        // Rebuild per thread: a draft belongs to the conversation it was
-        // written in, and carrying it across would risk sending it to the
-        // wrong recipient.
-        .id(thread.id)
       } else {
         EmptyState(
           title: "No message selected",
@@ -46,15 +34,14 @@ struct ReadingPane: View {
   /// fake it with their own scheduling — so a button here would do nothing.
   private var toolbar: some View {
     HStack(spacing: Theme.Space.loose) {
-      // Reply does not open a separate window — it focuses the quick-reply
-      // pane that is already on screen, which is the whole point of having it
-      // pinned there.
+      // Opens the composer pre-filled. It used to focus a pane pinned to the
+      // bottom of this view, which cost ~194pt of reading space on every
+      // message whether or not anyone was replying.
       ToolbarPill(symbol: "arrowshape.turn.up.left", title: "Reply",
                   tint: Theme.Accent.blue, outlined: true) {
-        replyFocused = true
+        store.startReply()
       }
       .help("Reply (⌘R)")
-      .keyboardShortcut("r", modifiers: .command)
 
       ToolbarPill(symbol: "trash", title: "Trash", tint: Theme.Accent.red) {
         Task { await store.trashSelected() }
@@ -449,167 +436,3 @@ private struct FlowRow: Layout {
   }
 }
 
-/// The design's quick-reply panel.
-///
-/// "Queued" rather than "Sent" is deliberate. Pressing send writes an outbox
-/// row and returns; the engine drains it to Gmail moments later. Claiming the
-/// message was sent would be a lie we could not honour if the drain failed, and
-/// the reply appears in the thread on the next poll anyway.
-///
-/// The pane resets per thread (see the `.id(thread.id)` at the call site), so
-/// switching conversations never carries a half-written reply along with it.
-private struct QuickReplyPane: View {
-  let recipient: String?
-  var focus: FocusState<Bool>.Binding
-  /// Queues the reply. Throwing surfaces in `status`; it never traps.
-  let send: (String) async throws -> Void
-
-  /// What the pane is doing right now. Modelled as a state machine rather than
-  /// separate `isSending`/`didSend`/`error` flags, which can contradict.
-  private enum Status: Equatable {
-    case editing
-    case sending
-    case queued
-    case failed(String)
-  }
-
-  @State private var draft = ""
-  @State private var status: Status = .editing
-
-  private var canSend: Bool {
-    status != .sending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: Theme.Space.loose) {
-      header
-      editor
-      footer
-    }
-    .padding(Theme.Space.wide)
-    .background(Theme.Surface.sunken)
-  }
-
-  private var header: some View {
-    HStack {
-      HStack(spacing: Theme.Space.base) {
-        Image(systemName: "arrowshape.turn.up.left")
-          .font(.system(size: Theme.Size.smallIcon))
-        Text(recipient.map { "Reply to \($0)" } ?? "Reply")
-          .font(Theme.Font.bodyEmphasis)
-      }
-      .foregroundStyle(Theme.Ink.primary)
-
-      Spacer()
-
-      statusLabel
-    }
-  }
-
-  @ViewBuilder
-  private var statusLabel: some View {
-    switch status {
-    case .editing:
-      Text("⌘↩ to send")
-        .font(Theme.Font.caption)
-        .fontWeight(.regular)
-        .foregroundStyle(Theme.Ink.tertiary)
-    case .sending:
-      ProgressView().controlSize(.small)
-    case .queued:
-      Label("Queued", systemImage: "checkmark.circle.fill")
-        .font(Theme.Font.caption)
-        .fontWeight(.regular)
-        .foregroundStyle(Theme.Accent.blue)
-    case .failed(let message):
-      Label(message, systemImage: "exclamationmark.triangle.fill")
-        .font(Theme.Font.caption)
-        .fontWeight(.regular)
-        .foregroundStyle(Theme.Accent.red)
-        .lineLimit(1)
-        .help(message)
-    }
-  }
-
-  private var editor: some View {
-    TextEditor(text: $draft)
-      .font(Theme.Font.body)
-      .fontWeight(.regular)
-      .scrollContentBackground(.hidden)
-      .frame(height: 72)
-      .padding(Theme.Space.loose)
-      .background(Theme.Surface.raised, in: .rect(cornerRadius: Theme.Radius.panel))
-      .focused(focus)
-      .disabled(status == .sending)
-      .overlay(alignment: .topLeading) {
-        if draft.isEmpty {
-          Text("Write a reply…")
-            .font(Theme.Font.body)
-            .fontWeight(.regular)
-            .foregroundStyle(Theme.Ink.tertiary)
-            .padding(Theme.Space.loose + Theme.Space.tight)
-            .allowsHitTesting(false)
-        }
-      }
-      // A plain Return inserts a newline, as it should in a body field. The
-      // send shortcut lives on a hidden zero-size button so the key event is
-      // routed by the responder chain rather than by intercepting the editor.
-      .background {
-        Button("Send Reply", action: submit)
-          .keyboardShortcut(.return, modifiers: .command)
-          .opacity(0)
-          .frame(width: 0, height: 0)
-          .disabled(!canSend)
-      }
-      // Any typing makes the previous outcome stale. The empty case is excluded
-      // because `submit` clears the draft itself — reacting to that would wipe
-      // the "Queued" confirmation the instant it appeared.
-      .onChange(of: draft) { _, new in
-        if !new.isEmpty, status != .sending { status = .editing }
-      }
-  }
-
-  private var footer: some View {
-    HStack {
-      // Attachments cannot be added yet: the engine composes single-part
-      // text/plain messages, so an attach button would have nothing to do.
-      Image(systemName: "paperclip")
-        .foregroundStyle(Theme.Ink.tertiary.opacity(0.5))
-        .help("Attachments are not supported yet")
-
-      Spacer()
-
-      Button(action: submit) {
-        Text("Send Reply")
-          .font(Theme.Font.bodyEmphasis)
-          .foregroundStyle(.white)
-          .padding(.horizontal, Theme.Space.wide)
-          .padding(.vertical, Theme.Space.base)
-          .background(
-            canSend ? Theme.Accent.blue : Theme.Accent.muted,
-            in: .rect(cornerRadius: Theme.Radius.control)
-          )
-          .opacity(canSend ? 1 : 0.45)
-      }
-      .buttonStyle(.plain)
-      .disabled(!canSend)
-    }
-  }
-
-  private func submit() {
-    guard canSend else { return }
-    let body = draft
-    status = .sending
-
-    Task {
-      do {
-        try await send(body)
-        // Clear only on success, so a failure never loses what was typed.
-        draft = ""
-        status = .queued
-      } catch {
-        status = .failed(error.localizedDescription)
-      }
-    }
-  }
-}

@@ -509,23 +509,20 @@ final class MailStore {
     selectedThreadID = successor
   }
 
-  /// Queues a reply to the selected thread.
+  /// The composer panel's state. Owned here so menu commands can reach it.
+  let composer = Composer()
+
+  /// Opens the composer as a reply to the selected thread.
   ///
-  /// Threading headers are assembled here because the client already holds the
-  /// conversation; making the engine re-fetch the parent purely to read its
-  /// Message-ID would be a wasted round trip.
-  ///
-  /// Nothing is inserted locally. The sent message arrives from Gmail on the
-  /// next poll as a real message — inserting an optimistic copy would either
-  /// duplicate it or strand an orphan if the send failed.
-  func sendReply(body: String) async throws {
+  /// Recipients and threading are resolved HERE rather than in the composer,
+  /// because this is where the conversation is loaded — handing the composer
+  /// the whole store to work them out itself would invert the dependency for
+  /// no gain.
+  func startReply() {
     guard let thread = selectedThread,
           let parent = detail?.messages.last,
           let account = accounts.first(where: { $0.id == thread.accountId })
     else { return }
-
-    let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
 
     // Reply to the sender, unless that is us — in which case reply to whoever
     // the parent was addressed to, so replying to your own sent mail works.
@@ -535,36 +532,112 @@ final class MailStore {
       : [parent.fromEmail]
     guard !recipients.isEmpty else { return }
 
-    // References is the ancestry: the parent's own chain plus the parent.
+    // References is the ancestry: whatever the parent carried, plus the parent.
     var references: [String] = []
     if let parentId = parent.rfc822MessageId, !parentId.isEmpty {
       references.append(parentId)
     }
 
-    try await bridge.mutate(
-      "compose.reply",
-      args: [
-        "accountId": .string(thread.accountId),
-        "threadId": .string(thread.id),
-        "remoteThreadId": .string(thread.remoteThreadId),
-        "fromName": .string(account.displayName),
-        "fromEmail": .string(account.emailAddress),
-        "to": .array(recipients.map { .string($0) }),
-        "cc": .array([]),
-        "subject": .string(Self.replySubject(parent.subject)),
-        "body": .string(trimmed),
-        "inReplyTo": .string(parent.rfc822MessageId ?? ""),
-        "references": .array(references.map { .string($0) }),
-        "idempotencyKey": .string(UUID().uuidString.lowercased()),
-      ]
+    composer.reply(
+      to: recipients,
+      subject: MailStore.replySubject(parent.subject),
+      context: Composer.ReplyContext(
+        accountId: thread.accountId,
+        remoteThreadId: thread.remoteThreadId,
+        inReplyTo: parent.rfc822MessageId ?? "",
+        references: references
+      )
     )
   }
 
-  /// Mirrors the engine's `compose::reply_subject` — adds `Re:` only when it is
-  /// absent, so round trips do not stack prefixes.
-  private static func replySubject(_ original: String) -> String {
+  /// Mirrors the engine's `compose::reply_subject` — adds `Re:` only when it
+  /// is absent, so a few round trips do not produce "Re: Re: Re:".
+  static func replySubject(_ original: String) -> String {
     original.lowercased().hasPrefix("re:") ? original : "Re: \(original)"
   }
+
+  /// Opens an empty composer.
+  func startNewMessage() {
+    // The selected thread's account, else the first — so replying from a work
+    // mailbox and then composing does not silently switch identity.
+    let account = selectedThread?.accountId ?? accounts.first?.id
+    composer.newMessage(from: account)
+  }
+
+  /// Queues whatever the composer currently holds.
+  ///
+  /// Nothing is inserted locally. The sent message arrives from Gmail on the
+  /// next poll as a real message — an optimistic copy would duplicate it, or
+  /// strand an orphan if the send failed.
+  func sendComposed() async {
+    guard composer.canSend,
+          let accountId = composer.accountId,
+          let account = accounts.first(where: { $0.id == accountId })
+    else {
+      composer.status = .failed("No account to send from.")
+      return
+    }
+
+    let to = composer.recipients(from: composer.to)
+    guard !to.isEmpty else {
+      composer.status = .failed("Add at least one valid recipient.")
+      return
+    }
+
+    composer.status = .sending
+    let context = composer.replyContext
+
+    do {
+      try await bridge.mutate(
+        "compose.send",
+        args: [
+          "accountId": .string(accountId),
+          "fromName": .string(account.displayName),
+          "fromEmail": .string(account.emailAddress),
+          "to": .array(to.map { .string($0) }),
+          "cc": .array(composer.recipients(from: composer.cc).map { .string($0) }),
+          "subject": .string(composer.subject),
+          "body": .string(composer.body.trimmingCharacters(in: .whitespacesAndNewlines)),
+          "remoteThreadId": .string(context?.remoteThreadId ?? ""),
+          "inReplyTo": .string(context?.inReplyTo ?? ""),
+          "references": .array((context?.references ?? []).map { .string($0) }),
+          "idempotencyKey": .string(UUID().uuidString.lowercased()),
+        ]
+      )
+      composer.status = .queued
+      // Closed on success only, so a failure never loses what was written.
+      composer.close()
+    } catch {
+      composer.status = .failed(error.localizedDescription)
+    }
+  }
+
+  /// Addresses to suggest while typing a recipient.
+  ///
+  /// Drawn from threads already synced rather than a dedicated contacts query:
+  /// the participants are sitting in memory, so this costs a filter instead of
+  /// a round trip. It only knows people in the loaded window, which is the
+  /// right trade — the people you have seen recently are the people you are
+  /// most likely to be writing to.
+  func addressSuggestions(matching prefix: String, limit: Int = 6) -> [Participant] {
+    let needle = prefix.trimmingCharacters(in: .whitespaces).lowercased()
+    guard needle.count >= 2 else { return [] }
+
+    var seen = Set<String>()
+    var matches: [Participant] = []
+    for participant in threads.flatMap(\.participants) {
+      let email = participant.email.lowercased()
+      guard !email.isEmpty, !seen.contains(email) else { continue }
+      guard email.contains(needle) || participant.name.lowercased().contains(needle) else {
+        continue
+      }
+      seen.insert(email)
+      matches.append(participant)
+      if matches.count >= limit { break }
+    }
+    return matches
+  }
+
 
   // MARK: Attachments
 

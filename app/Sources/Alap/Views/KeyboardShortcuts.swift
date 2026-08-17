@@ -80,6 +80,16 @@ struct MailCommands: Commands {
   let store: MailStore
 
   var body: some Commands {
+    // Replaces the New Item slot that was emptied in MailApp: ⌘N is what
+    // every mail client on this platform binds to composing.
+    CommandGroup(replacing: .newItem) {
+      Button("New Message") { store.startNewMessage() }
+        .keyboardShortcut("n", modifiers: .command)
+      Button("Reply") { store.startReply() }
+        .keyboardShortcut("r", modifiers: .command)
+        .disabled(store.selectedThread == nil)
+    }
+
     CommandMenu("Message") {
       Button("Archive") {
         Task { await store.archiveSelectedAndAdvance() }
