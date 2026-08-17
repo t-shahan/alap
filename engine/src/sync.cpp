@@ -60,7 +60,7 @@ bool Syncer::ingest_one(const std::string& remote_id, bool write_body,
 
 Result<SyncStats> Syncer::backfill(const std::string& query, int64_t max_messages,
                                    bool write_bodies, const ProgressFn& on_progress,
-                                   int fetch_workers) {
+                                   int fetch_workers, bool refetch_existing) {
   SyncStats stats;
 
   // 1. Identify the mailbox and capture the watermark FIRST. Anything that
@@ -109,10 +109,12 @@ Result<SyncStats> Syncer::backfill(const std::string& query, int64_t max_message
               max_messages) {
         break;
       }
-      auto exists = store_.has_message(account_id_, remote_id);
-      if (exists && *exists) {
-        ++stats.skipped;
-        continue;
+      if (!refetch_existing) {
+        auto exists = store_.has_message(account_id_, remote_id);
+        if (exists && *exists) {
+          ++stats.skipped;
+          continue;
+        }
       }
       to_fetch.push_back(remote_id);
     }

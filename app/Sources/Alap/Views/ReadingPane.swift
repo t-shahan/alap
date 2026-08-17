@@ -13,6 +13,12 @@ struct ReadingPane: View {
   /// Starts at a screenful so the pane does not visibly jump on first paint;
   /// the real value arrives a frame later.
   @State private var bodyHeight: CGFloat = 400
+  /// Per-thread, and deliberately not remembered.
+  ///
+  /// Consenting to load one sender's images is not consent for the next one's,
+  /// and a preference that quietly persisted would turn a single decision into
+  /// a standing one.
+  @State private var showsRemoteImages = false
 
   var body: some View {
     VStack(spacing: 0) {
@@ -92,7 +98,10 @@ struct ReadingPane: View {
       .frame(maxWidth: .infinity, alignment: .leading)
     }
     .id(thread.id)  // reset scroll when switching threads
-    .onChange(of: thread.id) { _, _ in bodyHeight = 400 }
+    .onChange(of: thread.id) { _, _ in
+      bodyHeight = 400
+      showsRemoteImages = false
+    }
   }
 
   private func subject(for thread: ThreadRow) -> some View {
@@ -107,13 +116,24 @@ struct ReadingPane: View {
       .frame(maxWidth: .infinity, alignment: .leading)
   }
 
+  private var blockedImages: Int {
+    MessageDocument.blockedImageCount(in: store.detail?.messages ?? [])
+  }
+
   @ViewBuilder
   private var messageBody: some View {
     VStack(alignment: .leading, spacing: Theme.Space.pane) {
       if let detail = store.detail, !detail.messages.isEmpty {
+        if !showsRemoteImages, blockedImages > 0 {
+          RemoteImageBanner(count: blockedImages) {
+            withAnimation(Theme.Motion.quick) { showsRemoteImages = true }
+          }
+        }
+
         MessageWebView(
           html: MessageDocument.build(for: detail.messages,
-                                      isDark: colorScheme == .dark),
+                                      isDark: colorScheme == .dark,
+                                      showRemoteImages: showsRemoteImages),
           inlineImages: store.inlineImages,
           onHeightChange: { bodyHeight = $0 }
         )
@@ -490,5 +510,52 @@ private struct SenderBar: View {
         .fill(Theme.Surface.border)
         .frame(height: 1)
     }
+  }
+}
+
+/// Offers to load the remote images the sanitiser withheld.
+///
+/// Phrased as what it costs rather than what it does. "Images blocked" tells
+/// you nothing about why you would or would not want them; a remote image in
+/// mail is a tracking pixel far more often than it is a picture, and loading
+/// one tells the sender the message was opened, by whom, and roughly from
+/// where. That is the decision being made, so that is what the row says.
+private struct RemoteImageBanner: View {
+  let count: Int
+  let load: () -> Void
+
+  var body: some View {
+    HStack(spacing: Theme.Space.loose) {
+      Image(systemName: "eye.slash")
+        .font(.system(size: Theme.Size.smallIcon))
+        .foregroundStyle(Theme.Ink.secondary)
+
+      VStack(alignment: .leading, spacing: Theme.Space.hair) {
+        Text(count == 1 ? "1 remote image not loaded"
+                        : "\(count) remote images not loaded")
+          .font(Theme.Font.small)
+          .foregroundStyle(Theme.Ink.primary)
+        Text("Loading them tells the sender you opened this message.")
+          .font(Theme.Font.micro)
+          .fontWeight(.regular)
+          .foregroundStyle(Theme.Ink.tertiary)
+      }
+
+      Spacer(minLength: Theme.Space.base)
+
+      Button(action: load) {
+        Text("Load images")
+          .font(Theme.Font.small)
+          .foregroundStyle(Theme.Accent.blue)
+          .padding(.horizontal, Theme.Space.loose)
+          .padding(.vertical, Theme.Space.snug)
+          .background(Theme.Accent.blue.opacity(0.12),
+                      in: .rect(cornerRadius: Theme.Radius.control))
+      }
+      .buttonStyle(.plain)
+    }
+    .padding(.horizontal, Theme.Space.loose)
+    .padding(.vertical, Theme.Space.cosy)
+    .background(Theme.Surface.control, in: .rect(cornerRadius: Theme.Radius.control))
   }
 }

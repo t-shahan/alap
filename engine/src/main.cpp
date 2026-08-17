@@ -66,6 +66,8 @@ int usage() {
                "  peek <account-id> [n] fetch and print the newest n messages\n"
                "  check <account-id> [n] parse-health report over n messages (no content)\n"
                "  sync <account-id> [query] [max] [workers]  backfill into Postgres\n"
+               "  resync <account-id> [query] [max] [workers]  as sync, but RE-FETCH\n"
+               "                        messages already stored (repairs parsing changes)\n"
                "  poll <account-id>     apply changes since the stored watermark\n"
                "  drain <account-id>    push queued local changes to Gmail\n"
                "  daemon [seconds]      supervise every connected account\n"
@@ -302,7 +304,7 @@ void print_stats(const mailengine::SyncStats& stats) {
 }
 
 int cmd_sync(const std::string& account_id, const std::string& query, int64_t max,
-             int workers) {
+             int workers, bool refetch = false) {
   auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
   mailengine::GmailClient gmail(tokens);
   mailengine::PostgresStore store;
@@ -332,7 +334,7 @@ int cmd_sync(const std::string& account_id, const std::string& query, int64_t ma
                     << std::setprecision(1) << rate << " msg/s" << std::flush;
         }
       },
-      workers);
+      workers, refetch);
   std::cout << "\n";
 
   if (!stats) {
@@ -1096,11 +1098,15 @@ int main(int argc, char** argv) {
     if (argc < 3) return usage();
     return cmd_labels(argv[2]);
   }
-  if (command == "sync") {
+  if (command == "sync" || command == "resync") {
     if (argc < 3) return usage();
+    // `resync` re-fetches messages already stored. The stored HTML is the
+    // OUTPUT of parsing and sanitising, so a change to either cannot be
+    // repaired from it — only by asking Gmail again.
     return cmd_sync(argv[2], argc > 3 ? argv[3] : "",
                     argc > 4 ? std::atoll(argv[4]) : 0,
-                    argc > 5 ? std::atoi(argv[5]) : 16);
+                    argc > 5 ? std::atoi(argv[5]) : 16,
+                    command == "resync");
   }
   if (command == "poll") {
     if (argc < 3) return usage();

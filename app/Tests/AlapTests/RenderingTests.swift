@@ -187,3 +187,90 @@ struct RenderingTests {
     #expect(plainTextFromHTML("a&amp;lt;b").contains("a&lt;b"))
   }
 }
+
+/// Remote image blocking, and the way back from it.
+///
+/// A remote image in mail is a tracking pixel far more often than it is a
+/// picture: loading one tells the sender the message was opened, by whom, and
+/// roughly from where. So the default is to withhold them — but withholding
+/// them and discarding the URL made the decision permanent, which is a
+/// different thing from making it safe.
+@MainActor
+struct RemoteImageTests {
+  private func message(html: String) throws -> MessageRow {
+    let escaped = String(
+      data: try JSONSerialization.data(withJSONObject: [html]), encoding: .utf8)!
+      .dropFirst().dropLast()
+    let json = """
+      {"id":"m1","threadId":"th1","fromName":"Ada","fromEmail":"ada@example.com",
+       "toRecipients":[],"ccRecipients":[],"subject":"S","snippet":"s",
+       "sentAt":1700000000000,"isRead":true,"isStarred":false,
+       "hasAttachments":false,"rfc822MessageId":null,
+       "body":{"messageId":"m1","htmlBody":\(escaped),"textBody":null},
+       "attachments":[]}
+      """
+    return try JSONDecoder().decode(MessageRow.self, from: Data(json.utf8))
+  }
+
+  private let blocked =
+    #"<p>hi</p><img data-blocked="remote" data-blocked-src="https://t.example/a.gif" alt="a">"#
+
+  @Test("Blocked images are counted so the offer can be specific")
+  func countsBlockedImages() throws {
+    // "Images blocked" is vague; "3 remote images not loaded" is a fact.
+    let one = try message(html: blocked)
+    #expect(MessageDocument.blockedImageCount(in: [one]) == 1)
+
+    let three = try message(html: blocked + blocked + blocked)
+    #expect(MessageDocument.blockedImageCount(in: [three]) == 3)
+
+    let none = try message(html: "<p>nothing here</p>")
+    #expect(MessageDocument.blockedImageCount(in: [none]) == 0)
+  }
+
+  @Test("By default the URL is present but inert")
+  func defaultDocumentCannotLoadRemoteImages() throws {
+    let document = MessageDocument.build(for: [try message(html: blocked)], isDark: true)
+
+    // The URL survives so it CAN be restored...
+    #expect(document.contains("data-blocked-src="))
+    // ...but nothing will fetch it: no live src, and the CSP forbids https.
+    #expect(!document.contains(" src=\"https://"))
+    #expect(!document.contains("img-src cid: data: https:"))
+  }
+
+  @Test("Loading images restores the src and widens the CSP together")
+  func loadingRestoresBoth() throws {
+    // Either half alone is useless: a restored src with the old CSP is blocked
+    // by WebKit, and a widened CSP with no src has nothing to load.
+    let document = MessageDocument.build(
+      for: [try message(html: blocked)], isDark: true, showRemoteImages: true)
+
+    #expect(document.contains("src=\"https://t.example/a.gif\""))
+    #expect(document.contains("img-src cid: data: https:"))
+    #expect(!document.contains("data-blocked-src="))
+  }
+
+  @Test("Loading images does not widen what may be INTERPRETED")
+  func loadingDoesNotRelaxScriptPolicy() throws {
+    // The one thing that must not follow from "show me the pictures".
+    let document = MessageDocument.build(
+      for: [try message(html: blocked)], isDark: true, showRemoteImages: true)
+
+    #expect(document.contains("default-src 'none'"))
+    #expect(!document.contains("script-src"))
+    #expect(document.contains("form-action 'none'"))
+  }
+
+  @Test("Only the sanitiser's own attribute is restored")
+  func onlyRestoresTheSanitisersAttribute() throws {
+    // Checked with a LEADING SPACE. `data-evil-src="` ends in `src="`, so the
+    // naive substring matches the very attribute this distinguishes from a
+    // live one — the same trap as the C++ side of this test.
+    let sneaky = try message(
+      html: #"<img data-evil-src="https://evil.example/x.gif" alt="x">"#)
+    let document = MessageDocument.build(for: [sneaky], isDark: true,
+                                         showRemoteImages: true)
+    #expect(!document.contains(" src=\"https://evil.example"))
+  }
+}

@@ -82,8 +82,16 @@ class Syncer {
                                            int64_t max_messages = 0,
                                            bool write_bodies = true,
                                            const ProgressFn& on_progress = {},
-                                           int fetch_workers = 16);
+                                           int fetch_workers = 16,
+                                           bool refetch_existing = false);
 
+  /// @param refetch_existing Re-fetch messages already stored, rather than
+  ///        skipping them. Normally false — skipping is what makes restarting a
+  ///        partial backfill cheap. Set it to repair bodies already ingested,
+  ///        after a change to how they are parsed or sanitised: the stored HTML
+  ///        is the OUTPUT of that process, so it cannot be repaired from
+  ///        itself.
+  ///
   /// @brief Applies everything that changed since the stored watermark.
   ///
   /// This is the mechanism that makes refresh fast: one `history.list` call

@@ -193,7 +193,24 @@ enum MessageDocument {
   /// Per-message headers are omitted for a single-message thread, because the
   /// reading pane already shows sender, recipient and time above the document —
   /// repeating them reads as a duplicate.
-  static func build(for messages: [MessageRow], isDark: Bool) -> String {
+  /// Number of remote images the sanitiser withheld.
+  ///
+  /// Counted from the markup rather than tracked through the database, because
+  /// the answer needed is "in what is on screen right now", and the document is
+  /// what is on screen right now.
+  static func blockedImageCount(in messages: [MessageRow]) -> Int {
+    messages.reduce(0) { total, message in
+      guard let html = message.body?.htmlBody else { return total }
+      return total + html.components(separatedBy: "data-blocked=").count - 1
+    }
+  }
+
+  /// - Parameter showRemoteImages: Restores the URLs the sanitiser withheld.
+  ///   Off by default: a remote image in mail is a tracking pixel far more
+  ///   often than it is a picture, and loading one tells the sender the
+  ///   message was opened, by whom, and roughly from where.
+  static func build(for messages: [MessageRow], isDark: Bool,
+                    showRemoteImages: Bool = false) -> String {
     let showHeaders = messages.count > 1
 
     let bodies = messages.map { message -> String in
@@ -206,9 +223,12 @@ enum MessageDocument {
         """
       // Messages with no HTML fall back to their plain text, wrapped so it
       // keeps its own line breaks.
-      let content = message.hasRenderableHTML
+      var content = message.hasRenderableHTML
         ? (message.body?.htmlBody ?? "")
         : "<pre class=\"plain\">\(escape(message.displayBody))</pre>"
+      if showRemoteImages {
+        content = restoringRemoteImages(in: content)
+      }
       return "<article>\(header)\(content)</article>"
     }
 
@@ -216,10 +236,25 @@ enum MessageDocument {
       <!doctype html>
       <html><head><meta charset="utf-8">
       <meta http-equiv="Content-Security-Policy"
-            content="default-src 'none'; img-src cid: data:; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none';">
+            content="default-src 'none'; img-src cid: data:\(showRemoteImages ? " https:" : ""); style-src 'unsafe-inline'; form-action 'none'; base-uri 'none';">
       <style>\(css(isDark: isDark))</style>
       </head><body>\(bodies.joined())</body></html>
       """
+  }
+
+  /// Puts withheld image URLs back into `src`.
+  ///
+  /// A string substitution rather than script, because JavaScript is disabled
+  /// in this web view on purpose and re-enabling it to show a picture would be
+  /// a poor trade.
+  ///
+  /// Note what is NOT restored: only the exact attribute the sanitiser wrote.
+  /// Anything else claiming to be an image source was already dropped and stays
+  /// dropped — this widens what may load, never what may be interpreted.
+  private static func restoringRemoteImages(in html: String) -> String {
+    html
+      .replacingOccurrences(of: "data-blocked-src=\"", with: "src=\"")
+      .replacingOccurrences(of: "data-blocked=\"remote\"", with: "")
   }
 
   /// The CSP above is the second line of defence. `default-src 'none'` means

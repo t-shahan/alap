@@ -141,7 +141,10 @@ TEST(Sanitize, KeepsSafeLinksAndHardensThem) {
 
 TEST(Sanitize, BlocksRemoteImagesByDefault) {
   const auto result = sanitize("<img src=\"https://tracker.example/pixel.gif\">");
-  EXPECT_FALSE(contains(result.html, "tracker.example"));
+  // The URL survives in an inert data- attribute so "load images" has
+  // something to restore, but never as a live src that WebKit would fetch.
+  EXPECT_FALSE(contains(result.html, " src=\"https://tracker.example"));
+  EXPECT_TRUE(contains(result.html, "data-blocked-src="));
   EXPECT_EQ(result.blocked_remote_images, 1);
 }
 
@@ -279,14 +282,75 @@ TEST(Unescape, HandlesEmptyInput) {
   EXPECT_EQ(unescape_entities(""), "");
 }
 
-TEST(Sanitize, DoesNotDoubleEncodeExistingEntities) {
-  // Escaping text without decoding first turns "&nbsp;" into "&amp;nbsp;",
-  // which renders as the literal characters. Seen in real mail.
+TEST(Sanitize, PreservesEntitiesInsteadOfDoubleEncodingThem) {
+  // Escaping an ampersand that already begins an entity turns "&nbsp;" into
+  // "&amp;nbsp;", which the browser then renders as the literal characters.
+  // The entity is passed through untouched so the browser interprets it.
   const auto html = clean("<p>Hello&nbsp;world</p>");
   EXPECT_FALSE(contains(html, "&amp;nbsp"));
-  EXPECT_FALSE(contains(html, "&nbsp;"));
+  EXPECT_TRUE(contains(html, "&nbsp;"));
 
+  // A literal ampersand IS an entity already and stays one.
   const auto quoted = clean("<p>Tom &amp; Jerry</p>");
   EXPECT_FALSE(contains(quoted, "&amp;amp;"));
   EXPECT_TRUE(contains(quoted, "&amp;"));
+}
+
+TEST(Sanitize, PreservesEntitiesNobodyKeepsATableOf) {
+  // Straight from a real marketing email, which padded its preheader with
+  // hundreds of these. A fixed table of known entity names left every one of
+  // them double-encoded, so the message opened with a visible paragraph of
+  // "&#847; &zwnj; &nbsp; &#8199; &shy;" repeated across the screen.
+  const auto html = clean("<p>text&#847; &zwnj; &nbsp; &#8199; &shy;end</p>");
+
+  for (const char* entity : {"&#847;", "&zwnj;", "&nbsp;", "&#8199;", "&shy;"}) {
+    EXPECT_TRUE(contains(html, entity)) << entity << " was mangled";
+  }
+  EXPECT_FALSE(contains(html, "&amp;#847")) << "double-encoded";
+  EXPECT_FALSE(contains(html, "&amp;zwnj")) << "double-encoded";
+}
+
+TEST(Sanitize, PreservesHexAndDecimalCharacterReferences) {
+  const auto html = clean("<p>&#x1F600; and &#128512;</p>");
+  EXPECT_TRUE(contains(html, "&#x1F600;"));
+  EXPECT_TRUE(contains(html, "&#128512;"));
+}
+
+TEST(Sanitize, StillEscapesAnAmpersandThatIsNotAnEntity) {
+  // The escape must not become a free pass. A bare ampersand, or one that only
+  // looks like the start of an entity, has to be escaped or a crafted body
+  // could smuggle markup past this.
+  for (const char* input : {"<p>Tom & Jerry</p>", "<p>a &notanentity b</p>",
+                            "<p>x &# y</p>", "<p>q &#zz; r</p>"}) {
+    const auto html = clean(input);
+    EXPECT_TRUE(contains(html, "&amp;")) << input << " left a bare ampersand";
+  }
+}
+
+TEST(Sanitize, KeepsTheUrlOfABlockedImageSoItCanBeLoadedLater) {
+  // Discarding the src meant the only way to ever see a blocked image was to
+  // re-fetch the entire message from Gmail.
+  const auto html = clean("<img src=\"https://tracker.example/pixel.gif\" alt=\"x\">");
+
+  EXPECT_TRUE(contains(html, "data-blocked=\"remote\""));
+  EXPECT_TRUE(contains(html, "data-blocked-src="));
+  EXPECT_TRUE(contains(html, "tracker.example/pixel.gif"));
+  // Still not loadable. Checked with a LEADING SPACE: `data-blocked-src="`
+  // ends in `src="` too, so the naive substring matches the very attribute
+  // this is meant to distinguish from a live one.
+  EXPECT_FALSE(contains(html, " src=\"https://"));
+}
+
+TEST(Sanitize, DropsSenderSuppliedDataAttributes) {
+  // The reading pane restores `data-blocked-src` into a live `src` when the
+  // user asks for images. That is only safe because a SENDER cannot put that
+  // attribute there: the allowlist admits title, alt, href, src, width,
+  // height, colspan and rowspan, and nothing else survives.
+  const auto html = clean(
+      "<img data-blocked-src=\"https://evil.example/x.gif\" "
+      "data-anything=\"y\" alt=\"x\">");
+
+  EXPECT_FALSE(contains(html, "evil.example"));
+  EXPECT_FALSE(contains(html, "data-anything"));
+  EXPECT_TRUE(contains(html, "alt=")) << "allowed attributes must survive";
 }

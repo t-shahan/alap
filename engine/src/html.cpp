@@ -192,16 +192,55 @@ std::string unescape_entities(const std::string& text) {
   return out;
 }
 
+/// True when `text[at]` begins a well-formed character reference.
+///
+/// Recognises `&name;`, `&#123;` and `&#x1F600;`. Deliberately structural
+/// rather than a table of known names: mail is full of entities nobody keeps a
+/// list of — `&zwnj;`, `&shy;`, `&#8199;` — and a table only ever mangles the
+/// ones it has not heard of.
+bool begins_entity(const std::string& text, size_t at) {
+  const size_t n = text.size();
+  size_t i = at + 1;  // past '&'
+  if (i >= n) return false;
+
+  if (text[i] == '#') {
+    ++i;
+    if (i < n && (text[i] == 'x' || text[i] == 'X')) {
+      ++i;
+      const size_t start = i;
+      while (i < n && std::isxdigit(static_cast<unsigned char>(text[i]))) ++i;
+      return i > start && i < n && text[i] == ';';
+    }
+    const size_t start = i;
+    while (i < n && std::isdigit(static_cast<unsigned char>(text[i]))) ++i;
+    return i > start && i < n && text[i] == ';';
+  }
+
+  const size_t start = i;
+  while (i < n && std::isalnum(static_cast<unsigned char>(text[i]))) ++i;
+  // 31 is longer than the longest real entity name; anything past it is prose
+  // that happens to contain an ampersand.
+  return i > start && i - start <= 31 && i < n && text[i] == ';';
+}
+
 std::string escape_text(const std::string& text) {
   std::string out;
   out.reserve(text.size());
-  for (const char c : text) {
+  for (size_t i = 0; i < text.size(); ++i) {
+    const char c = text[i];
     switch (c) {
       case '<': out += "&lt;"; break;
       case '>': out += "&gt;"; break;
-      case '&': out += "&amp;"; break;
       case '"': out += "&quot;"; break;
       case '\'': out += "&#39;"; break;
+      case '&':
+        // An ampersand that already begins an entity is left ALONE. Escaping
+        // it produced `&amp;#847;`, which renders as the literal text
+        // "&#847;" — and marketing mail pads its preheader with hundreds of
+        // those, so a real message opened with a paragraph of visible entity
+        // codes.
+        out += begins_entity(text, i) ? "&" : "&amp;";
+        break;
       default: out += c;
     }
   }
@@ -241,13 +280,17 @@ SanitizeResult sanitize(const std::string& input, const SanitizeOptions& options
       // Text. Accumulate to the next tag, then DECODE any entities before
       // re-escaping.
       //
-      // Escaping alone double-encodes: an existing `&nbsp;` becomes
-      // `&amp;nbsp;` and renders as the literal text "&nbsp;". Decoding first
-      // normalises the input, and the re-escape then guarantees nothing in it
-      // can be read as markup. It also makes sanitising idempotent.
+      // Escaped, but NOT decoded first. Decoding used to run here to avoid
+      // double-encoding, but `unescape_entities` knows only a handful of
+      // names — everything else survived decoding untouched and was then
+      // escaped, so `&#847;` became `&amp;#847;` and rendered as visible text.
+      //
+      // `escape_text` now leaves any well-formed entity alone, which handles
+      // every entity rather than fourteen of them, and still guarantees that
+      // nothing here can be read as markup.
       const size_t start = i;
       while (i < n && input[i] != '<') ++i;
-      out += escape_text(unescape_entities(input.substr(start, i - start)));
+      out += escape_text(input.substr(start, i - start));
       continue;
     }
 
@@ -363,6 +406,7 @@ SanitizeResult sanitize(const std::string& input, const SanitizeOptions& options
     // Emit the opening tag with only allowlisted attributes.
     out += "<" + tag;
     bool image_blocked = false;
+    std::string blocked_src;
 
     for (const auto& attribute : attributes) {
       // Any on* handler is executable content, whatever it is attached to.
@@ -384,6 +428,12 @@ SanitizeResult sanitize(const std::string& input, const SanitizeOptions& options
           if (scheme.rfind("http", 0) == 0) {
             ++result.blocked_remote_images;
             image_blocked = true;
+            // The URL is PRESERVED rather than discarded, so "load images"
+            // has something to restore. Dropping it meant the only way to
+            // ever see a blocked image was to re-fetch the whole message from
+            // Gmail. It is inert here: `data-` attributes are not fetched, and
+            // the CSP forbids remote loads regardless.
+            blocked_src = attribute.value;
             continue;
           }
         }
@@ -399,6 +449,9 @@ SanitizeResult sanitize(const std::string& input, const SanitizeOptions& options
     }
     if (image_blocked) {
       out += " data-blocked=\"remote\"";
+      if (!blocked_src.empty()) {
+        out += " data-blocked-src=\"" + escape_text(blocked_src) + "\"";
+      }
     }
 
     out += self_closing_tags().count(tag) != 0 ? " />" : ">";
