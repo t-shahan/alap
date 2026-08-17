@@ -288,13 +288,6 @@ private struct MessageListPane: View {
           .foregroundStyle(store.hasMultipleSelected ? Theme.Accent.blue
                                                      : Theme.Ink.secondary)
           .lineLimit(1)
-        if store.hasMultipleSelected {
-          Button("Clear") { store.clearSelection() }
-            .buttonStyle(.plain)
-            .font(Theme.Font.caption)
-            .fontWeight(.regular)
-            .foregroundStyle(Theme.Ink.tertiary)
-        }
         Spacer(minLength: Theme.Space.base)
 
         // The icon states what the press will DO, not what is currently true:

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Keyboard-first triage.
@@ -76,27 +77,66 @@ extension View {
 /// These exist for discoverability as much as for use: a bare-letter shortcut
 /// is invisible, whereas the menu bar teaches it. Each item shows its
 /// ⌘-equivalent and names the single-letter form in its title.
+/// Sends a standard editing action down the responder chain.
+///
+/// `to: nil` is what makes AppKit walk the chain and hand it to whatever is
+/// focused, which is how the system's own Cut/Copy/Paste work. Re-declaring
+/// them this way is the price of owning the group that also holds ⌘A.
+@MainActor
+private func forward(_ selector: String) {
+  NSApp.sendAction(Selector((selector)), to: nil, from: nil)
+}
+
+
+
 struct MailCommands: Commands {
   let store: MailStore
 
   var body: some Commands {
     // Replaces the New Item slot that was emptied in MailApp: ⌘N is what
     // every mail client on this platform binds to composing.
-    // ADDED to the pasteboard group, never replacing .textEditing — that group
-    // is Cut, Copy, Paste and Select All, and replacing it removed copy and
-    // paste from the whole application.
-    // Replaces the system Undo, which has nothing to undo here — the app has
-    // no text document, and the actions worth reversing are mailbox ones.
-    CommandGroup(replacing: .undoRedo) {
-      Button("Undo") { Task { await store.undoStack.undo() } }
-        .keyboardShortcut("z", modifiers: .command)
-        .disabled(store.undoStack.top == nil)
-    }
+    // The pasteboard group is Cut, Copy, Paste, Delete AND Select All. Adding
+    // a second ⌘A alongside the system one did not work: SwiftUI silently
+    // dropped the shortcut from ours, leaving a menu item with no key. The
+    // group has to be owned to own the shortcut, so the standard items are
+    // re-declared here by forwarding to the responder chain, exactly as the
+    // system versions do.
+    CommandGroup(replacing: .pasteboard) {
+      Button("Cut") { forward("cut:") }
+        .keyboardShortcut("x", modifiers: .command)
+      Button("Copy") { forward("copy:") }
+        .keyboardShortcut("c", modifiers: .command)
+      Button("Paste") { forward("paste:") }
+        .keyboardShortcut("v", modifiers: .command)
 
-    CommandGroup(after: .pasteboard) {
       Divider()
-      Button("Select All Conversations") { store.selectAll() }
-        .keyboardShortcut("a", modifiers: .command)
+
+      // ⌘A is contextual everywhere on this platform: "select the text I am
+      // editing" in a field, "select the rows" in a list. Deciding WHICH took
+      // three attempts, and the two that failed are worth recording.
+      //
+      // Offering it to the responder chain first and falling back did nothing:
+      // something in the chain accepts `selectAll:` and swallows it, so
+      // sendAction returned true and the fallback never ran.
+      //
+      // Testing whether a text view is first responder ALSO did nothing —
+      // SwiftUI parks focus on the search field, so a text view holds focus
+      // permanently whether or not anyone is typing in it. The test was true
+      // every time.
+      //
+      // The composer is the only surface here where losing ⌘A would actually
+      // hurt: selecting a long message body by hand is miserable, whereas
+      // search text is a few words. So that is the condition — a fact about the
+      // app rather than a guess about focus.
+      Button("Select All") {
+        if store.composer.isOpen {
+          forward("selectAll:")
+        } else {
+          store.selectAll()
+        }
+      }
+      .keyboardShortcut("a", modifiers: .command)
+
       Button("Deselect All") { store.clearSelection() }
         .keyboardShortcut("a", modifiers: [.command, .shift])
         .disabled(store.selection.isEmpty)

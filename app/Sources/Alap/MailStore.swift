@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 import SwiftUI
 import Observation
 
@@ -13,6 +14,10 @@ import Observation
 /// premise is that reads hit the local cache first, so the list paints from
 /// cached data on the very first frame; `threadsLoaded` exists only to tell an
 /// *actually empty* inbox apart from one that has not synced yet.
+/// Selection and triage events, for diagnosing input that appears to do
+/// nothing. Info level, so `log show --info` retrieves it.
+private let storeLog = Logger(subsystem: AppIdentity.bundleID, category: "store")
+
 @MainActor
 @Observable
 final class MailStore {
@@ -1043,6 +1048,7 @@ final class MailStore {
   /// seen would be worse than one that admits its scope.
   func selectAll() {
     selection = Set(threads.map(\.id))
+    storeLog.info("selectAll -> \(self.selection.count, privacy: .public) of \(self.threads.count, privacy: .public)")
   }
 
   /// Adds or removes one thread from the selection.
