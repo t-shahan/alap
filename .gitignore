@@ -42,3 +42,6 @@ app/Sources/Mail/Web/
 
 # Local signing identity export (scripts/make-signing-cert.sh)
 *.p12
+
+# Design review working doc — local only
+DESIGN-REVIEW.md

@@ -471,6 +471,17 @@ class LabelledStream : public std::ostream {
 /// account with a slow backfill stalls every other account's mail.
 int run_account_loop(const std::string& account_id, int interval_seconds,
                      std::ostream& out, const std::atomic<bool>& running) {
+  // One read up front, with dialogs disabled process-wide. A credential the
+  // keychain will not release cannot be polled around: every cycle would raise
+  // a modal, and at a ten-second interval that is not a warning, it is a
+  // machine nobody can use. Better to say so once and leave the account alone.
+  if (auto credential = mailengine::Keychain().load(account_id); !credential) {
+    out << "cannot read the stored credential: " << credential.error().message
+        << "\n  not polling this account. Re-authorize it with:\n"
+        << "    mailengined auth " << account_id << "\n";
+    return 2;
+  }
+
   auto tokens = mailengine::TokenProvider(config_from_env(), account_id);
   mailengine::GmailClient gmail(tokens);
   mailengine::PostgresStore store;

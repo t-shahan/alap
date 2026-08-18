@@ -98,6 +98,17 @@ CFRef<CFMutableDictionaryRef> base_query(const std::string& service,
 Keychain::Keychain(std::string service)
     : service_(service.empty() ? identity::keychain_service() : std::move(service)) {}
 
+void Keychain::set_interaction_allowed(bool allowed) {
+  // Deprecated in favour of the data-protection keychain, which this app does
+  // not use: that one is keyed on an application-identifier entitlement, which
+  // a locally signed build does not have. For the file-based keychain this is
+  // still the only switch for it.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  SecKeychainSetUserInteractionAllowed(allowed ? TRUE : FALSE);
+#pragma clang diagnostic pop
+}
+
 Result<void> Keychain::store(const std::string& account,
                              const std::string& secret) const {
   // Replace rather than merge: SecItemAdd fails with errSecDuplicateItem if an

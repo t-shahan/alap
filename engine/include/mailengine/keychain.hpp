@@ -40,6 +40,23 @@ class Keychain {
   /// @brief Removes a secret. Succeeds even when nothing was stored.
   [[nodiscard]] Result<void> remove(const std::string& account) const;
 
+  /// @brief Whether keychain calls in THIS PROCESS may raise a dialog.
+  ///
+  /// A background process must never put a modal on screen. The daemon polls
+  /// every ten seconds, so an item whose ACL no longer matches the binary
+  /// produced a password prompt every ten seconds — one stale credential made
+  /// the machine unusable, and the prompt stole focus from whatever was in
+  /// front of it.
+  ///
+  /// With interaction disabled the read FAILS instead of asking, which is the
+  /// answer the daemon actually wants: it can report the account as needing
+  /// re-authorization and stop polling it, rather than badgering someone who
+  /// is in the middle of something else.
+  ///
+  /// Process-wide, so it is set once at start-up rather than around individual
+  /// calls. Interactive commands leave it alone.
+  static void set_interaction_allowed(bool allowed);
+
  private:
   std::string service_;
 };

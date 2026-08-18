@@ -87,6 +87,12 @@ fi
 if [[ -x engine/build/mailengined ]]; then
   echo "▸ embedding engine"
   mkdir -p "$CONTENTS/Helpers"
+  # Sign the build-directory binary too, not only the copy that goes into the
+  # bundle. `cmake --build` relinks it and leaves it ad-hoc, so running
+  # `engine/build/mailengined` from a terminal — which is how every sync,
+  # resync and token command gets run — asked for the Keychain password every
+  # time, while the identical binary inside the bundle did not.
+  ./scripts/sign.sh engine/build/mailengined
   cp engine/build/mailengined "$CONTENTS/Helpers/mailengined"
 else
   echo "  (engine not built; the app will fall back to a development path)"
