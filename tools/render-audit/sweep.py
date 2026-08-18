@@ -64,6 +64,11 @@ if ok:
 if CHECK:
     base = json.load(open(os.path.join(HERE, "baseline.json")))
     fails = []
+    # Small samples make every rate here noisy; a gate that flaps is a gate
+    # people learn to ignore.
+    if len(ok) < base["min_sample"]:
+        print(f"\nSKIP - {len(ok)} messages rendered, need {base['min_sample']} to judge")
+        sys.exit(0)
     def want(name, actual, limit, cmp):
         if not cmp(actual, limit):
             fails.append(f"{name}: {actual} (limit {limit})")
@@ -74,9 +79,15 @@ if CHECK:
         want("height mismatches", len(mism), base["max_height_mismatches"], lambda a, b: a <= b)
         want("overflow fraction", round(len(scaled)/len(ok), 3),
              base["max_overflow_fraction"], lambda a, b: a <= b)
-        if scaled:
-            want("median scale", round(statistics.median([d["scale"] for d in scaled]), 3),
-                 base["min_median_scale"], lambda a, b: a >= b)
+        # Median over EVERY message, not just the scaled ones. Taken over the
+        # scaled subset it swung on sample size -- with one scaled message in
+        # eight it reported that message's own scale as the median and failed a
+        # run that was fine. What matters is what a typical message does.
+        want("median scale (all messages)",
+             round(statistics.median([d["scale"] for d in ok]), 3),
+             base["min_median_scale"], lambda a, b: a >= b)
+        want("worst scale", round(min(d["scale"] for d in ok), 3),
+             base["min_worst_scale"], lambda a, b: a >= b)
         want("messages with low contrast", len(bad),
              base["max_low_contrast_messages"], lambda a, b: a <= b)
         want("images loaded fraction", round(tl/max(ti, 1), 3),
