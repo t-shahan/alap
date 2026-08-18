@@ -527,3 +527,54 @@ TEST(Style, StillDropsEventHandlersAlongsideStyle) {
   EXPECT_FALSE(contains(out.html, "onmouseover"));
   EXPECT_TRUE(out.removed_active_content);
 }
+
+// MARK: - Inline image data
+//
+// 979 images across a real mailbox had no source at all: `is_safe_url` allowed
+// only http/https/mailto/cid, so every base64-inlined image was discarded. Two
+// bugs compounded — the scheme was rejected, AND the declaration splitter cut
+// at the `;` inside `data:image/png;base64,`, so a background survived neither
+// check.
+
+TEST(DataURI, KeepsInlineImageSources) {
+  const auto out = sanitize(
+      R"HTML(<img src="data:image/png;base64,iVBORw0KGgo=" width="20">)HTML");
+  EXPECT_TRUE(contains(out.html, "data:image/png;base64,iVBORw0KGgo="));
+}
+
+TEST(DataURI, KeepsInlineImageBackgrounds) {
+  const auto out = sanitize(
+      R"HTML(<td style="background-image:url(data:image/gif;base64,R0lGOD=)">x</td>)HTML");
+  EXPECT_TRUE(contains(out.html, "data:image/gif;base64,R0lGOD="));
+}
+
+TEST(DataURI, SemicolonInsideAUrlDoesNotSplitTheDeclaration) {
+  // The splitter cut here, leaving `base64,R0lGOD=)` as a junk declaration and
+  // dropping the background entirely while the later ones survived.
+  const auto out = sanitize(
+      R"HTML(<td style="background:url(data:image/gif;base64,R0lGOD=);color:#fff;padding:10px">x</td>)HTML");
+  EXPECT_TRUE(contains(out.html, "base64,R0lGOD="));
+  EXPECT_TRUE(contains(out.html, "color:#fff"));
+  EXPECT_TRUE(contains(out.html, "padding:10px"));
+}
+
+TEST(DataURI, RejectsEverythingThatIsNotAnImage) {
+  // The whole point of admitting `data:` is pictures. A data URL that declares
+  // any other type is a document the browser might interpret.
+  for (const std::string attack : {"data:text/html,<script>alert(1)</script>",
+                                   "data:text/html;base64,PHNjcmlwdD4=",
+                                   "data:application/javascript,alert(1)",
+                                   "data:image/svg+xml,<svg onload=alert(1)>"}) {
+    const auto out = sanitize("<img src=\"" + attack + "\">");
+    EXPECT_FALSE(contains(out.html, "text/html"));
+    EXPECT_FALSE(contains(out.html, "javascript"));
+    // SVG is an image type that can carry script, so it stays out too.
+    EXPECT_FALSE(contains(out.html, "svg+xml"));
+  }
+}
+
+TEST(DataURI, RejectsNonImageDataInStyles) {
+  const auto out = sanitize(
+      R"HTML(<td style="background-image:url(data:text/html;base64,PHNjcmlwdD4=)">x</td>)HTML");
+  EXPECT_FALSE(contains(out.html, "text/html"));
+}

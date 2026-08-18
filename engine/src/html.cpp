@@ -540,6 +540,49 @@ bool style_value_is_dangerous(const std::string& value) {
   return false;
 }
 
+/// Whether a URL may be used as an IMAGE source.
+///
+/// Everything `is_safe_url` permits, plus `data:` restricted to raster image
+/// types. Inlined base64 images are ordinary in mail — 979 of them in a real
+/// mailbox had no source at all because `data:` was refused outright — and a
+/// raster payload is decoded by the image decoder, not interpreted.
+///
+/// `image/svg+xml` is deliberately excluded despite being an image type. SVG
+/// is a document format: it carries `<script>`, event handlers and external
+/// references, and a data: SVG is the standard way to smuggle all three past a
+/// filter that checked only for the word "image".
+///
+/// Kept separate from `is_safe_url` so that `href` is unaffected. A link to a
+/// data: URL is a navigation, and navigations stay restricted to real schemes.
+bool is_safe_image_url(const std::string& url) {
+  if (normalise_scheme_prefix(url) != "data:") return is_safe_url(url);
+
+  // `normalise_scheme_prefix` stops at the colon, so the media type has to be
+  // normalised separately — with the same disregard for whitespace and control
+  // characters that a URL parser has, or `data:image/\tpng` walks straight
+  // through a naive comparison.
+  std::string head;
+  for (size_t i = 0; i < url.size() && head.size() < 40; ++i) {
+    const char c = url[i];
+    if (is_space(c) || static_cast<unsigned char>(c) < 0x20) continue;
+    head += lower(c);
+  }
+
+  static const std::string_view allowed[] = {
+      "data:image/png", "data:image/jpeg", "data:image/jpg",
+      "data:image/gif", "data:image/webp", "data:image/bmp",
+  };
+  for (const auto& prefix : allowed) {
+    if (head.size() < prefix.size()) continue;
+    if (head.compare(0, prefix.size(), prefix) != 0) continue;
+    // The type must END here, so `data:image/pngx` and `data:image/png+xml`
+    // cannot ride in on a prefix match.
+    const char next = head.size() > prefix.size() ? head[prefix.size()] : ';';
+    if (next == ';' || next == ',') return true;
+  }
+  return false;
+}
+
 /// Validates every `url(...)` in a declaration value.
 ///
 /// Hero images in mail are CSS backgrounds, so `url()` cannot simply be
@@ -570,7 +613,7 @@ bool style_urls_are_safe(const std::string& value) {
       url = url.substr(1, url.size() - 2);
       trim(url);
     }
-    if (!is_safe_url(url)) return false;
+    if (!is_safe_image_url(url)) return false;
     at = end + 1;
   }
   return true;
@@ -585,7 +628,17 @@ std::string sanitize_style(const std::string& value, bool& removed_active) {
 
   size_t i = 0;
   while (i < value.size()) {
-    const size_t end = value.find(';', i);
+    // Find the separator at paren depth zero. A plain `find(';')` cut inside
+    // `url(data:image/png;base64,...)`, which left `base64,...)` as a junk
+    // declaration and silently dropped the background it belonged to.
+    size_t end = std::string::npos;
+    int depth = 0;
+    for (size_t scan = i; scan < value.size(); ++scan) {
+      const char c = value[scan];
+      if (c == '(') ++depth;
+      else if (c == ')') { if (depth > 0) --depth; }
+      else if (c == ';' && depth == 0) { end = scan; break; }
+    }
     const std::string declaration =
         value.substr(i, end == std::string::npos ? std::string::npos : end - i);
     i = end == std::string::npos ? value.size() : end + 1;
@@ -776,7 +829,9 @@ SanitizeResult sanitize(const std::string& input, const SanitizeOptions& options
       if (!attribute_allowed(tag, attribute.name)) continue;
 
       if (attribute.name == "href" || attribute.name == "src") {
-        if (!is_safe_url(attribute.value)) {
+        const bool is_image_source = (tag == "img" && attribute.name == "src");
+        if (is_image_source ? !is_safe_image_url(attribute.value)
+                            : !is_safe_url(attribute.value)) {
           result.removed_active_content = true;
           continue;
         }

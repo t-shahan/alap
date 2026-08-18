@@ -23,8 +23,15 @@ npm run build --workspace=@mailapp/client --silent
 
 # The web assets are a SwiftPM resource, so they must be in place BEFORE the
 # Swift build copies them into Alap_Alap.bundle.
-mkdir -p app/Sources/Mail/Web
-cp packages/client/dist/index.html packages/client/dist/bridge.js app/Sources/Mail/Web/
+#
+# This path MUST stay in sync with the Alap target in app/Package.swift, which
+# declares `path: "Sources/Alap"` and `resources: [.copy("Web")]` — SwiftPM only
+# bundles what is under the target's own path. Writing to any other directory
+# fails silently: the build still succeeds, and the app just ships whatever
+# stale copy happens to be sitting in Sources/Alap/Web.
+WEB_DEST="app/Sources/Alap/Web"
+mkdir -p "$WEB_DEST"
+cp packages/client/dist/index.html packages/client/dist/bridge.js "$WEB_DEST/"
 
 echo "▸ compiling swift ($CONFIG)"
 swift build --package-path app -c "$CONFIG"
