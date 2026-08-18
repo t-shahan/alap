@@ -161,6 +161,9 @@ final class Driver: NSObject, WKNavigationDelegate {
 
 let driver = Driver(width: width, out: outPath)
 driver.appJS = appJS
-driver.webView.loadHTMLString(html, baseURL: URL(string: "https://mail.invalid/"))
+// baseURL nil, exactly as the app does it. With an https base the document
+// is a secure context and WebKit applies mixed-content rules the app never
+// sees, so the harness would have been measuring a different browser.
+driver.webView.loadHTMLString(html, baseURL: nil)
 DispatchQueue.main.asyncAfter(deadline: .now() + 25) { print("{\"error\":\"timeout\"}"); exit(1) }
 app.run()

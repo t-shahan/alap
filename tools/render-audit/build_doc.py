@@ -31,10 +31,11 @@ def build(html, show_remote=True, is_dark=True, has_html=True):
     if show_remote:
         html = restore_images(html)
     img_src = "img-src cid: data: https:" if show_remote else "img-src cid: data:"
+    upgrade = " upgrade-insecure-requests;" if show_remote else ""
     return f"""<!doctype html>
 <html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; {img_src}; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none';">
+      content="default-src 'none'; {img_src}; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none';{upgrade}">
 <style>{css(is_dark)}</style>
 </head><body><article>{html}</article></body></html>"""
 

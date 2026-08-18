@@ -7,8 +7,9 @@ os.environ["PATH"] = "/opt/homebrew/bin:" + os.environ["PATH"]
 
 WIDTH = sys.argv[1]; LIMIT = int(sys.argv[2])
 CHECK = "--check" in sys.argv
+FILTER = "and b.html_body ~ 'data-blocked-src=\"http://'" if "--http" in sys.argv else ""
 sql = f"""select m.id from message m join message_body b on b.message_id=m.id
- where b.html_body is not null and length(b.html_body)>1500
+ where b.html_body is not null and length(b.html_body)>1500 {FILTER}
  order by m.sent_at desc limit {LIMIT};"""
 ids = subprocess.run(["psql","-d","mailapp","-Atc",sql],capture_output=True,text=True).stdout.strip().split("\n")
 os.makedirs(os.path.join(HERE, f"w{WIDTH}"), exist_ok=True)
