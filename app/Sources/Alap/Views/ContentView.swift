@@ -356,9 +356,20 @@ private struct MessageListPane: View {
   }
 
   private var threadList: some View {
-    // Set-valued selection is what enables ⌘-click and shift-click; AppKit
-    // handles both once the binding is a Set.
-    List(selection: $store.selection) {
+    // Bound to what is OPEN, not to what is ticked.
+    //
+    // This was a Set binding, which is what makes AppKit treat the list as
+    // multi-select — and so every plain click wrote the row straight into the
+    // ticked set. Splitting the two values in the store did not fix that on
+    // its own, because the list was still writing to the wrong one: clicking a
+    // message to read it kept arming the bulk actions.
+    //
+    // An optional binding is a single-selection list, which is what reading
+    // mail actually is. Ticking is the checkbox's job, and only the checkbox's.
+    // ⌘-click and shift-click go with the Set binding; they were selecting
+    // rows for reading rather than for a bulk action, which is not what either
+    // gesture is for here.
+    List(selection: $store.selectedThreadID) {
       ForEach(store.threads) { thread in
         row(for: thread)
       }
