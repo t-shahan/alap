@@ -85,6 +85,11 @@ struct MessageWebView: NSViewRepresentable {
   func updateNSView(_ webView: WKWebView, context: Context) {
     context.coordinator.onHeightChange = onHeightChange
 
+    // Both the fit scale and the height depend on how wide the pane is, and
+    // neither was recomputed when it changed — so resizing the window left a
+    // message scaled for the old width and clipped to the old height.
+    context.coordinator.remeasureIfWidthChanged(webView)
+
     // The handler must know the new thread's images BEFORE the document that
     // references them is loaded, or every cid: request in the first layout
     // resolves against the previous conversation.
@@ -111,6 +116,22 @@ struct MessageWebView: NSViewRepresentable {
     let imageHandler = InlineImageHandler()
     var onHeightChange: ((CGFloat) -> Void)?
     private var lastReported: CGFloat = 0
+    private var lastWidth: CGFloat = 0
+
+    /// Re-runs the fit pass when the pane has been resized.
+    ///
+    /// Guarded on the width actually changing: `updateNSView` runs for every
+    /// unrelated redraw, and re-measuring on each one would evaluate script
+    /// against the document continuously while the user types elsewhere.
+    func remeasureIfWidthChanged(_ webView: WKWebView) {
+      let width = webView.bounds.width
+      guard width > 0, abs(width - lastWidth) > 1 else { return }
+      lastWidth = width
+      // The height legitimately changes with the width, so the noise guard in
+      // `measure` must not suppress the new value.
+      lastReported = 0
+      measure(webView)
+    }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
       measure(webView)
@@ -156,11 +177,16 @@ struct MessageWebView: NSViewRepresentable {
         // kindness; let it clip rather than shrink to nothing.
         if (scale < 0.5) { scale = 0.5; }
         if (scale < 1) { body.style.zoom = scale; }
-        return Math.ceil(document.documentElement.scrollHeight * (scale < 1 ? scale : 1));
+        // Read the height AFTER applying the scale, and do NOT scale it again.
+        // `scrollHeight` already reflects `zoom` — multiplying a second time
+        // reported 982px for a 1303px message and silently cut a quarter of it
+        // off, which looked like images failing to load. Measured across 30
+        // real messages before this was believed.
+        return Math.ceil(document.documentElement.scrollHeight);
       })()
       """
 
-    private func measure(_ webView: WKWebView) {
+    func measure(_ webView: WKWebView) {
       // `evaluateJavaScript` is host-initiated and still runs with
       // `allowsContentJavaScript` disabled — that flag governs the PAGE's own
       // scripts, which remain blocked both there and by the CSP.

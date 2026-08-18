@@ -1,0 +1,56 @@
+import os
+HERE = os.path.dirname(os.path.abspath(__file__))
+import subprocess, sys, os, json
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from build_doc import build, app_fit_script
+os.environ["PATH"] = "/opt/homebrew/bin:" + os.environ["PATH"]
+
+WIDTH = sys.argv[1]; LIMIT = int(sys.argv[2])
+sql = f"""select m.id from message m join message_body b on b.message_id=m.id
+ where b.html_body is not null and length(b.html_body)>1500
+ order by m.sent_at desc limit {LIMIT};"""
+ids = subprocess.run(["psql","-d","mailapp","-Atc",sql],capture_output=True,text=True).stdout.strip().split("\n")
+os.makedirs(os.path.join(HERE, f"w{WIDTH}"), exist_ok=True)
+JS = os.path.join(HERE, "app_fit.js"); open(JS, "w").write(app_fit_script())
+res=[]
+for n,mid in enumerate(ids):
+    if not mid.strip(): continue
+    html = subprocess.run(["psql","-d","mailapp","-Atc",
+      "select html_body from message_body where message_id = $$%s$$" % mid],
+      capture_output=True,text=True).stdout
+    p=os.path.join(HERE, f"w{WIDTH}", f"{n:02d}.html"); open(p,"w").write(build(html))
+    try:
+        r=subprocess.run([os.path.join(HERE, "render"),p,WIDTH,os.path.join(HERE, f"w{WIDTH}", f"{n:02d}.png"),JS],
+                         capture_output=True,text=True,timeout=45)
+        d=json.loads(r.stdout.strip().split("\n")[-1])
+    except Exception as e:
+        d={"error":type(e).__name__}
+    res.append(d)
+json.dump(res, open(os.path.join(HERE, f"res{WIDTH}.json"),"w"))
+ok=[d for d in res if "error" not in d]
+errs=[d for d in res if "error" in d]
+scaled=[d for d in ok if d["scale"]<0.999]
+import statistics
+print(f"width={WIDTH}  rendered={len(ok)}  errors={len(errs)}")
+if ok:
+    print(f"  overflowing the pane : {len(scaled)}/{len(ok)}  ({100*len(scaled)//max(len(ok),1)}%)")
+    if scaled:
+        sc=[d['scale'] for d in scaled]
+        print(f"  scale  min={min(sc):.3f}  median={statistics.median(sc):.3f}")
+        print(f"  worst shrink: message rendered at {100*min(sc):.0f}% of its intended size")
+    ti=sum(d['images'] for d in ok); tl=sum(d['imagesLoaded'] for d in ok); tn=sum(d['imagesNoSrc'] for d in ok)
+    print(f"  images {tl}/{ti} loaded, {tn} with no src")
+    # The app must be handed exactly the post-scale height. Anything less is
+    # message content the reader never sees.
+    mism=[d for d in ok if d.get('appHeight',-1) >= 0
+          and abs(d['appHeight']-d['post']['docScrollHeight']) > 2]
+    print(f"  height MISMATCH (content clipped): {len(mism)}/{len(ok)}")
+    if mism:
+        w=max(mism,key=lambda d:d['post']['docScrollHeight']-d['appHeight'])
+        lost=w['post']['docScrollHeight']-w['appHeight']
+        print(f"    worst: app told {w['appHeight']:.0f} of {w['post']['docScrollHeight']} "
+              f"({100*lost/w['post']['docScrollHeight']:.0f}% lost)")
+    lc=sum(d.get('lowContrast',0) for d in ok); ck=sum(d.get('checked',0) for d in ok)
+    print(f"  low-contrast text blocks: {lc}/{ck}")
+    bad=[d for d in ok if d.get('lowContrast',0)>0]
+    print(f"  messages with ANY low-contrast text: {len(bad)}/{len(ok)}")

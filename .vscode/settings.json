@@ -1,0 +1,35 @@
+{
+  // ───────────────────────────────────────────────────────────────────────────
+  // Workspace settings. These override your user settings for this project only.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  // The CMake project is engine/, not the repo root. Without these two lines
+  // CMake Tools finds no CMakeLists.txt at the top level and starts prompting
+  // you to pick one, or configures a second build tree that then disagrees with
+  // the one your terminal builds.
+  "cmake.sourceDirectory": "${workspaceFolder}/engine",
+  "cmake.buildDirectory": "${workspaceFolder}/engine/build",
+
+  // Don't let the extension reconfigure CMake just because you opened the
+  // window. Configure happens when you build, on your terms.
+  "cmake.configureOnOpen": false,
+
+  // Your user settings turn this on globally. Here it would make the Makefile
+  // extension latch onto the generated engine/build/Makefile and publish its own
+  // IntelliSense config, competing with the compile_commands.json setup.
+  "makefile.configureOnOpen": false,
+
+  // Trim the noise in the file tree; these are build artifacts, not source.
+  "files.exclude": {
+    "**/.DS_Store": true,
+    "engine/build/_deps": true,
+    "engine/build/CMakeFiles": true
+  },
+
+  // Never search inside build output or dependencies.
+  "search.exclude": {
+    "engine/build": true,
+    "node_modules": true,
+    "build": true
+  }
+}

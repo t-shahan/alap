@@ -1,0 +1,55 @@
+{
+  // ───────────────────────────────────────────────────────────────────────────
+  // C/C++ IntelliSense configuration for the mailengine (C++) half of the app.
+  //
+  // The single most important line here is "compileCommands". CMake already
+  // writes engine/build/compile_commands.json (CMAKE_EXPORT_COMPILE_COMMANDS is
+  // ON in engine/CMakeLists.txt), and that file records the exact compiler,
+  // flags, and include paths used for every .cpp in the project. Pointing the
+  // editor at it means IntelliSense sees precisely what the real build sees,
+  // so the squiggles in VS Code match the errors in your terminal.
+  //
+  // Everything below "compileCommands" is only a FALLBACK, used for files the
+  // compile database doesn't mention — chiefly the headers in
+  // engine/include/mailengine/, which are never compiled on their own.
+  // ───────────────────────────────────────────────────────────────────────────
+  "version": 4,
+  "configurations": [
+    {
+      "name": "Mac (mailengine)",
+
+      "compileCommands": "${workspaceFolder}/engine/build/compile_commands.json",
+
+      // Apple Clang from the Xcode toolchain. This is what /usr/bin/c++ resolves
+      // to and what CMake picked, so the editor now agrees with the build.
+      // Homebrew's g++-16 is also on this machine; leaving the compiler
+      // unset lets the extension auto-detect and pick that one instead, which
+      // is how the editor drifted onto a different compiler than your build.
+      "compilerPath": "/usr/bin/c++",
+
+      // Must match CMAKE_CXX_STANDARD 20 with CXX_EXTENSIONS OFF.
+      "cStandard": "c17",
+      "cppStandard": "c++20",
+
+      // Apple Silicon + Clang. A wrong value here makes the editor evaluate the
+      // wrong #ifdefs and grey out or mis-flag perfectly valid code.
+      "intelliSenseMode": "macos-clang-arm64",
+
+      "includePath": [
+        "${workspaceFolder}/engine/include",
+        "${workspaceFolder}/engine/build/_deps/json-src/include",
+        "${workspaceFolder}/engine/build/_deps/googletest-src/googletest/include",
+        // libpq lives here and NOT under /opt/homebrew/opt/postgresql@18/include —
+        // Homebrew nests the headers, which is why CMakeLists.txt goes through
+        // pkg-config to find them.
+        "/opt/homebrew/include/postgresql@18",
+        "/opt/homebrew/opt/openssl@3/include"
+      ],
+
+      // Security.h / CoreFoundation.h, linked as frameworks in CMakeLists.txt.
+      "macFrameworkPath": [
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks"
+      ]
+    }
+  ]
+}
