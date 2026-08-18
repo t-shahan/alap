@@ -139,6 +139,23 @@ struct RenderingTests {
     #expect(document.contains("base-uri 'none'"))
   }
 
+  @Test("The CSP refuses webfonts, which img-src does not cover")
+  func cspBlocksFonts() throws {
+    // A webfont is fetched only when glyphs in its `unicode-range` render, so
+    // slicing the range across several faces reveals which characters were
+    // painted. `img-src` does not govern it, so the remote-images preference
+    // does not either.
+    //
+    // Stated rather than inherited from `default-src 'none'`: measured against
+    // a local HTTP server, a message `@font-face`-ing a font DID fetch it
+    // under this policy without this directive. The fallback is not enough.
+    for images in [true, false] {
+      let document = MessageDocument.build(for: [try message(html: "<p>hi</p>")],
+                                           isDark: false, showRemoteImages: images)
+      #expect(document.contains("font-src 'none'"), "images=\(images)")
+    }
+  }
+
   @Test("The CSP permits no remote image origin")
   func blocksRemoteImages() throws {
     let document = MessageDocument.build(for: [try message(html: "<p>hi</p>")], isDark: false)

@@ -7,7 +7,7 @@
   "max_overflow_fraction": 0.3,
   "min_median_scale": 0.95,
   "max_low_contrast_messages": 2,
-  "min_images_loaded_fraction": 0.97,
+  "min_images_loaded_fraction": 0.95,
   "min_sample": 20,
   "min_worst_scale": 0.8,
   "cases": {
@@ -21,5 +21,6 @@
       "_comment": "Taylor, revisit your memories in Google Photos. Ships two 'See your photos' anchors, one desktop-only. Broken, both render and overlap (measured at left 242 and left 291, same band). Asserted on what is VISIBLE, never on the DOM count: leaving the duplicate in the document and hiding it from the stylesheet is a correct fix and must pass.",
       "visible_cta": 1
     }
-  }
+  },
+  "_images_note": "0.95, not 0.97. A real mailbox contains images that cannot load and never will: hosts that serve only plain HTTP and 404 once upgrade-insecure-requests rewrites them (spgo.tadpoles.com, if-alerts.firstenergycorp.com), and tracking pixels whose URLs are deliberate redirect loops. Measured 13 such failures in 402 images. This check exists to catch a SYSTEMIC block -- img-src once refused http entirely, which silently killed 124,321 image references across 54% of bodies -- not link rot. Set it tight enough to catch the former and it fails on the latter forever."
 }

@@ -586,3 +586,39 @@ TEST(Css, RemoteBackgroundImageInAStyleBlockIsFetchedWhenExplicitlyAllowed) {
       options);
   EXPECT_TRUE(contains(out.html, "cdn.example/hero.jpg"));
 }
+
+// MARK: - Font descriptors as a tracking channel
+//
+// A webfont is fetched only when glyphs in its `unicode-range` actually
+// render, so a sender can slice the range across several faces and learn WHICH
+// CHARACTERS were painted — that the message was opened, and something about
+// what it contained. It is governed by `font-src`, not `img-src`, so the
+// remote-images preference does not cover it at all.
+//
+// `@font-face` is already dropped by `sanitize_stylesheet`, which keeps only
+// `@media` and ordinary rules. That is incidental rather than intended, and
+// this pins it: measured against a local HTTP server, a document carrying this
+// rule DID fetch the font under our CSP, so the sanitiser is the defence that
+// actually works here.
+
+TEST(Css, DropsFontFaceWhichIsATrackingChannelImgSrcDoesNotCover) {
+  const auto out = sanitize(
+      "<style>@font-face{font-family:TrackMe;src:url(https://tracker.test/f.woff);"
+      "unicode-range:U+0041-005A}.t{color:red}</style>");
+  EXPECT_FALSE(contains(out.html, "font-face"));
+  EXPECT_FALSE(contains(out.html, "tracker.test"));
+  EXPECT_FALSE(contains(out.html, "unicode-range"));
+  // The ordinary rule beside it still survives.
+  EXPECT_TRUE(contains(out.html, "color:red"));
+}
+
+TEST(Css, DropsFontFaceRegardlessOfSpelling) {
+  for (const std::string spelling : {"@font-face", "@FONT-FACE", "@font-FACE",
+                                     "@font/**/-face"}) {
+    const auto out = sanitize(
+        "<style>" + spelling +
+        "{font-family:X;src:url(https://tracker.test/f.woff)}.a{color:red}</style>");
+    EXPECT_FALSE(contains(out.html, "tracker.test")) << spelling;
+    EXPECT_TRUE(contains(out.html, "color:red")) << spelling;
+  }
+}

@@ -39,7 +39,7 @@ def build(html, show_remote=True, is_dark=True, has_html=True):
     return f"""<!doctype html>
 <html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; {img_src}; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none';{upgrade}">
+      content="default-src 'none'; {img_src}; style-src 'unsafe-inline'; font-src 'none'; form-action 'none'; base-uri 'none';{upgrade}">
 <style>{css(is_dark)}</style>
 </head><body><article>{html}</article></body></html>"""
 

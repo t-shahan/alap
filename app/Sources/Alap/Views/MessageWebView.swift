@@ -365,7 +365,7 @@ enum MessageDocument {
       <!doctype html>
       <html><head><meta charset="utf-8">
       <meta http-equiv="Content-Security-Policy"
-            content="default-src 'none'; img-src cid: data:\(showRemoteImages ? " https:" : ""); style-src 'unsafe-inline'; form-action 'none'; base-uri 'none';\(showRemoteImages ? " upgrade-insecure-requests;" : "")">
+            content="default-src 'none'; img-src cid: data:\(showRemoteImages ? " https:" : ""); style-src 'unsafe-inline'; font-src 'none'; form-action 'none'; base-uri 'none';\(showRemoteImages ? " upgrade-insecure-requests;" : "")">
       <style>\(css(isDark: isDark && !lightCanvas))</style>
       </head><body>\(bodies.joined())</body></html>
       """
@@ -386,6 +386,20 @@ enum MessageDocument {
       .replacingOccurrences(of: "data-blocked=\"remote\"", with: "")
   }
 
+  /// ## Why `font-src 'none'` is stated rather than inherited
+  ///
+  /// A webfont is fetched only when glyphs in its `unicode-range` actually
+  /// render, so a sender can slice the range across several faces and learn
+  /// which characters were painted. That is a tracking channel `img-src` does
+  /// not cover, and it is invisible to the remote-images preference.
+  ///
+  /// `default-src 'none'` is supposed to cover fonts by fallback. It does not
+  /// here: serving a font from a local HTTP server and `@font-face`-ing it
+  /// from a message, the request ARRIVED, with this exact policy minus this
+  /// line. So the fallback cannot be relied on and the directive is spelled
+  /// out. The engine also drops `@font-face` outright; this is the second
+  /// line, not the first.
+  ///
   /// ## Why `upgrade-insecure-requests`
   ///
   /// Half of all mail with images in it — 16,348 bodies of 30,032, 124,321
