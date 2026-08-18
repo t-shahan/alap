@@ -1,0 +1,11 @@
+{
+  "_comment": "Thresholds the reading pane must hold against real mail. Measured at a 685pt pane, which is what a 1185pt window yields. Run: python3 tools/render-audit/sweep.py 685 30 --check",
+  "pane_width": 685,
+  "sample": 30,
+  "max_render_errors": 0,
+  "max_height_mismatches": 0,
+  "max_overflow_fraction": 0.30,
+  "min_median_scale": 0.95,
+  "max_low_contrast_messages": 2,
+  "min_images_loaded_fraction": 0.97
+}

@@ -6,6 +6,7 @@ from build_doc import build, app_fit_script
 os.environ["PATH"] = "/opt/homebrew/bin:" + os.environ["PATH"]
 
 WIDTH = sys.argv[1]; LIMIT = int(sys.argv[2])
+CHECK = "--check" in sys.argv
 sql = f"""select m.id from message m join message_body b on b.message_id=m.id
  where b.html_body is not null and length(b.html_body)>1500
  order by m.sent_at desc limit {LIMIT};"""
@@ -54,3 +55,35 @@ if ok:
     print(f"  low-contrast text blocks: {lc}/{ck}")
     bad=[d for d in ok if d.get('lowContrast',0)>0]
     print(f"  messages with ANY low-contrast text: {len(bad)}/{len(ok)}")
+
+
+# --check compares against the thresholds the reading pane must hold. These are
+# the numbers three separate regressions violated while a full unit suite
+# stayed green; asserting on them is the only thing that would have caught any
+# of the three.
+if CHECK:
+    base = json.load(open(os.path.join(HERE, "baseline.json")))
+    fails = []
+    def want(name, actual, limit, cmp):
+        if not cmp(actual, limit):
+            fails.append(f"{name}: {actual} (limit {limit})")
+    want("render errors", len(errs), base["max_render_errors"], lambda a, b: a <= b)
+    if ok:
+        mism = [d for d in ok if d.get("appHeight", -1) >= 0
+                and abs(d["appHeight"] - d["post"]["docScrollHeight"]) > 2]
+        want("height mismatches", len(mism), base["max_height_mismatches"], lambda a, b: a <= b)
+        want("overflow fraction", round(len(scaled)/len(ok), 3),
+             base["max_overflow_fraction"], lambda a, b: a <= b)
+        if scaled:
+            want("median scale", round(statistics.median([d["scale"] for d in scaled]), 3),
+                 base["min_median_scale"], lambda a, b: a >= b)
+        want("messages with low contrast", len(bad),
+             base["max_low_contrast_messages"], lambda a, b: a <= b)
+        want("images loaded fraction", round(tl/max(ti, 1), 3),
+             base["min_images_loaded_fraction"], lambda a, b: a >= b)
+    if fails:
+        print("\nFAIL")
+        for f in fails:
+            print("  " + f)
+        sys.exit(1)
+    print("\nPASS - the reading pane holds every threshold")
