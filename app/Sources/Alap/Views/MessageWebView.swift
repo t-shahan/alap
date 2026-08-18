@@ -117,6 +117,7 @@ struct MessageWebView: NSViewRepresentable {
     var onHeightChange: ((CGFloat) -> Void)?
     private var lastReported: CGFloat = 0
     private var lastWidth: CGFloat = 0
+    private var measurementGeneration = 0
 
     /// Re-runs the fit pass when the pane has been resized.
     ///
@@ -133,14 +134,40 @@ struct MessageWebView: NSViewRepresentable {
       measure(webView)
     }
 
+    /// Measurement starts as soon as the document exists, NOT when the load
+    /// finishes.
+    ///
+    /// `didFinish` waits for every subresource, and mail contains subresources
+    /// that never complete: one message in a 30-message sample carries a
+    /// tracking pixel whose URL is an endless redirect chain — 19 hops and
+    /// still going after 30 seconds. Keying the only measurement off
+    /// `didFinish` meant that message never reported a height at all, so it
+    /// rendered inside the 400pt placeholder frame with the rest cut off. It
+    /// looked like a broken message; it was an unanswered load.
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+      scheduleMeasurements(webView)
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+      scheduleMeasurements(webView)
+    }
+
+    /// Re-measures over the first few seconds.
+    ///
+    /// Images resolve after first paint and change the height when they land,
+    /// and a ResizeObserver is not available — the document's own CSP forbids
+    /// script. Spacing the attempts out covers both a fast local render and a
+    /// slow remote one without polling forever.
+    private func scheduleMeasurements(_ webView: WKWebView) {
+      measurementGeneration += 1
+      let generation = measurementGeneration
       measure(webView)
-      // Inline images resolve after first paint and change the height when
-      // they land. Re-measuring shortly afterwards catches that without a
-      // ResizeObserver, which the document's own CSP forbids anyway.
-      for delay in [0.05, 0.25, 0.8] {
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak webView] in
-          guard let webView else { return }
+      for delay in [0.05, 0.25, 0.8, 2.0, 4.0] {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak webView] in
+          guard let self, let webView else { return }
+          // A newer load supersedes this schedule; measuring here would report
+          // the previous conversation's height against the current one.
+          guard generation == self.measurementGeneration else { return }
           self.measure(webView)
         }
       }

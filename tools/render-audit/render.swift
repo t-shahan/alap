@@ -34,9 +34,24 @@ final class Driver: NSObject, WKNavigationDelegate {
     webView.navigationDelegate = self
   }
 
+  private var probed = false
+
+  // Probe off didCommit, not didFinish. Mail carries subresources that never
+  // complete -- tracking pixels whose URLs are endless redirect chains -- and
+  // waiting for the load to finish means never probing those messages at all,
+  // which is exactly the app bug this harness exists to catch.
+  func webView(_ webView: WKWebView, didCommit nav: WKNavigation!) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { self.probeOnce() }
+  }
+
   func webView(_ webView: WKWebView, didFinish nav: WKNavigation!) {
-    // Give remote images time to arrive.
-    DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { self.runAppScript() }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.probeOnce() }
+  }
+
+  func probeOnce() {
+    guard !probed else { return }
+    probed = true
+    runAppScript()
   }
 
   /// What the app itself would compute for this document at this width.
