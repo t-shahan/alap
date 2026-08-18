@@ -193,8 +193,19 @@ struct MessageWebView: NSViewRepresentable {
         var body = document.body;
         if (!body) { return 0; }
         body.style.zoom = '';
+        body.style.paddingLeft = '';
+        body.style.paddingRight = '';
         var available = document.documentElement.clientWidth;
         var content = body.scrollWidth;
+        // Padding is the first thing to go, before any shrinking. A message
+        // laid out for 600-700px would otherwise pay for our margins twice:
+        // once in lost width and again in being scaled down to fit what was
+        // left. Text mail keeps the margins because it never needs the room.
+        if (available > 0 && content > available) {
+          body.style.paddingLeft = '0';
+          body.style.paddingRight = '0';
+          content = body.scrollWidth;
+        }
         // A width of zero means the view has not been laid out yet. Dividing
         // by it would scale every message to the 0.5 floor below and shrink a
         // perfectly ordinary message to half size.
@@ -386,11 +397,15 @@ enum MessageDocument {
     return """
       :root { color-scheme: \(isDark ? "dark" : "light"); }
       html, body {
-        margin: 0; padding: 0; background: \(canvas);
+        margin: 0; background: \(canvas);
         color: \(text);
         font: 14px/1.55 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
         -webkit-text-size-adjust: 100%;
       }
+      /* Breathing room for ordinary mail. Surrendered by the fit pass below
+         when a message genuinely needs the width, so text messages read well
+         without costing wide marketing layouts the room they are built for. */
+      body { padding: 0 24px; }
       article { padding: 0 0 28px; }
       article + article { border-top: 1px solid \(rule); padding-top: 20px; }
       .msg-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 14px; flex-wrap: wrap; }

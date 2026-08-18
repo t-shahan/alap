@@ -2,8 +2,19 @@
         var body = document.body;
         if (!body) { return 0; }
         body.style.zoom = '';
+        body.style.paddingLeft = '';
+        body.style.paddingRight = '';
         var available = document.documentElement.clientWidth;
         var content = body.scrollWidth;
+        // Padding is the first thing to go, before any shrinking. A message
+        // laid out for 600-700px would otherwise pay for our margins twice:
+        // once in lost width and again in being scaled down to fit what was
+        // left. Text mail keeps the margins because it never needs the room.
+        if (available > 0 && content > available) {
+          body.style.paddingLeft = '0';
+          body.style.paddingRight = '0';
+          content = body.scrollWidth;
+        }
         // A width of zero means the view has not been laid out yet. Dividing
         // by it would scale every message to the 0.5 floor below and shrink a
         // perfectly ordinary message to half size.
