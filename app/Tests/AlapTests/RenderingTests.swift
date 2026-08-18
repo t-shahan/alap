@@ -110,6 +110,18 @@ struct RenderingTests {
     return try JSONDecoder().decode(MessageRow.self, from: Data(json.utf8))
   }
 
+  private func plainMessage(text: String) throws -> MessageRow {
+    let json = """
+      {"id":"m2","threadId":"th1","fromName":"Ada","fromEmail":"ada@example.com",
+       "toRecipients":[],"ccRecipients":[],"subject":"S","snippet":"s",
+       "sentAt":1700000000000,"isRead":true,"isStarred":false,
+       "hasAttachments":false,"rfc822MessageId":null,
+       "body":{"messageId":"m2","htmlBody":null,"textBody":\(jsonString(text))},
+       "attachments":[]}
+      """
+    return try JSONDecoder().decode(MessageRow.self, from: Data(json.utf8))
+  }
+
   private func jsonString(_ value: String) -> String {
     String(data: try! JSONSerialization.data(withJSONObject: [value]), encoding: .utf8)!
       .dropFirst().dropLast().description
@@ -137,15 +149,33 @@ struct RenderingTests {
     #expect(!document.contains("img-src *"))
   }
 
-  @Test("Both themes render")
-  func rendersBothThemes() throws {
+  @Test("HTML mail renders on a light canvas in either theme")
+  func htmlIgnoresTheTheme() throws {
+    // This assertion used to read `light != dark`. HTML mail brings its own
+    // colours and assumes a light page under them, so a sender who sets a
+    // white background but leaves the text at its default got our dark-theme
+    // grey on their white. Ignoring the theme here is the fix, not a
+    // regression.
     let message = try message(html: "<p>hi</p>")
     let light = MessageDocument.build(for: [message], isDark: false)
     let dark = MessageDocument.build(for: [message], isDark: true)
 
     #expect(!light.isEmpty)
-    #expect(!dark.isEmpty)
-    #expect(light != dark, "the theme argument should change the output")
+    #expect(light == dark, "HTML mail should not follow the app theme")
+    #expect(dark.contains("background: #ffffff"), "the light page must be painted")
+    #expect(dark.contains("color-scheme: light"))
+  }
+
+  @Test("Plain text still follows the app theme")
+  func plainTextFollowsTheTheme() throws {
+    // Plain text has no colours of its own, so there is nothing to clash with
+    // and every reason to match the surrounding window.
+    let message = try plainMessage(text: "hello")
+    let light = MessageDocument.build(for: [message], isDark: false)
+    let dark = MessageDocument.build(for: [message], isDark: true)
+
+    #expect(light != dark, "the theme argument should still change plain text")
+    #expect(dark.contains("background: transparent"))
   }
 
   @Test("An empty thread still produces a valid document")

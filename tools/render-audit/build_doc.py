@@ -25,7 +25,9 @@ def css(is_dark=True):
 def restore_images(html):
     return html.replace('data-blocked-src="', 'src="').replace('data-blocked="remote"', '')
 
-def build(html, show_remote=True, is_dark=True):
+def build(html, show_remote=True, is_dark=True, has_html=True):
+    # Mirrors MessageDocument.build: HTML mail renders on a light canvas.
+    is_dark = is_dark and not has_html
     if show_remote:
         html = restore_images(html)
     img_src = "img-src cid: data: https:" if show_remote else "img-src cid: data:"
