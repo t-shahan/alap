@@ -38,29 +38,38 @@ struct PaneLayout: Equatable {
     // the reading pane 290pt at 800pt wide, which is the exact bug this type
     // exists to prevent. A test now checks every step and both sides of every
     // boundary.
+    // Every step satisfies width - (sidebar + list) >= minimumReadingWidth.
+    //
+    // The reading pane absorbs extra width; the list barely grows. That is the
+    // opposite of the first version, and it is what the mail itself asks for:
+    // measured over 30 real messages, 75% overflowed a 557pt pane and had to
+    // be shrunk, against 6% at 700pt. A wider list shows the same three lines
+    // of preview it already showed; a wider reading pane is the difference
+    // between a message at 87% and a message at its intended size.
     switch width {
     case 1280...:
-      PaneLayout(sidebarWidth: 240, listWidth: 400, showsSidebar: true,
+      PaneLayout(sidebarWidth: 240, listWidth: 340, showsSidebar: true,
                  showsToolbarLabels: true, showsRowPreview: true)
     case 1080..<1280:
-      PaneLayout(sidebarWidth: 220, listWidth: 360, showsSidebar: true,
+      PaneLayout(sidebarWidth: 200, listWidth: 300, showsSidebar: true,
                  showsToolbarLabels: true, showsRowPreview: true)
     case 920..<1080:
       // The first step that drops labels. Four labelled pills need about
       // 400pt; icons need about 150pt and lose only a word the tooltip keeps.
-      PaneLayout(sidebarWidth: 200, listWidth: 330, showsSidebar: true,
+      PaneLayout(sidebarWidth: 200, listWidth: 300, showsSidebar: true,
                  showsToolbarLabels: false, showsRowPreview: true)
     case 780..<920:
       // The sidebar goes before the list narrows further. A 240pt list is a
       // worse mail list than no sidebar is a navigation problem — mailboxes
       // are still one keystroke or one menu away.
-      PaneLayout(sidebarWidth: 0, listWidth: 320, showsSidebar: false,
+      PaneLayout(sidebarWidth: 0, listWidth: 300, showsSidebar: false,
                  showsToolbarLabels: false, showsRowPreview: true)
     default:
       PaneLayout(sidebarWidth: 0, listWidth: 300, showsSidebar: false,
                  showsToolbarLabels: false, showsRowPreview: false)
     }
   }
+
 
 }
 

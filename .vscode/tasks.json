@@ -3,9 +3,10 @@
   // These mirror the commands in README.md / docs/COMMANDS.md exactly, so the
   // editor and the terminal can never build the project two different ways.
   //
-  // Note the Swift build tasks referenced by launch.json ("swift: Build Debug
-  // Alap (app)") are contributed automatically by the Swift extension and do
-  // not need to be declared here.
+  // Not listed here: "swift: Build Debug Alap (app)" and friends, which
+  // launch.json references. The Swift extension contributes those itself once
+  // it discovers app/Package.swift (see swift.searchSubfoldersForPackages in
+  // settings.json) — declaring them again would only create duplicates.
   // ───────────────────────────────────────────────────────────────────────────
   "version": "2.0.0",
   "tasks": [
@@ -36,6 +37,30 @@
       "options": { "cwd": "${workspaceFolder}" },
       "group": { "kind": "test", "isDefault": true },
       "problemMatcher": ["$gcc"]
+    },
+    {
+      // The full .app: SwiftPM build + web assets + embedded engine + signing.
+      // "swift: Build Debug Alap (app)" only produces a bare executable, which
+      // is not the thing you can actually launch.
+      "label": "app: build bundle",
+      "type": "shell",
+      "command": "./scripts/build-app.sh",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$swiftc"]
+    },
+    {
+      "label": "app: build and run",
+      "type": "shell",
+      "command": "./scripts/run-app.sh",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$swiftc"]
+    },
+    {
+      "label": "swift: test app",
+      "type": "shell",
+      "command": "swift test --package-path app",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$swiftc"]
     }
   ]
 }

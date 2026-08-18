@@ -97,4 +97,26 @@ struct PaneLayoutTests {
       #expect(PaneLayout.forWidth(width) == PaneLayout.forWidth(width))
     }
   }
+
+  @Test("A common window gives the message the width mail is designed for")
+  func readingPaneFitsRealMail() {
+    // Not an arbitrary number. Rendering 30 real messages at a range of pane
+    // widths: 75% overflowed and had to be shrunk at 557pt, 62% at 605, 37% at
+    // 645, and 6% at 700. The cliff is just under 700, because marketing mail
+    // is laid out for a 600-640px canvas.
+    //
+    // This is the assertion that would have caught the original layout, which
+    // gave the message 557pt at a 1185pt window and shrank three quarters of
+    // the mailbox to compensate.
+    for window in [1280.0, 1440.0, 1920.0] {
+      let layout = PaneLayout.forWidth(window)
+      let reading = window - layout.sidebarWidth - layout.listWidth
+      #expect(reading >= 700, "a \(Int(window))pt window left the message \(Int(reading))pt")
+    }
+    // The 1080-1280 band cannot reach 700 without a list too narrow to use;
+    // it gets as close as the arithmetic allows.
+    let mid = 1185.0
+    let layout = PaneLayout.forWidth(mid)
+    #expect(mid - layout.sidebarWidth - layout.listWidth >= 650)
+  }
 }

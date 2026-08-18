@@ -1,7 +1,7 @@
 {
-  // ───────────────────────────────────────────────────────────────────────────
-  // Workspace settings. These override your user settings for this project only.
-  // ───────────────────────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // C / C++  (engine/ — built by CMake)
+  // ═══════════════════════════════════════════════════════════════════════════
 
   // The CMake project is engine/, not the repo root. Without these two lines
   // CMake Tools finds no CMakeLists.txt at the top level and starts prompting
@@ -19,17 +19,78 @@
   // IntelliSense config, competing with the compile_commands.json setup.
   "makefile.configureOnOpen": false,
 
-  // Trim the noise in the file tree; these are build artifacts, not source.
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Swift  (app/ — built by SwiftPM)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Package.swift lives in app/, but the Swift extension only looks in the
+  // workspace ROOT unless this is on (it defaults to false). With it off the
+  // extension never registers the package, so you get no build tasks, no test
+  // explorer, and no SwiftPM-aware SourceKit-LSP — just plain syntax colouring.
+  "swift.searchSubfoldersForPackages": true,
+
+  // ...but that search recurses into EVERY subdirectory, so it has to be fenced
+  // in. Two problems it would otherwise cause here:
+  //
+  //   1. node_modules — thousands of directories walked on every window open.
+  //   2. engine — the extension registers a folder if it finds Package.swift
+  //      *or* build/compile_commands.json. engine/build/compile_commands.json
+  //      exists, so engine/ would be adopted as a second "Swift" folder and
+  //      SourceKit-LSP would start a build server for the C++ tree that
+  //      cpptools already owns.
+  //
+  // Setting this REPLACES the extension's defaults rather than adding to them,
+  // so the original six entries are repeated here before our additions.
+  "swift.ignoreSearchingForPackagesInSubfolders": [
+    ".",
+    ".build",
+    "Packages",
+    "out",
+    "bazel-out",
+    "bazel-bin",
+    "node_modules",
+    "packages",
+    "engine",
+    "build",
+    "docs",
+    "scripts",
+    "tools",
+    ".data",
+    ".git"
+  ],
+
+  // One language server per language. SourceKit-LSP can also serve C/C++ (its
+  // default list is swift + objective-c + objective-cpp + c + cpp), which would
+  // put it in competition with the C/C++ extension over engine/. cpptools has
+  // the compile database and wins that job, so SourceKit-LSP keeps Swift.
+  //
+  // When Phase 4 adds the Objective-C++ bridge, those .mm files get compiled by
+  // CMake and so appear in compile_commands.json — cpptools will cover them
+  // with the correct flags, and this line stays as-is.
+  "swift.sourcekit-lsp.supported-languages": ["swift"],
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Workspace hygiene
+  // ═══════════════════════════════════════════════════════════════════════════
+
   "files.exclude": {
     "**/.DS_Store": true,
     "engine/build/_deps": true,
     "engine/build/CMakeFiles": true
   },
 
-  // Never search inside build output or dependencies.
   "search.exclude": {
     "engine/build": true,
+    "app/.build": true,
     "node_modules": true,
     "build": true
+  },
+
+  // Don't burn a file watcher on build output. SwiftPM's .build and CMake's
+  // _deps churn constantly during a build and will otherwise wake the editor.
+  "files.watcherExclude": {
+    "**/.build/**": true,
+    "**/engine/build/**": true,
+    "**/node_modules/**": true
   }
 }
