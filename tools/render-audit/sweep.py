@@ -15,12 +15,15 @@ ids = subprocess.run(["psql","-d","mailapp","-Atc",sql],capture_output=True,text
 os.makedirs(os.path.join(HERE, f"w{WIDTH}"), exist_ok=True)
 JS = os.path.join(HERE, "app_fit.js"); open(JS, "w").write(app_fit_script())
 res=[]
+dark_docs=[]
 for n,mid in enumerate(ids):
     if not mid.strip(): continue
     html = subprocess.run(["psql","-d","mailapp","-Atc",
       "select html_body from message_body where message_id = $$%s$$" % mid],
       capture_output=True,text=True).stdout
-    p=os.path.join(HERE, f"w{WIDTH}", f"{n:02d}.html"); open(p,"w").write(build(html))
+    doc = build(html)
+    p=os.path.join(HERE, f"w{WIDTH}", f"{n:02d}.html"); open(p,"w").write(doc)
+    dark_docs.append("color-scheme: dark" in doc)
     try:
         r=subprocess.run([os.path.join(HERE, "render"),p,WIDTH,os.path.join(HERE, f"w{WIDTH}", f"{n:02d}.png"),JS],
                          capture_output=True,text=True,timeout=45)
@@ -52,6 +55,7 @@ if ok:
         lost=w['post']['docScrollHeight']-w['appHeight']
         print(f"    worst: app told {w['appHeight']:.0f} of {w['post']['docScrollHeight']} "
               f"({100*lost/w['post']['docScrollHeight']:.0f}% lost)")
+    print(f"  rendered on the DARK canvas: {sum(dark_docs)}/{len(dark_docs)}")
     lc=sum(d.get('lowContrast',0) for d in ok); ck=sum(d.get('checked',0) for d in ok)
     print(f"  low-contrast text blocks: {lc}/{ck}")
     bad=[d for d in ok if d.get('lowContrast',0)>0]

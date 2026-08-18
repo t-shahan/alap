@@ -310,7 +310,7 @@ enum MessageDocument {
   static func build(for messages: [MessageRow], isDark: Bool,
                     showRemoteImages: Bool = true) -> String {
     let showHeaders = messages.count > 1
-    // HTML mail is rendered on WHITE regardless of the app's theme.
+    // HTML mail is rendered on WHITE only when it brings colours of its own.
     //
     // It brings its own colours, and it assumes a light page underneath them:
     // a sender who sets a white table background but leaves the body text at
@@ -322,6 +322,25 @@ enum MessageDocument {
     // Every major client does this, and for this reason. Plain-text messages
     // have no colours of their own, so they keep the app's theme.
     let hasHTML = messages.contains(where: \.hasRenderableHTML)
+    // A message that sets no colour anywhere has nothing to clash with, so it
+    // can follow the app's theme like plain text does. That is the case where
+    // the white page was ours rather than the sender's — a two-line reply
+    // rendered as a bright slab in a dark window.
+    //
+    // Deliberately generous about what counts as "brings colours": one
+    // `bgcolor` or one `color:` anywhere is enough to keep the light page. The
+    // failure mode of guessing wrong in that direction is a white background
+    // nobody wanted; the other direction is dark text on a dark background,
+    // which is unreadable. `<style>` blocks are dropped on ingest, so inline
+    // styles and `<font>` are the only places a colour can come from.
+    let bringsOwnColours = messages.contains { message in
+      guard let html = message.body?.htmlBody else { return false }
+      for marker in ["bgcolor", "background", "color:", "color=", "<font"] {
+        if html.range(of: marker, options: .caseInsensitive) != nil { return true }
+      }
+      return false
+    }
+    let lightCanvas = hasHTML && bringsOwnColours
 
     let bodies = messages.map { message -> String in
       let header = !showHeaders ? "" : """
@@ -347,7 +366,7 @@ enum MessageDocument {
       <html><head><meta charset="utf-8">
       <meta http-equiv="Content-Security-Policy"
             content="default-src 'none'; img-src cid: data:\(showRemoteImages ? " https:" : ""); style-src 'unsafe-inline'; form-action 'none'; base-uri 'none';\(showRemoteImages ? " upgrade-insecure-requests;" : "")">
-      <style>\(css(isDark: isDark && !hasHTML))</style>
+      <style>\(css(isDark: isDark && !lightCanvas))</style>
       </head><body>\(bodies.joined())</body></html>
       """
   }

@@ -149,21 +149,45 @@ struct RenderingTests {
     #expect(!document.contains("img-src *"))
   }
 
-  @Test("HTML mail renders on a light canvas in either theme")
-  func htmlIgnoresTheTheme() throws {
-    // This assertion used to read `light != dark`. HTML mail brings its own
-    // colours and assumes a light page under them, so a sender who sets a
-    // white background but leaves the text at its default got our dark-theme
-    // grey on their white. Ignoring the theme here is the fix, not a
-    // regression.
-    let message = try message(html: "<p>hi</p>")
+  @Test("Mail that brings its own colours renders on a light canvas")
+  func colouredHtmlIgnoresTheTheme() throws {
+    // Mail assumes a light page under it. A sender who paints a white table
+    // but leaves the text at its default got our dark-theme grey on their
+    // white — 11 of 30 real messages carried text under 2:1 contrast.
+    let message = try message(html: ##"<table bgcolor="#ffffff"><tr><td>hi</td></tr></table>"##)
     let light = MessageDocument.build(for: [message], isDark: false)
     let dark = MessageDocument.build(for: [message], isDark: true)
 
-    #expect(!light.isEmpty)
-    #expect(light == dark, "HTML mail should not follow the app theme")
+    #expect(light == dark, "coloured mail should not follow the app theme")
     #expect(dark.contains("background: #ffffff"), "the light page must be painted")
     #expect(dark.contains("color-scheme: light"))
+  }
+
+  @Test("Mail that brings no colours follows the app theme")
+  func colourlessHtmlFollowsTheTheme() throws {
+    // A two-line reply has nothing to clash with, and rendering it as a bright
+    // slab in a dark window is our doing rather than the sender's.
+    let message = try message(html: "<p>hi</p><p>see you then</p>")
+    let dark = MessageDocument.build(for: [message], isDark: true)
+    let light = MessageDocument.build(for: [message], isDark: false)
+
+    #expect(dark != light, "colourless mail should follow the theme")
+    #expect(dark.contains("background: transparent"))
+    #expect(dark.contains("color-scheme: dark"))
+  }
+
+  @Test("One colour anywhere is enough to keep the light page")
+  func oneColourKeepsItLight() throws {
+    // Guessing wrong toward light costs a white background nobody wanted;
+    // guessing wrong toward dark costs dark text on a dark background, which
+    // cannot be read at all. The threshold is deliberately one mention.
+    for coloured in [##"<p style="color:#333">hi</p>"##,
+                     ##"<td bgcolor="#eee">hi</td>"##,
+                     ##"<font color="red">hi</font>"##] {
+      let message = try message(html: coloured)
+      let dark = MessageDocument.build(for: [message], isDark: true)
+      #expect(dark.contains("color-scheme: light"), "\(coloured) should stay light")
+    }
   }
 
   @Test("Plain text still follows the app theme")
