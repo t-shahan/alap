@@ -282,13 +282,28 @@ Result<void> PostgresStore::upsert_message(const std::string& account_id,
     // 5. Attachment metadata. Bytes stay on disk; only the path lands here.
     for (const auto& attachment : message.attachments) {
       if (attachment.attachment_id.empty()) continue;
+      // The remote id is REFRESHED on conflict rather than ignored. It is what
+      // a download resolves against and Gmail rotates it, so a stored one goes
+      // stale; `DO NOTHING` would keep the oldest forever.
+      //
+      // `local_path`, `content_hash` and `downloaded_at` are deliberately
+      // absent from the update: a re-sync must not forget bytes already on
+      // disk.
       auto written = exec(
           R"(INSERT INTO attachment
                (id, account_id, message_id, filename, mime_type, size_bytes,
                 content_id, is_inline, remote_attachment_id)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-             ON CONFLICT (id) DO NOTHING)",
-          {ids::attachment(message_id, attachment.attachment_id), account_id,
+             ON CONFLICT (id) DO UPDATE
+               SET remote_attachment_id = EXCLUDED.remote_attachment_id,
+                   filename = EXCLUDED.filename,
+                   mime_type = EXCLUDED.mime_type,
+                   size_bytes = EXCLUDED.size_bytes,
+                   content_id = EXCLUDED.content_id,
+                   is_inline = EXCLUDED.is_inline)",
+          {ids::attachment(message_id, attachment.filename,
+                           attachment.size_bytes, attachment.content_id),
+           account_id,
            message_id, attachment.filename, attachment.mime_type,
            std::to_string(attachment.size_bytes), attachment.content_id,
            attachment.is_inline ? "t" : "f", attachment.attachment_id});

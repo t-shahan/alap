@@ -10,6 +10,8 @@
 
 #include <gtest/gtest.h>
 
+#include "mailengine/ids.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -258,4 +260,49 @@ TEST(AttachmentStore, DefaultRootIsUnderCachesNotApplicationSupport) {
   // megabytes of recoverable data out of Time Machine.
   EXPECT_NE(root.find("/Library/Caches/"), std::string::npos) << root;
   EXPECT_EQ(root.find("Application Support"), std::string::npos) << root;
+}
+
+// MARK: - Stable attachment identity
+//
+// Gmail's `attachmentId` is EPHEMERAL. Fetching the same message twice seconds
+// apart returns different ids for the same part — verified against the live
+// API. It was part of the primary key, so every sync inserted a new row rather
+// than updating: 7,350 surplus rows of 9,175 (80%) across 967 messages, worst
+// case 15 copies of one file, and a resume showing five identical attachments.
+
+TEST(AttachmentIdentity, IsStableAcrossRotatingRemoteIds) {
+  const auto first = mailengine::ids::attachment(
+      "acct|msg", "base.docx", 28383, "");
+  const auto second = mailengine::ids::attachment(
+      "acct|msg", "base.docx", 28383, "");
+  EXPECT_EQ(first, second);
+}
+
+TEST(AttachmentIdentity, DistinguishesDifferentParts) {
+  const auto doc = mailengine::ids::attachment("acct|msg", "base.docx", 28383, "");
+  const auto pdf = mailengine::ids::attachment("acct|msg", "cover.pdf", 28383, "");
+  const auto bigger = mailengine::ids::attachment("acct|msg", "base.docx", 99999, "");
+  EXPECT_NE(doc, pdf);
+  EXPECT_NE(doc, bigger);
+}
+
+TEST(AttachmentIdentity, DistinguishesInlineImagesByContentId) {
+  // Two inline images can share a filename; the Content-ID is what a `cid:`
+  // reference resolves against, so it has to take part in identity.
+  const auto a = mailengine::ids::attachment("acct|msg", "logo.png", 100, "a@x");
+  const auto b = mailengine::ids::attachment("acct|msg", "logo.png", 100, "b@x");
+  EXPECT_NE(a, b);
+}
+
+TEST(AttachmentIdentity, IsScopedToItsMessage) {
+  const auto here = mailengine::ids::attachment("acct|one", "base.docx", 28383, "");
+  const auto there = mailengine::ids::attachment("acct|two", "base.docx", 28383, "");
+  EXPECT_NE(here, there);
+}
+
+TEST(AttachmentIdentity, KeepsTheMessageIdReadable) {
+  // The row id is used in log lines and error messages; keeping the message id
+  // as a literal prefix means a duplicate is still traceable by eye.
+  const auto id = mailengine::ids::attachment("acct|msg", "base.docx", 28383, "");
+  EXPECT_EQ(id.rfind("acct|msg|", 0), 0u);
 }

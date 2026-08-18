@@ -12,6 +12,8 @@
 
 #include <string>
 
+#include "mailengine/crypto.hpp"
+
 namespace mailengine::ids {
 
 /// Segment separator.
@@ -48,10 +50,33 @@ inline constexpr char kSeparator = '|';
   return message_id + kSeparator + label_id;
 }
 
-/// @brief `<messageId>|<gmail attachment id>`.
+/// @brief `<messageId>|<digest of the part's identity>`.
+///
+/// NOT derived from Gmail's `attachmentId`, which is ephemeral: fetching the
+/// same message twice seconds apart returns different ids for the same part.
+/// With that in the key, every sync inserted a new row instead of updating one
+/// — 7,350 surplus rows of 9,175 in a real mailbox, and a resume that appeared
+/// to carry five identical copies of itself.
+///
+/// Derived from what actually identifies a part instead: its filename, its
+/// size and its Content-ID. Two genuinely identical attachments on one message
+/// collapse to a single row, which is a fair trade against the alternative of
+/// keying on position — position and a SQL migration cannot be made to agree,
+/// so a re-sync would rewrite one part's metadata over another's.
+///
+/// The message id stays a literal prefix so a row is still traceable by eye in
+/// a log line.
 [[nodiscard]] inline std::string attachment(const std::string& message_id,
-                                            const std::string& remote_attachment_id) {
-  return message_id + kSeparator + remote_attachment_id;
+                                            const std::string& filename,
+                                            int64_t size_bytes,
+                                            const std::string& content_id) {
+  // Unit Separator rather than NUL: the same digest has to be reproducible in
+  // SQL for the migration that re-keys existing rows, and Postgres text cannot
+  // contain a NUL byte. US cannot appear in a filename or a Content-ID.
+  const std::string identity = filename + '\x1f' + std::to_string(size_bytes) +
+                               '\x1f' + content_id;
+  return message_id + kSeparator +
+         crypto::hex_encode(crypto::sha256(identity)).substr(0, 32);
 }
 
 }  // namespace mailengine::ids

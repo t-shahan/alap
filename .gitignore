@@ -45,3 +45,6 @@ app/Sources/Mail/Web/
 
 # Design review working doc — local only
 DESIGN-REVIEW.md
+
+# Local planning doc, not part of the project history.
+SANITIZATION_PLAN.md
