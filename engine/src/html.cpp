@@ -33,12 +33,28 @@ const std::unordered_set<std::string>& allowed_tags() {
 ///
 /// These carry executable or externally-fetched material rather than text, so
 /// preserving what is inside them would defeat the point.
+///
+/// Every tag here must actually HAVE contents — that is, a closing partner.
+/// `link`, `meta` and `base` used to be in this set and are void elements with
+/// no closing tag, so the scan for `</link>` ran off the end of the document
+/// and took the whole message with it. Google puts `<link itemprop="url">`
+/// schema.org markup in the body of its security alerts; one arrived as 4800
+/// bytes and was stored as 194.
 const std::unordered_set<std::string>& void_content_tags() {
   static const std::unordered_set<std::string> tags = {
       "script", "style", "iframe", "object", "embed", "applet", "form",
-      "link", "meta", "base", "noscript", "template", "svg", "math", "head",
+      "noscript", "template", "svg", "math", "head", "title",
   };
   return tags;
+}
+
+/// Void elements that are dropped, but which enclose nothing.
+///
+/// Kept out of `void_content_tags` because they have no closing tag. They are
+/// not in the allowlist either, so the tag itself never reaches the output —
+/// this set exists only to record that dropping them is deliberate.
+bool is_dropped_void_tag(std::string_view tag) {
+  return tag == "link" || tag == "meta" || tag == "base";
 }
 
 /// Tags that never have a closing partner.
@@ -756,7 +772,22 @@ SanitizeResult sanitize(const std::string& input, const SanitizeOptions& options
         }
         search = candidate + 2;
       }
+      // An unterminated one takes the rest of the document with it, on
+      // purpose. Skipping just the tag would spill its contents into the page
+      // as visible text — `<script>alert(1)` with no closing tag would render
+      // the word `alert(1)` in the middle of the message. Content-bearing
+      // tags here are executable or fetched material, so failing closed is the
+      // right trade. Void elements never reach this branch; that was the bug.
       i = end == std::string::npos ? n : end + 1;
+      continue;
+    }
+
+    // Void elements that are dropped outright. They enclose nothing, so only
+    // the tag itself is skipped.
+    if (is_dropped_void_tag(tag)) {
+      result.removed_active_content = true;
+      const size_t tag_close = input.find('>', cursor);
+      i = tag_close == std::string::npos ? n : tag_close + 1;
       continue;
     }
 

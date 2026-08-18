@@ -578,3 +578,55 @@ TEST(DataURI, RejectsNonImageDataInStyles) {
       R"HTML(<td style="background-image:url(data:text/html;base64,PHNjcmlwdD4=)">x</td>)HTML");
   EXPECT_FALSE(contains(out.html, "text/html"));
 }
+
+// MARK: - Void elements must not swallow the document
+//
+// `<link>`, `<meta>` and `<base>` are VOID elements: they have no closing tag
+// and no contents. They were listed among the tags whose contents get
+// discarded, so the sanitiser searched for `</link>`, never found one, and
+// threw away everything from there to the end of the document.
+//
+// Google puts schema.org markup — `<link itemprop="url">` — in the body of its
+// security alerts. A real one arrived as 4800 bytes from Gmail and was stored
+// as 194: the message rendered as an empty white box. 909 stored messages have
+// an HTML body under a quarter the size of their plain text.
+
+TEST(VoidElements, LinkDoesNotDiscardTheRestOfTheDocument) {
+  const auto html = clean(
+      R"HTML(<p>before</p><link itemprop="url" href="https://x.test/a"/><p>after</p>)HTML");
+  EXPECT_TRUE(contains(html, "before"));
+  EXPECT_TRUE(contains(html, "after"));
+  // The element itself is still gone.
+  EXPECT_FALSE(contains(html, "<link"));
+}
+
+TEST(VoidElements, MetaAndBaseDoNotDiscardTheRestOfTheDocument) {
+  for (const std::string tag : {"meta", "base"}) {
+    const auto html = clean("<p>before</p><" + tag + " href=\"http://evil/\"><p>after</p>");
+    EXPECT_TRUE(contains(html, "before")) << tag;
+    EXPECT_TRUE(contains(html, "after")) << tag;
+    EXPECT_FALSE(contains(html, "evil")) << tag;
+  }
+}
+
+TEST(VoidElements, SchemaOrgMarkupKeepsTheMessage) {
+  // The exact shape from a Google security alert.
+  const auto html = clean(
+      R"HTML(<div itemscope itemtype="//schema.org/EmailMessage">)HTML"
+      R"HTML(<div itemprop="action" itemscope><link itemprop="url" href="https://accounts.google.com/x"/>)HTML"
+      R"HTML(<meta itemprop="name" content="Review"/></div></div><p>Your password was changed.</p>)HTML");
+  EXPECT_TRUE(contains(html, "Your password was changed."));
+}
+
+// An unterminated content-bearing tag still takes the rest of the document
+// with it — see Sanitize.HandlesUnterminatedScriptByDroppingTheRest. That is
+// deliberate: skipping just the tag would spill `alert(1)` into the page as
+// visible text. Void elements are the ones that must not do this, because they
+// have no closing tag to find in the first place.
+
+TEST(VoidElements, AClosedScriptStillSwallowsItsContents) {
+  const auto result = sanitize("<p>a</p><script>alert(1)</script><p>b</p>");
+  EXPECT_FALSE(contains(result.html, "alert"));
+  EXPECT_TRUE(contains(result.html, "a"));
+  EXPECT_TRUE(contains(result.html, "b"));
+}
