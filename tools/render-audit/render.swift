@@ -3,7 +3,7 @@ import WebKit
 
 // Headless renderer: loads a document in WKWebView at a given width, reports
 // layout diagnostics as JSON, and writes a PNG snapshot.
-// Usage: render <html-file> <width> <out.png>
+// Usage: render <html-file> <width> <out.png> [app-fit.js] [case-probe.js]
 
 let args = CommandLine.arguments
 guard args.count >= 4, let width = Double(args[2]) else {
@@ -15,6 +15,11 @@ let outPath = args[3]
 // Optional: the app's own fit-and-measure script, so the harness reports what
 // the app computes rather than a copy of it that can drift.
 let appJS = args.count >= 5 ? (try? String(contentsOfFile: args[4], encoding: .utf8)) : nil
+// Optional: a per-message geometry probe, for the named regression cases in
+// cases.py. It must evaluate to a JSON *string*, which is spliced in under
+// "case". Kept out of the standard probe because it is message-specific and
+// costs a whole extra round trip.
+let caseJS = args.count >= 6 ? (try? String(contentsOfFile: args[5], encoding: .utf8)) : nil
 
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
@@ -23,7 +28,9 @@ final class Driver: NSObject, WKNavigationDelegate {
   let webView: WKWebView
   let out: String
   var appJS: String?
+  var caseJS: String?
   var appHeight: Double = -1
+  var caseJSON: String?
   init(width: Double, out: String) {
     let config = WKWebViewConfiguration()
     config.defaultWebpagePreferences.allowsContentJavaScript = false
@@ -51,7 +58,20 @@ final class Driver: NSObject, WKNavigationDelegate {
   func probeOnce() {
     guard !probed else { return }
     probed = true
-    runAppScript()
+    runCaseProbe()
+  }
+
+  /// The case probe runs FIRST, on the pristine layout, before the app's fit
+  /// script has stripped the body padding or applied `zoom`. A regression case
+  /// asks "did this document lay itself out correctly", and the answer must not
+  /// depend on how much the pane then squeezed it.
+  func runCaseProbe() {
+    guard let js = caseJS else { runAppScript(); return }
+    webView.evaluateJavaScript(js) { value, error in
+      self.caseJSON = (value as? String)
+        ?? "{\"error\":\"\(error?.localizedDescription ?? "case probe failed")\"}"
+      self.runAppScript()
+    }
   }
 
   /// What the app itself would compute for this document at this width.
@@ -127,7 +147,9 @@ final class Driver: NSObject, WKNavigationDelegate {
         // Splice the app-computed height in beside the measured truth.
         var merged = json
         if merged.hasSuffix("}") {
-          merged = String(merged.dropLast()) + ",\"appHeight\":\(self.appHeight)}"
+          merged = String(merged.dropLast()) + ",\"appHeight\":\(self.appHeight)"
+          if let c = self.caseJSON { merged += ",\"case\":\(c)" }
+          merged += "}"
         }
         print(merged)
       }
@@ -161,6 +183,7 @@ final class Driver: NSObject, WKNavigationDelegate {
 
 let driver = Driver(width: width, out: outPath)
 driver.appJS = appJS
+driver.caseJS = caseJS
 // baseURL nil, exactly as the app does it. With an https base the document
 // is a secure context and WebKit applies mixed-content rules the app never
 // sees, so the harness would have been measuring a different browser.

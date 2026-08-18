@@ -133,6 +133,7 @@ if(MAILENGINE_BUILD_TESTS)
     tests/test_outbox.cpp
     tests/test_search.cpp
     tests/test_html.cpp
+    tests/test_css.cpp
     tests/test_attachments.cpp
     tests/test_compose.cpp
   )

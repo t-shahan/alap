@@ -41,11 +41,25 @@ TEST(Sanitize, RemovesScriptTagsAndTheirContents) {
   EXPECT_TRUE(contains(result.html, "bye"));
 }
 
-TEST(Sanitize, RemovesStyleContents) {
-  // Remote CSS can fetch resources and overlay the interface.
-  const auto html = clean("<style>body{background:url(http://tracker)}</style><p>x</p>");
-  EXPECT_FALSE(contains(html, "tracker"));
-  EXPECT_TRUE(contains(html, "x"));
+TEST(Sanitize, FiltersStyleBlockContentsRatherThanDiscardingThem) {
+  // The inverse of the assertion it replaces, deliberately. This used to check
+  // that a <style> block was discarded whole. All 14 messages sampled from the
+  // Gmail API lay their layout out in one and address it by class, so
+  // discarding it collapsed multi-column grids to one item per row and unhid
+  // everything `.mobile-hide` was hiding. The block is parsed now, and every
+  // declaration in it goes through the property allowlist the `style`
+  // attribute already used.
+  const auto out = sanitize(
+      "<style>body{background:url(http://tracker.example/p.gif);color:#333}"
+      "</style><p>x</p>");
+  // The tracker still is not fetched; that half has not moved. What changed is
+  // that the URL is defused and counted rather than thrown away, the same
+  // trade `<img src>` makes with `data-blocked-src` — so turning images on is
+  // a re-sanitise rather than a re-fetch from Gmail.
+  EXPECT_FALSE(contains(out.html, "url(http://tracker.example"));
+  EXPECT_EQ(out.blocked_remote_images, 1);
+  EXPECT_TRUE(contains(out.html, "color:#333"));
+  EXPECT_TRUE(contains(out.html, "x"));
 }
 
 TEST(Sanitize, RemovesEmbeddedFrameAndObjectElements) {
@@ -185,17 +199,20 @@ TEST(Sanitize, KeepsTableStructure) {
   EXPECT_TRUE(contains(html, "cell"));
 }
 
-TEST(Sanitize, DropsClassAndFiltersStyle) {
-  // This test used to assert that `style` was dropped wholesale. That policy
-  // cost every message its design — see the Style suite — so `style` is now
-  // filtered against a property allowlist instead of discarded.
-  //
-  // `class` is still dropped: without a stylesheet it does nothing, and
-  // admitting one means admitting <style>, which this sanitiser cannot parse.
+TEST(Sanitize, KeepsClassAndFiltersStyle) {
+  // Both halves of this have flipped, in the same direction and for the same
+  // reason: discarding presentation wholesale is not a security win, it is a
+  // rendering bug that happens to be safe. `style` stopped being dropped when
+  // it became filtered against a property allowlist; `class` stops being
+  // dropped here, because the stylesheet it names is kept and filtered too.
   const auto html = clean("<p style=\"color:red;position:fixed\" class=\"x\">t</p>");
-  EXPECT_FALSE(contains(html, "class"));
+  EXPECT_TRUE(contains(html, "class=\"x\""));
   EXPECT_TRUE(contains(html, "color:red"));
+  // `position` has to be GONE rather than re-spelled — an element drawn over
+  // the reading pane is the fake-app-chrome attack the allowlist exists for —
+  // so the value it was carrying is checked for too.
   EXPECT_FALSE(contains(html, "position"));
+  EXPECT_FALSE(contains(html, "fixed"));
   EXPECT_TRUE(contains(html, "t"));
 }
 
@@ -510,13 +527,51 @@ TEST(Style, DropsImportAndEscapes) {
   EXPECT_FALSE(contains(imported.html, "@import"));
 }
 
-TEST(Style, StillDropsClassAndStyleBlocks) {
-  // `class` without a stylesheet is dead weight, and a <style> block is a
-  // whole CSS surface -- selectors, media queries, @import -- that this
-  // sanitiser does not parse and therefore cannot vouch for.
-  const auto out = sanitize(R"(<style>.a{color:red}</style><div class="a">x</div>)");
-  EXPECT_FALSE(contains(out.html, "class="));
-  EXPECT_FALSE(contains(out.html, "color:red"));
+TEST(Style, KeepsClassAndTheStyleBlockItNames) {
+  // Was `StillDropsClassAndStyleBlocks`, which asserted both were discarded on
+  // the grounds that the CSS surface -- selectors, media queries, @import --
+  // was not parsed and so could not be vouched for. It is parsed now, and the
+  // reason to bother is that the pair is worthless apart and load-bearing
+  // together: 14 of 14 sampled messages used a <style> block addressed by
+  // class, 13 used @media or a show/hide class, and without them a
+  // three-across product grid rendered one item per row while `.mobile-hide`
+  // stopped hiding anything, so the desktop and mobile copies of a button drew
+  // on top of each other.
+  //
+  // What that CSS surface has to survive is in test_css.cpp; this only holds
+  // the line that the ordinary case still arrives intact.
+  const auto out = sanitize(
+      R"(<style>.a{color:red}@media (max-width:600px){.a{width:100%}}</style>)"
+      R"(<div class="a">x</div>)");
+  EXPECT_TRUE(contains(out.html, R"(class="a")"));
+  EXPECT_TRUE(contains(out.html, "color:red"));
+  EXPECT_TRUE(contains(out.html, "@media"));
+  EXPECT_TRUE(contains(out.html, "width:100%"));
+}
+
+TEST(Style, TheStyleElementCarriesNoAttributesOfItsOwn) {
+  // `type` and `media` are the only attributes senders put on <style>, and
+  // neither survives `attribute_allowed`. Emitting the bare tag means the
+  // element cannot carry a value nobody vetted -- including `media`, which is
+  // honoured only inside the stylesheet, where it can actually be parsed.
+  const auto html = clean(
+      R"HTML(<style type="text/css" media="screen" onload="alert(1)">.b{color:blue}</style>)HTML");
+  EXPECT_TRUE(contains(html, "<style>"));
+  EXPECT_FALSE(contains(html, "text/css"));
+  EXPECT_FALSE(contains(html, "onload"));
+  EXPECT_FALSE(contains(html, "alert"));
+  EXPECT_TRUE(contains(html, "color:blue"));
+}
+
+TEST(Style, AnUnbalancedClosingStyleTagIsNotEmitted) {
+  // An opening <style> consumes its own closing tag, so a `</style>` reaching
+  // the general path never had an opener. Passing it through would put a stray
+  // close in the output, where it truncates a LATER block early and spills the
+  // rest of that block into the page as text.
+  const auto html = clean("<p>a</p></style><p>b</p>");
+  EXPECT_FALSE(contains(html, "</style>"));
+  EXPECT_TRUE(contains(html, "a"));
+  EXPECT_TRUE(contains(html, "b"));
 }
 
 TEST(Style, StillDropsEventHandlersAlongsideStyle) {
@@ -684,4 +739,25 @@ TEST(StyleEntities, StillRejectsEntityEncodedUrlSchemes) {
   const auto out = sanitize(
       R"HTML(<td style="background-image:url(&#106;avascript:alert(1))">x</td>)HTML");
   EXPECT_FALSE(contains(out.html, "javascript"));
+}
+
+TEST(Style, KeepsChildCombinatorSelectors) {
+  // `>` was refused on a first pass, which dropped every rule using a child
+  // combinator. It is safe: `<` is what closes a raw-text element and stays
+  // refused, while a lone `>` cannot. Real stylesheets use it — 3 of 43 rules
+  // in the Rainier Arms email, and a layout rule elsewhere would have gone the
+  // same way silently.
+  const auto out = sanitize(
+      "<style>.wrap > .col{width:50%}</style><div class=\"wrap\">x</div>");
+  EXPECT_TRUE(contains(out.html, "width:50%"));
+  EXPECT_TRUE(contains(out.html, ">"));
+}
+
+TEST(Style, StillRefusesLessThanInASelector) {
+  // The breakout character. Refusing it is what stops a selector from ending
+  // the <style> element and opening a tag of its own.
+  const auto out = sanitize(
+      "<style>a[title=\"</style><script>alert(1)</script>\"]{color:red}</style>");
+  EXPECT_FALSE(contains(out.html, "<script"));
+  EXPECT_FALSE(contains(out.html, "alert"));
 }

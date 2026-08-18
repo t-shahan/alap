@@ -9,5 +9,17 @@
   "max_low_contrast_messages": 2,
   "min_images_loaded_fraction": 0.97,
   "min_sample": 20,
-  "min_worst_scale": 0.8
+  "min_worst_scale": 0.8,
+  "cases": {
+    "rainier_grid": {
+      "_comment": "Back in Stock & Ready to Go at Rainier Arms. 16 product tiles, 130px wide. Collapsed to one column they occupy 16 bands and the message is 10863px tall; restored, 2 per band across 8 bands. min_multicolumn_bands is 4 rather than 8 so the grid may legitimately come back 2-up or 4-up. max_doc_height corroborates the geometry and is not the thing under test: 10863px broken, ~6926px for the real two-column grid, 7719px for a stylesheet stand-in measured here, so 8500 clears every healthy figure by a wide margin and the broken one by 2363px.",
+      "min_tiles": 12,
+      "min_multicolumn_bands": 4,
+      "max_doc_height": 8500
+    },
+    "gphotos_cta": {
+      "_comment": "Taylor, revisit your memories in Google Photos. Ships two 'See your photos' anchors, one desktop-only. Broken, both render and overlap (measured at left 242 and left 291, same band). Asserted on what is VISIBLE, never on the DOM count: leaving the duplicate in the document and hiding it from the stylesheet is a correct fix and must pass.",
+      "visible_cta": 1
+    }
+  }
 }

@@ -3,3 +3,4 @@ out/
 w[0-9]*/
 res*.json
 *.png
+__pycache__/

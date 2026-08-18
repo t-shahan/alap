@@ -21,6 +21,16 @@
 /// every tag or attribute the author did not think of becomes a hole. Here,
 /// anything not explicitly permitted is dropped.
 ///
+/// `<style>` blocks and `class` attributes are the one place this admits
+/// something structural rather than dropping it. They used to be discarded,
+/// and the cost was not cosmetic: every one of 14 messages sampled from the
+/// Gmail API carried a `<style>` block addressed by class, and 13 used
+/// `@media` or a show/hide class, so a three-across product grid arrived one
+/// item per row and elements meant to be hidden on desktop drew on top of the
+/// ones replacing them. The stylesheet is parsed and filtered through the same
+/// property allowlist as the `style` attribute — one allowlist, so the two
+/// paths cannot drift.
+///
 /// A tokenizer rather than regular expressions, because regex-based HTML
 /// sanitizers are a well-known source of bypasses — nested quoting, malformed
 /// tags, comment tricks and encoded delimiters all defeat pattern matching.
@@ -42,6 +52,11 @@ struct SanitizeOptions {
   /// them by default is a privacy decision, and matches what Apple Mail and
   /// Gmail do. Inline `cid:` images referencing our own attachments are always
   /// kept — they are already downloaded and leak nothing.
+  ///
+  /// Covers `background-image` in a `<style>` block as well as `<img src>`. A
+  /// stylesheet reaches the same logging endpoint by the same request, so
+  /// honouring the preference in one place and not the other would have been a
+  /// hole rather than a policy.
   bool allow_remote_images = false;
 };
 
@@ -51,19 +66,25 @@ struct SanitizeResult {
   std::string html;
   /// Remote images suppressed. Surfaced so the UI can offer "load images".
   int blocked_remote_images = 0;
-  /// True when script, style or similar executable content was discarded.
+  /// True when script, remote-fetching CSS or similar active content was
+  /// discarded. A `<style>` block is no longer active content by definition —
+  /// what it contains decides, so a block whose rules all pass leaves this
+  /// false.
   bool removed_active_content = false;
 };
 
 /// @brief Sanitizes untrusted HTML against a strict allowlist.
 ///
 /// Guarantees on the output:
-///   - no `<script>`, `<style>`, `<iframe>`, `<object>`, `<embed>`, `<form>`,
-///     `<link>`, `<meta>` or `<base>`, and none of their contents
+///   - no `<script>`, `<iframe>`, `<object>`, `<embed>`, `<form>`, `<link>`,
+///     `<meta>` or `<base>`, and none of their contents
 ///   - no `on*` event-handler attributes
 ///   - no `javascript:`, `vbscript:` or `data:` URLs
-///   - no `style` or `class` attributes, so remote CSS and layout attacks
-///     cannot be smuggled in
+///   - CSS only through one property allowlist, whether it arrives in a
+///     `style` attribute or a `<style>` block: no positioning, no `content`,
+///     no `expression()`, no `@import`, no custom properties
+///   - nothing inside `<style>` that could close it early, since a raw-text
+///     element cannot be escaped its way out of
 ///   - every `<a>` gains `rel="noopener noreferrer"`
 ///   - all text content is entity-escaped
 [[nodiscard]] SanitizeResult sanitize(const std::string& input,

@@ -3,16 +3,43 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 import subprocess, sys, os, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from build_doc import build, app_fit_script
+import cases
 os.environ["PATH"] = "/opt/homebrew/bin:" + os.environ["PATH"]
 
 WIDTH = sys.argv[1]; LIMIT = int(sys.argv[2])
 CHECK = "--check" in sys.argv
 FILTER = "and b.html_body ~ 'data-blocked-src=\"http://'" if "--http" in sys.argv else ""
-sql = f"""select m.id from message m join message_body b on b.message_id=m.id
- where b.html_body is not null and length(b.html_body)>1500 {FILTER}
- order by m.sent_at desc limit {LIMIT};"""
+
+# Targeted mode. Newest-first is the right default for measuring a population,
+# but it is useless for reproducing one message: a regression that only shows up
+# in a product-grid template drops off the front of the list within a day, and
+# then the harness cannot be pointed at it at all. `--subject` renders the
+# messages whose subject contains this text, newest first. Matching is a plain
+# substring so a partial title is enough to find one.
+SUBJECT = None
+if "--subject" in sys.argv:
+    i = sys.argv.index("--subject")
+    if i + 1 >= len(sys.argv):
+        sys.exit("--subject needs the subject text to look for")
+    SUBJECT = sys.argv[i + 1]
+
+if SUBJECT is None:
+    sql = f"""select m.id from message m join message_body b on b.message_id=m.id
+     where b.html_body is not null and length(b.html_body)>1500 {FILTER}
+     order by m.sent_at desc limit {LIMIT};"""
+else:
+    # One column only. Message ids are composite and contain a literal `|`,
+    # which is also psql's unaligned field separator -- select the subject
+    # alongside and there is no way to split the two back apart.
+    esc = SUBJECT.replace("$sub$", "")
+    sql = f"""select m.id from message m join message_body b on b.message_id=m.id
+     where b.html_body is not null and m.subject like '%' || $sub${esc}$sub$ || '%' {FILTER}
+     order by m.sent_at desc limit {LIMIT};"""
 ids = subprocess.run(["psql","-d","mailapp","-Atc",sql],capture_output=True,text=True).stdout.strip().split("\n")
-os.makedirs(os.path.join(HERE, f"w{WIDTH}"), exist_ok=True)
+if SUBJECT is not None and not any(i.strip() for i in ids):
+    print(f"no message matching {SUBJECT!r} in this database")
+OUT = os.path.join(HERE, f"w{WIDTH}")
+os.makedirs(OUT, exist_ok=True)
 JS = os.path.join(HERE, "app_fit.js"); open(JS, "w").write(app_fit_script())
 res=[]
 dark_docs=[]
@@ -69,16 +96,28 @@ if ok:
 if CHECK:
     base = json.load(open(os.path.join(HERE, "baseline.json")))
     fails = []
-    # Small samples make every rate here noisy; a gate that flaps is a gate
-    # people learn to ignore.
-    if len(ok) < base["min_sample"]:
-        print(f"\nSKIP - {len(ok)} messages rendered, need {base['min_sample']} to judge")
-        sys.exit(0)
     def want(name, actual, limit, cmp):
         if not cmp(actual, limit):
             fails.append(f"{name}: {actual} (limit {limit})")
-    want("render errors", len(errs), base["max_render_errors"], lambda a, b: a <= b)
-    if ok:
+
+    # Named messages first, and deliberately OUTSIDE the sample-size skip below.
+    # Each one is a single-message assertion about a single layout; how many
+    # other messages happened to render says nothing about whether the Rainier
+    # grid still has two columns. Run these on an eight-message sweep and they
+    # must still hold.
+    case_fails, case_notes = cases.check_all(WIDTH, build, JS, OUT, base["cases"])
+    print("\nnamed regressions")
+    for line in case_notes:
+        print(line)
+    fails.extend(case_fails)
+
+    # Small samples make every rate here noisy; a gate that flaps is a gate
+    # people learn to ignore.
+    if len(ok) < base["min_sample"]:
+        print(f"\nSKIP - {len(ok)} messages rendered, need {base['min_sample']} to judge "
+              "the population thresholds")
+    elif ok:
+        want("render errors", len(errs), base["max_render_errors"], lambda a, b: a <= b)
         mism = [d for d in ok if d.get("appHeight", -1) >= 0
                 and abs(d["appHeight"] - d["post"]["docScrollHeight"]) > 2]
         want("height mismatches", len(mism), base["max_height_mismatches"], lambda a, b: a <= b)
