@@ -300,32 +300,45 @@ struct BulkActionTests {
     #expect(bridge.sent.filter { $0.kind == "mutate" }.isEmpty)
   }
 
-  @Test("Selecting one thread still drives the reading pane")
-  func singleSelectionStillOpensAThread() {
-    // Multi-select must not cost the ordinary case: one selected row is still
-    // one message in the reading pane.
+  @Test("Ticking one row does not open it")
+  func singleSelectionDoesNotOpen() {
+    // This used to assert the opposite. Ticking and opening were one value, so
+    // clicking a row to read it also ticked its checkbox — the bug this split
+    // exists to fix. A checkbox marks a row for a bulk action; it does not
+    // navigate.
     let (store, _) = store(threadCount: 5)
     store.selection = ["t2"]
-    #expect(store.selectedThreadID == "t2")
+    #expect(store.selectedThreadID == nil)
+    #expect(store.hasSelection)
     #expect(!store.hasMultipleSelected)
   }
 
-  @Test("Several selected means no single message to show")
-  func multiSelectionClearsTheReadingPane() {
+  @Test("Several ticked rows are reported as a bulk selection")
+  func multiSelectionIsReported() {
     let (store, _) = store(threadCount: 5)
+    store.selectedThreadID = "t0"
     store.selection = ["t1", "t2"]
-    #expect(store.selectedThreadID == nil)
+    // The reading pane switches to the bulk panel off `hasMultipleSelected`,
+    // but what is OPEN is untouched — unticking restores the message rather
+    // than leaving the pane empty.
     #expect(store.hasMultipleSelected)
+    #expect(store.selectedThreadID == "t0")
   }
 
-  @Test("Keyboard navigation collapses the selection rather than adding to it")
-  func keyboardNavigationCollapses() {
+  @Test("Keyboard navigation moves without disturbing the ticked rows")
+  func keyboardNavigationLeavesTicksAlone() {
+    // This used to assert that moving COLLAPSED the selection to the row moved
+    // to, which was the only sane behaviour while the two were one value.
+    // Now moving is just moving: a batch ticked for archiving survives reading
+    // something while deciding.
     let (store, _) = store(threadCount: 5)
     store.selectAll()
+    let ticked = store.selection
 
     store.selectedThreadID = "t3"
 
-    #expect(store.selection == ["t3"], "J/K should move, not accumulate")
+    #expect(store.selection == ticked, "reading should not untick anything")
+    #expect(store.selectedThreadID == "t3")
   }
 }
 
@@ -369,7 +382,9 @@ struct SelectionVisibilityTests {
 
     store.toggleSelection(of: "t2")
 
-    #expect(store.selection == ["t0", "t2"])
+    // "t0" is OPEN, not ticked, so ticking "t2" leaves exactly one ticked row.
+    #expect(store.selection == ["t2"])
+    #expect(store.selectedThreadID == "t0", "reading should not have moved")
   }
 
   @Test("Toggling a selected thread removes it")
@@ -477,15 +492,18 @@ struct BulkPanelTests {
 
   @Test("The panel replaces the reading pane only past one selection")
   func panelOnlyForRealBulk() {
-    // One selected row is ordinary reading and must still open the message.
+    // One ticked row is not yet a bulk operation, and whatever is open stays
+    // open behind it.
     let (store, _) = store([("a", true, false), ("b", true, false)])
+    store.selectedThreadID = "a"
 
     store.selection = ["a"]
     #expect(!store.hasMultipleSelected)
-    #expect(store.selectedThreadID == "a")
+    #expect(store.selectedThreadID == "a", "the open message is untouched")
 
     store.selection = ["a", "b"]
     #expect(store.hasMultipleSelected)
+    #expect(store.selectedThreadID == "a", "and still untouched behind the panel")
   }
 
   @Test("Acting from the panel returns to reading the next conversation")
@@ -615,15 +633,19 @@ struct ToolbarAvailabilityTests {
     #expect(store.selection.isEmpty)
   }
 
-  @Test("A single selection clears too")
-  func singleSelectionClears() {
+  @Test("Select All ticks everything when nothing is ticked")
+  func selectAllFromAnOpenMessage() {
+    // Reading a message no longer counts as a selection, so Select All has
+    // something to do here rather than clearing. It also leaves the message
+    // open: the reader can still see what they were reading.
     let (store, _) = store(["a", "b"])
     store.selectedThreadID = "a"
 
+    #expect(!store.selectAllWouldClear)
     store.toggleSelectAll()
 
-    #expect(store.selection.isEmpty)
-    #expect(store.selectedThreadID == nil)
+    #expect(store.selection.count == 2)
+    #expect(store.selectedThreadID == "a")
   }
 
   @Test("Select All is unavailable in an empty mailbox")
@@ -634,21 +656,31 @@ struct ToolbarAvailabilityTests {
 
   @Test("Bulk actions stay available with several selected")
   func bulkActionsAvailableDuringMultiSelect() {
-    // The regression: `selectedThread` is deliberately nil past one selection,
-    // so a rule keyed on it switched the actions off during precisely the
-    // operation they exist for.
+    // The original regression: a rule keyed on `selectedThread` switched the
+    // bulk actions off during precisely the operation they exist for.
     let (store, _) = store(["a", "b", "c"])
     store.selectAll()
 
-    #expect(store.selectedThread == nil, "no single thread when several are selected")
-    #expect(store.hasSelection, "but the actions must still be available")
+    #expect(store.hasSelection, "the actions must be available")
+    #expect(store.selectionCount == 3)
   }
 
-  @Test("Bulk actions are available for a single selection too")
+  @Test("Bulk actions are available once a row is ticked")
   func bulkActionsAvailableForOne() {
     let (store, _) = store(["a", "b"])
-    store.selectedThreadID = "a"
+    store.toggleSelection(of: "a")
     #expect(store.hasSelection)
+  }
+
+  @Test("Reading a message does not arm the bulk actions")
+  func openingDoesNotArmBulkActions() {
+    // The list-header actions operate on ticked rows. Opening a message to
+    // read it is not a selection, so they stay unavailable — the reading
+    // pane's own Archive and Trash are what act on the open message.
+    let (store, _) = store(["a", "b"])
+    store.selectedThreadID = "a"
+    #expect(!store.hasSelection)
+    #expect(store.selectedThread != nil, "but the message is open")
   }
 
   @Test("Bulk actions are unavailable with nothing selected")

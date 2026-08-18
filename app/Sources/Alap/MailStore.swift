@@ -105,14 +105,15 @@ final class MailStore {
   /// Keeping a separate `selectedThreadID` as the real value and deriving the
   /// set from it would mean two representations that can disagree, and every
   /// bulk action would have to ask which one to trust.
-  var selection: Set<String> = [] {
-    didSet {
-      guard selection != oldValue else { return }
-      // The reading pane shows one message; with several selected there is no
-      // single message to show, so it shows the count instead.
-      selectedThreadID = selection.count == 1 ? selection.first : nil
-    }
-  }
+  /// Rows the reader has TICKED, for a bulk action. Independent of what is
+  /// open: ticking a checkbox does not change what is being read, and reading
+  /// a message does not tick it.
+  ///
+  /// These were one value, with `selectedThreadID` writing back into this set.
+  /// That made clicking a row to READ it tick its checkbox and put the window
+  /// into bulk-selection mode — a state the reader never asked for and could
+  /// only leave by finding the toggle.
+  var selection: Set<String> = []
 
   var selectionCount: Int { selection.count }
 
@@ -151,13 +152,6 @@ final class MailStore {
     didSet {
       guard selectedThreadID != oldValue else { return }
       selectedThread = threads.first { $0.id == selectedThreadID }
-      // Keyboard navigation assigns a single id. Collapsing the set to match
-      // is what makes J/K feel like moving rather than accumulating.
-      if let id = selectedThreadID, selection != [id] {
-        selection = [id]
-      } else if selectedThreadID == nil, selection.count <= 1 {
-        selection = []
-      }
       scheduleDetailSubscription()
       scheduleMarkRead()
     }
@@ -324,11 +318,11 @@ final class MailStore {
   private func scheduleMarkRead() {
     markReadTask?.cancel()
 
-    // Ticking checkboxes to archive a batch is not reading them, so this only
-    // fires for a single open conversation.
-    guard selection.count == 1, let thread = selectedThread, thread.isUnread else {
-      return
-    }
+    // Keyed to the OPEN conversation. It used to also require exactly one
+    // ticked row, which was the same thing back when opening ticked; now that
+    // they are separate, ticking a batch has no bearing on whether the message
+    // being read counts as read.
+    guard let thread = selectedThread, thread.isUnread else { return }
 
     let dwell = markReadDwell
     markReadTask = Task { [weak self] in
