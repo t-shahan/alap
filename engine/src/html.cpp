@@ -885,8 +885,23 @@ SanitizeResult sanitize(const std::string& input, const SanitizeOptions& options
       }
 
       if (attribute.name == "style") {
-        const std::string filtered =
-            sanitize_style(attribute.value, result.removed_active_content);
+        // DECODED before parsing, exactly as a browser does it.
+        //
+        // `&#39;` ends in a semicolon, so parsing the raw attribute split the
+        // declaration list inside the entity — a quoted font name lost its
+        // stack and every declaration up to the next well-formed one went with
+        // it. 17,858 of 32,396 stored bodies carry an entity in a style
+        // attribute.
+        //
+        // It also closes a bypass: `width:&#101;xpression(...)` did not match
+        // the "expression" check while encoded, and the browser decodes it
+        // before the CSS parser ever sees it. Checking the decoded text is the
+        // only order that means anything.
+        //
+        // Re-escaped on the way out by the caller below, so the attribute is
+        // still well-formed markup.
+        const std::string filtered = sanitize_style(
+            unescape_entities(attribute.value), result.removed_active_content);
         if (filtered.empty()) continue;
         out += " style=\"" + escape_text(filtered) + "\"";
         continue;

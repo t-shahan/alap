@@ -630,3 +630,58 @@ TEST(VoidElements, AClosedScriptStillSwallowsItsContents) {
   EXPECT_TRUE(contains(result.html, "a"));
   EXPECT_TRUE(contains(result.html, "b"));
 }
+
+// MARK: - Entities inside style attributes
+//
+// `&#39;` ends in a semicolon, and the declaration splitter treated that as a
+// separator — so it cut INSIDE the entity. A quoted font name is the common
+// case, and the damage runs past it: everything from the entity to the next
+// well-formed declaration is discarded.
+//
+// 17,858 of 32,396 stored bodies have an entity inside a style attribute.
+
+TEST(StyleEntities, KeepsAQuotedFontStack) {
+  // The exact attribute from a Google Photos button.
+  const auto html = clean(
+      R"HTML(<a style="color:#fff; font-family: &#39;Google Sans&#39;,&#39;Roboto&#39;, Arial, sans-serif; font-weight:500">x</a>)HTML");
+  EXPECT_TRUE(contains(html, "google sans"));
+  EXPECT_TRUE(contains(html, "roboto"));
+  EXPECT_TRUE(contains(html, "sans-serif"));
+  EXPECT_TRUE(contains(html, "font-weight:500"));
+}
+
+TEST(StyleEntities, DoesNotLoseDeclarationsAfterAnEntity) {
+  const auto html = clean(
+      R"HTML(<td style="font-family:&#39;Helvetica Neue&#39;;background-color:#003366;padding:10px">x</td>)HTML");
+  EXPECT_TRUE(contains(html, "background-color:#003366"));
+  EXPECT_TRUE(contains(html, "padding:10px"));
+}
+
+TEST(StyleEntities, SurvivesTheRoundTripThroughEscaping) {
+  // Decoded for parsing, re-escaped on the way out, so the attribute is still
+  // well-formed markup and the quotes cannot break out of it.
+  const auto html = clean(
+      R"HTML(<p style="font-family:&quot;Times New Roman&quot;,serif">x</p>)HTML");
+  EXPECT_FALSE(contains(html, "style=\"font-family:\"Times"));
+  EXPECT_TRUE(contains(html, "times new roman"));
+}
+
+TEST(StyleEntities, StillRejectsDangerousValuesAfterDecoding) {
+  // Decoding must not become a bypass: an entity-encoded payload has to be
+  // caught AFTER it is decoded, which is the whole reason to decode first.
+  const auto out = sanitize(
+      R"HTML(<div style="width:&#101;xpression(alert(1));color:red">x</div>)HTML");
+  EXPECT_FALSE(contains(out.html, "expression"));
+  // And not merely still encoded: asserting on the decoded spelling alone
+  // passes while the encoded payload sails through to a browser that decodes
+  // it. The declaration has to be GONE.
+  EXPECT_FALSE(contains(out.html, "&#101;"));
+  EXPECT_FALSE(contains(out.html, "width:"));
+  EXPECT_TRUE(contains(out.html, "color:red"));
+}
+
+TEST(StyleEntities, StillRejectsEntityEncodedUrlSchemes) {
+  const auto out = sanitize(
+      R"HTML(<td style="background-image:url(&#106;avascript:alert(1))">x</td>)HTML");
+  EXPECT_FALSE(contains(out.html, "javascript"));
+}

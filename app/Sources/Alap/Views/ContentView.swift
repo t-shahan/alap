@@ -403,7 +403,9 @@ private struct MessageListPane: View {
       accountTint: store.tint(forAccount: thread.accountId),
       isSelected: store.selection.contains(thread.id),
       isSelecting: !store.selection.isEmpty,
-      toggle: { store.toggleSelection(of: thread.id) }
+      isOpen: thread.id == store.selectedThreadID,
+      toggle: { store.toggleSelection(of: thread.id) },
+      flag: { Task { await store.toggleStar(thread) } }
     )
     .tag(thread.id)
       // List is lazy, so a row appearing IS the viewport reaching it. That
@@ -436,8 +438,11 @@ private struct MessageListPane: View {
     Button(thread.isUnread ? "Mark as Read" : "Mark as Unread") {
       Task { await store.toggleReadOnSelection() }
     }
+    // `thread`, not the selection: this menu belongs to the row under the
+    // pointer, and `toggleStarOnSelection` acts on whatever is OPEN — so
+    // right-clicking any other row flagged the wrong conversation.
     Button(thread.isStarred ? "Remove Flag" : "Flag") {
-      Task { await store.toggleStarOnSelection() }
+      Task { await store.toggleStar(thread) }
     }
   }
 
@@ -509,10 +514,27 @@ private struct ThreadListRow: View {
   /// extending it means hunting for a control that only appears under the
   /// pointer, one row at a time.
   let isSelecting: Bool
+  /// True for the one row showing in the reading pane.
+  ///
+  /// Distinct from `isSelected`, which is the checkbox. Reading a conversation
+  /// does not tick it, so the row that is OPEN is the one whose flag is worth
+  /// offering without being pointed at.
+  let isOpen: Bool
   let toggle: () -> Void
+  let flag: () -> Void
 
   @Environment(\.paneLayout) private var layout
   @State private var isHovering = false
+
+  private var affordances: ThreadRowAffordances {
+    ThreadRowAffordances(
+      isHovering: isHovering,
+      isOpen: isOpen,
+      isChecked: isSelected,
+      isSelecting: isSelecting,
+      isFlagged: thread.isStarred
+    )
+  }
 
   var body: some View {
     HStack(spacing: 0) {
@@ -524,24 +546,58 @@ private struct ThreadListRow: View {
         .frame(width: 2)
         .padding(.vertical, Theme.Space.tight)
 
-      // Appears on hover, and stays for every row once a selection exists.
-      // Without it, multi-select is discoverable only by knowing to hold ⌘ —
-      // which is a feature nobody finds.
-      if isSelecting || isHovering {
-        Button(action: toggle) {
-          Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-            .font(.system(size: 13))
-            .foregroundStyle(isSelected ? Theme.Accent.blue : Theme.Ink.tertiary)
-            .frame(width: 22)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .padding(.leading, Theme.Space.snug)
-      }
+      gutter
 
       rowContent
     }
     .onHover { isHovering = $0 }
+  }
+
+  /// The two controls that act on this row alone.
+  ///
+  /// Both slots are held open whether or not their control is showing, and
+  /// only the opacity changes. Inserting them conditionally moved every row's
+  /// text sideways as the pointer swept down the list — the unread dot in
+  /// `rowContent` already avoids exactly this ("always occupying its slot so
+  /// names stay aligned"), and with two controls the jump would have been
+  /// ~50pt rather than ~28pt.
+  private var gutter: some View {
+    HStack(spacing: 0) {
+      // Without it, multi-select is discoverable only by knowing to hold ⌘ —
+      // which is a feature nobody finds.
+      Button(action: toggle) {
+        Image(systemName: affordances.checkboxSymbol)
+          .font(.system(size: 13))
+          .foregroundStyle(isSelected ? Theme.Accent.blue : Theme.Ink.tertiary)
+          .frame(width: 20, height: 22)
+          .contentShape(.rect)
+      }
+      .buttonStyle(.plain)
+      .opacity(affordances.showsCheckbox ? 1 : 0)
+      .allowsHitTesting(affordances.showsCheckbox)
+      .accessibilityLabel(isSelected ? "Deselect conversation" : "Select conversation")
+
+      // Flagging one conversation used to mean ticking it first, or opening
+      // it and crossing to the reading pane's toolbar. Both are detours from
+      // a list you are already pointing at.
+      Button(action: flag) {
+        Image(systemName: affordances.flagSymbol)
+          .font(.system(size: Theme.Size.flagIcon))
+          .foregroundStyle(thread.isStarred ? Theme.Accent.flag : Theme.Ink.tertiary)
+          .frame(width: 18, height: 22)
+          .contentShape(.rect)
+      }
+      .buttonStyle(.plain)
+      .opacity(affordances.showsFlag ? 1 : 0)
+      .allowsHitTesting(affordances.showsFlag)
+      .accessibilityLabel(affordances.flagLabel)
+      // S is named only on the open row, because that is the only row it
+      // acts on — advertising it on every row would teach a shortcut that
+      // flags a different conversation than the one being pointed at.
+      .help(isOpen ? "\(affordances.flagLabel) (S)" : affordances.flagLabel)
+    }
+    .padding(.leading, Theme.Space.tight)
+    .animation(Theme.Motion.quick, value: affordances)
   }
 
   private var rowContent: some View {
@@ -577,15 +633,9 @@ private struct ThreadListRow: View {
           .lineLimit(layout.showsRowPreview ? 2 : 1)
       }
       .padding(.leading, Theme.Space.wide)
-
-      if thread.isStarred {
-        Image(systemName: "flag.fill")
-          .font(.system(size: Theme.Size.flagIcon - 2))
-          .foregroundStyle(Theme.Accent.flag)
-          .padding(.leading, Theme.Space.wide)
-      }
     }
-    .padding(.horizontal, Theme.Space.wide)
+    .padding(.leading, Theme.Space.tight)
+    .padding(.trailing, Theme.Space.wide)
     .padding(.vertical, Theme.Space.loose)
   }
 }

@@ -1120,8 +1120,12 @@ final class MailStore {
     }
 
     guard recordUndo else { return }
-    undoStack.record((isStarred ? "Flagged " : "Unflagged ") + "\(rows.count)") {
-      [weak self] in
+    // Spelled out rather than "Flagged 1", which is what the banner used to
+    // read. Flagging one row at a time from the list made that the common
+    // case rather than the rare one.
+    let verb = isStarred ? "Flagged" : "Unflagged"
+    let noun = rows.count == 1 ? "1 conversation" : "\(rows.count) conversations"
+    undoStack.record("\(verb) \(noun)") { [weak self] in
       await self?.setStarred(rows, isStarred: !isStarred, recordUndo: false)
     }
   }
