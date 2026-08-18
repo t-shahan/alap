@@ -761,3 +761,23 @@ TEST(Style, StillRefusesLessThanInASelector) {
   EXPECT_FALSE(contains(out.html, "<script"));
   EXPECT_FALSE(contains(out.html, "alert"));
 }
+
+TEST(Style, KeepsAStylesheetThatLivesInTheHead) {
+  // Every other <style> test uses a bare fragment. Real mail does not: it ships
+  // a full document with the stylesheet in the head. `head` was among the tags
+  // whose CONTENTS are discarded, so the head took the stylesheet with it and
+  // the whole feature did nothing on real messages while the suite stayed
+  // green. Both reported emails — Rainier Arms and Google Photos — lost their
+  // stylesheet exactly this way.
+  const auto out = sanitize(
+      "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+      "<title>Subject line</title>"
+      "<style>.col{width:50%}</style></head>"
+      "<body><div class=\"col\">x</div></body></html>");
+  EXPECT_TRUE(contains(out.html, "width:50%"));
+  EXPECT_TRUE(contains(out.html, "class=\"col\""));
+  // The head's other children are still dropped, including the title TEXT,
+  // which would otherwise render as a stray line above the message.
+  EXPECT_FALSE(contains(out.html, "Subject line"));
+  EXPECT_FALSE(contains(out.html, "charset"));
+}

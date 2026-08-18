@@ -38,6 +38,15 @@ const std::unordered_set<std::string>& allowed_tags() {
 /// These carry executable or externally-fetched material rather than text, so
 /// preserving what is inside them would defeat the point.
 ///
+/// `head` is deliberately ABSENT. It was here, and it meant the entire head —
+/// including the `<style>` block — was discarded before the stylesheet
+/// handling could ever see it. Real mail puts its stylesheet in the head, so
+/// the whole feature silently did nothing on real messages while every test
+/// passed: the tests all used a bare `<style>` fragment. The head's own
+/// children are dropped by the allowlist anyway (`meta`, `link`, `base` as
+/// void tags, `title` still by content), so nothing is gained by discarding
+/// the element wholesale and a stylesheet is lost by it.
+///
 /// Every tag here must actually HAVE contents — that is, a closing partner.
 /// `link`, `meta` and `base` used to be in this set and are void elements with
 /// no closing tag, so the scan for `</link>` ran off the end of the document
@@ -52,7 +61,7 @@ const std::unordered_set<std::string>& allowed_tags() {
 const std::unordered_set<std::string>& void_content_tags() {
   static const std::unordered_set<std::string> tags = {
       "script", "iframe", "object", "embed", "applet", "form",
-      "noscript", "template", "svg", "math", "head", "title",
+      "noscript", "template", "svg", "math", "title",
   };
   return tags;
 }
