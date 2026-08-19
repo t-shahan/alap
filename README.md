@@ -102,7 +102,8 @@ git clone <your-fork> && cd alap
 npm install
 ```
 
-Create a `.env` in the repository root:
+Create a `.env` in the repository root — `cp .env.example .env` gets you the
+skeleton, and the annotated version is here:
 
 ```ini
 # All three point at the same local database. Zero wants them separate so they
@@ -261,13 +262,18 @@ query arguments that silently match one account instead of all of them.
 
 ## Status
 
-Working: multi-account Gmail sync, unified inbox, full-text and fuzzy search,
-keyboard triage, HTML rendering with inline images, attachment download,
-replies, three themes.
+**Pre-alpha.** It runs, it is used daily against a real 32,000-message mailbox,
+and it has no installed base — so anything here can change without ceremony.
+There is no release build: you build it yourself.
 
-Not yet: composing new messages, reply-all, attachments on send, undo,
-attachment cache eviction, and anything to do with distribution — this is not
-notarised and will not open on someone else's Mac without building it.
+Working: multi-account Gmail sync, unified inbox, full-text and fuzzy search,
+keyboard triage, bulk actions, composing and replying, undo, HTML rendering
+with inline images and a privacy-first remote-image policy, attachment download,
+list density, and three themes.
+
+Not yet: reply-all, attachments on send, attachment cache eviction, Dynamic
+Type, and anything to do with distribution — this is not notarised and will not
+open on someone else's Mac without building it.
 
 Not planned: IMAP. The sync model leans on Gmail's history API, and pretending
 otherwise would be a worse client for both.
