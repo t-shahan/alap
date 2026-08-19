@@ -125,7 +125,7 @@ struct ThreadListRow: View {
           // Blue as CHECKED STATE on a selection control: the platform's own
           // idiom, not a sixth meaning for the accent.
           .foregroundStyle(isSelected ? Theme.Accent.blue : Theme.Ink.tertiary)
-          .frame(width: 20, height: 22)
+          .frame(width: Theme.Size.hitTarget, height: Theme.Size.hitTarget)
           .contentShape(.rect)
       }
       .buttonStyle(.plain)
@@ -139,7 +139,7 @@ struct ThreadListRow: View {
         Image(systemName: affordances.flagSymbol)
           .font(Theme.Icon.small)
           .foregroundStyle(thread.isStarred ? Theme.Accent.flag : Theme.Ink.tertiary)
-          .frame(width: 18, height: 22)
+          .frame(width: Theme.Size.hitTarget, height: Theme.Size.hitTarget)
           .contentShape(.rect)
       }
       .buttonStyle(.plain)

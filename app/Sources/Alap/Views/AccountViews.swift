@@ -258,7 +258,7 @@ struct ThemeSwitcher: View {
     } label: {
       Image(systemName: next.symbol)
         .font(Theme.Icon.small)
-        .frame(width: 22, height: 22)
+        .frame(width: Theme.Size.hitTarget, height: Theme.Size.hitTarget)
     }
     .buttonStyle(.alap())
     .help("Switch to the \(next.title) appearance")

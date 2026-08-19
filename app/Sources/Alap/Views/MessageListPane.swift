@@ -105,6 +105,9 @@ struct MessageListPane: View {
           Image(systemName: "xmark.circle.fill")
             .font(Theme.Icon.small)
             .foregroundStyle(Theme.Ink.tertiary)
+            // Had no frame at all, so the target was the 12pt glyph itself.
+            .frame(width: Theme.Size.hitTarget, height: Theme.Size.hitTarget)
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Clear search")

@@ -112,7 +112,7 @@ struct ComposerPanel: View {
     Button(action: action) {
       Image(systemName: symbol)
         .font(Theme.Icon.small)
-        .frame(width: 20, height: 20)
+        .frame(width: Theme.Size.hitTarget, height: Theme.Size.hitTarget)
     }
     .buttonStyle(.alap())
     .help(help)

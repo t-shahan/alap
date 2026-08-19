@@ -589,6 +589,22 @@ enum Theme {
     /// Every navigation row in the sidebar, snapped to one value — mailbox,
     /// account, add-account and the theme switcher all used to differ.
     static let rowHeight: CGFloat = 32
+
+    /// The smallest a pressable thing may be.
+    ///
+    /// WCAG 2.2 SC 2.5.8 (Target Size, Minimum) puts the floor at 24×24, and
+    /// six controls here sat under it — the row gutter's checkbox at 20×22 and
+    /// its flag at 18×22 being the ones struck most often by a wide margin,
+    /// once per row on a list that runs to five hundred.
+    ///
+    /// The criterion has a spacing exception, and it does not rescue those two:
+    /// their centres were 19pt apart, inside the 24 the exception requires. So
+    /// the gutter genuinely widens, 44pt to 52pt, and the row content moves
+    /// with it.
+    ///
+    /// This is a FLOOR on the hit target, not on the glyph. Icons keep their
+    /// sizes from `Theme.Icon`; what grows is the region that responds.
+    static let hitTarget: CGFloat = 24
     static let toolbar: CGFloat = 48
   }
 
