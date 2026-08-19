@@ -8,6 +8,9 @@ import SwiftUI
 struct ReadingPane: View {
   @Bindable var store: MailStore
   @Environment(\.colorScheme) private var colorScheme
+  /// The reader's text-size preference, which on macOS reaches an app only
+  /// once it adopts scalable type — see `TextScale`.
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   @Environment(\.paneLayout) private var layout
   /// Height of the rendered message, measured by the web view.
   ///
@@ -221,7 +224,8 @@ struct ReadingPane: View {
         let rendered = MessageDocument.build(
           for: detail.messages,
           isDark: colorScheme == .dark,
-          showRemoteImages: showsRemoteImages
+          showRemoteImages: showsRemoteImages,
+          textScale: TextScale.multiplier(for: dynamicTypeSize)
         )
 
         MessageWebView(

@@ -368,8 +368,11 @@ enum MessageDocument {
   ///   built out of its images; withholding them does not leave a clean text
   ///   version behind, it leaves a skeleton of empty cells. The privacy cost is
   ///   real and the setting states it plainly, but it is no longer the default.
+  /// - Parameter textScale: Multiplies the document's own type, so the message
+  ///   honours the reader's text-size preference. 1.0 is the design size.
   static func build(for messages: [MessageRow], isDark: Bool,
-                    showRemoteImages: Bool = true) -> RenderedMessage {
+                    showRemoteImages: Bool = true,
+                    textScale: Double = 1) -> RenderedMessage {
     let showHeaders = messages.count > 1
     // HTML mail is rendered on WHITE only when it brings colours of its own.
     //
@@ -459,7 +462,7 @@ enum MessageDocument {
       <html><head><meta charset="utf-8">
       <meta http-equiv="Content-Security-Policy"
             content="default-src 'none'; img-src cid: data:\(showRemoteImages ? " https:" : ""); style-src 'unsafe-inline'; font-src 'none'; form-action 'none'; base-uri 'none';\(showRemoteImages ? " upgrade-insecure-requests;" : "")">
-      <style>\(baseCSS(isDark: isDark && !lightCanvas))</style>
+      <style>\(baseCSS(isDark: isDark && !lightCanvas, textScale: textScale))</style>
       </head><body><div id="fit">\(bodies.joined())</div>
       <style>\(chromeCSS(isDark: isDark && !lightCanvas))</style>
       </body></html>
@@ -598,7 +601,7 @@ enum MessageDocument {
   /// Senders that want cell padding set `cellpadding` or an inline style, and
   /// both still work. Choosing the sender's cell metrics for them is not a
   /// mail client's job.
-  private static func baseCSS(isDark: Bool) -> String {
+  private static func baseCSS(isDark: Bool, textScale: Double = 1) -> String {
     let text = isDark ? "#d8dee9" : "#1c1f24"
     let secondary = isDark ? "#8a94a6" : "#6b7280"
     let rule = isDark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)"
@@ -613,7 +616,7 @@ enum MessageDocument {
       html, body {
         margin: 0; padding: 0; background: \(canvas);
         color: \(text);
-        font: 14px/1.55 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        font: \(Self.scaled(14, textScale))px/1.55 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
         -webkit-text-size-adjust: 100%;
       }
       /* The fit pass's target. Breathing room for ordinary mail, surrendered
@@ -636,6 +639,16 @@ enum MessageDocument {
       /* Deliberately no `td`/`th` padding — see the note above. */
       pre { white-space: pre-wrap; word-wrap: break-word; }
       """
+  }
+
+  /// Rounds a design size to a half-point at the reader's scale.
+  ///
+  /// Half-points because WebKit lays out on fractional pixels and rounding to
+  /// whole ones would make the smaller steps of the scale indistinguishable
+  /// from each other.
+  private static func scaled(_ size: Double, _ scale: Double) -> String {
+    let value = (size * scale * 2).rounded() / 2
+    return value == value.rounded() ? "\(Int(value))" : "\(value)"
   }
 
   /// The app's own chrome, emitted after the bodies so it wins ties.
