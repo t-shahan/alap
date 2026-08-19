@@ -529,7 +529,7 @@ private struct FromField: View {
   private func marker(for account: AccountRow?) -> some View {
     if let account {
       AccountMarker(
-        color: Color(hex: account.color) ?? Theme.Accent.muted,
+        color: AccountPalette.tint(for: account.color) ?? Theme.Accent.muted,
         initial: account.shortName.first.map { String($0).uppercased() } ?? "?",
         diameter: 12
       )
