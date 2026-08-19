@@ -75,6 +75,11 @@ struct InstrumentRail: View {
       .disabled(!status.isRecoverable)
       .help(status.isRecoverable ? "Click to retry" : status.label)
       .accessibilityLabel("Sync status: \(status.label)")
+      // The recency ticks once a second, which without this trait means
+      // VoiceOver interrupts with "Synced 12s ago, 13s ago, 14s ago" for as
+      // long as focus rests here. `updatesFrequently` tells it to let the
+      // reader poll the value instead of being read it.
+      .accessibilityAddTraits(.updatesFrequently)
     }
   }
 

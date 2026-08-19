@@ -38,6 +38,14 @@ struct AlapButtonStyle: ButtonStyle {
   }
 
   var role: Role = .quiet
+  /// Foreground when ENABLED, overriding the role's default.
+  ///
+  /// It belongs here rather than on the label. `foregroundStyle` applied
+  /// inside the label sits closer to the leaf than the style's own wrap and
+  /// therefore WINS — so a label that colours itself silently opts out of the
+  /// disabled treatment, which is how two toolbars kept rendering full-strength
+  /// ink while disabled and quietly undid the fix for that.
+  var tint: Color?
   /// Corner radius of the resting fill and of the hover/pressed overlay.
   /// Scales with the element, per the radius scale.
   var radius: CGFloat = Theme.Radius.control
@@ -46,7 +54,8 @@ struct AlapButtonStyle: ButtonStyle {
   var isOn: Bool = false
 
   func makeBody(configuration: Configuration) -> some View {
-    Surface(configuration: configuration, role: role, radius: radius, isOn: isOn)
+    Surface(configuration: configuration, role: role, radius: radius,
+            isOn: isOn, tint: tint)
   }
 
   /// A nested `View` because a `ButtonStyle` cannot hold `@State` or read
@@ -57,6 +66,7 @@ struct AlapButtonStyle: ButtonStyle {
     let role: Role
     let radius: CGFloat
     let isOn: Bool
+    let tint: Color?
 
     @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
@@ -98,6 +108,7 @@ struct AlapButtonStyle: ButtonStyle {
 
     private var foreground: Color {
       guard isEnabled else { return Theme.Ink.disabled }
+      if let tint { return tint }
       switch role {
       case .primary: return .white
       case .secondary: return Theme.Ink.primary
@@ -114,8 +125,9 @@ extension ButtonStyle where Self == AlapButtonStyle {
   static func alap(
     _ role: AlapButtonStyle.Role = .quiet,
     radius: CGFloat = Theme.Radius.control,
-    isOn: Bool = false
+    isOn: Bool = false,
+    tint: Color? = nil
   ) -> AlapButtonStyle {
-    AlapButtonStyle(role: role, radius: radius, isOn: isOn)
+    AlapButtonStyle(role: role, tint: tint, radius: radius, isOn: isOn)
   }
 }

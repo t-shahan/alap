@@ -82,6 +82,7 @@ struct BulkActionPanel: View {
           Circle()
             .fill(store.tint(forAccount: thread.accountId) ?? Theme.Accent.muted)
             .frame(width: 6, height: 6)
+            .accessibilityHidden(true)
 
           Text(thread.displayName)
             .font(Theme.Font.body)
@@ -104,6 +105,16 @@ struct BulkActionPanel: View {
         }
         .padding(.vertical, Theme.Space.tight)
         .padding(.horizontal, Theme.Space.loose)
+        // One element per conversation, not four.
+        //
+        // This panel exists so you can see WHO you are about to archive rather
+        // than just how many — and read as four separate stops per row, twelve
+        // rows deep, that argument does not survive contact with a screen
+        // reader. It is the same defect the thread row fixed, reintroduced in
+        // a surface built in the same pass.
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+          "\(thread.displayName), \(thread.subject), \(thread.displayTime)")
       }
 
       if selected.count > Self.previewLimit {

@@ -202,8 +202,12 @@ struct ComposerPanel: View {
         composer.showsQuote.toggle()
       } label: {
         HStack(spacing: Theme.Space.base) {
+          // Hidden from the tree: the label beside it already says which way
+          // this goes, and without this VoiceOver prepends the glyph's own
+          // generated name ahead of it.
           Image(systemName: composer.showsQuote ? "chevron.down" : "chevron.right")
             .font(Theme.Icon.micro)
+            .accessibilityHidden(true)
           Text(composer.showsQuote ? "Hide quoted text" : "Show quoted text")
             .font(Theme.Font.small)
           Spacer()

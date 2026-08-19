@@ -316,4 +316,61 @@ struct ThemeTests {
     #expect(titles.count == AppTheme.allCases.count)
     #expect(symbols.count == AppTheme.allCases.count)
   }
+
+  // MARK: - Colour that lives outside the palette
+
+  @Test("Every account colour can carry a readable initial")
+  func accountMarkersAreLegible() {
+    // `AccountPalette` is a SECOND colour system, chosen for mutual
+    // distinguishability rather than for contrast, and it never went through
+    // the arithmetic the `Theme` tokens did. Its marker drew a white letter on
+    // the account's own fill, and seven of the eight hues failed 4.5:1 that
+    // way — Amber at 2.61:1, Teal at 2.98:1.
+    //
+    // Teal and Clay are the first two ASSIGNED, which the palette's own
+    // comment picks for separating on lightness so they survive colour
+    // blindness. So the letter that exists as the fallback for exactly that
+    // reader was the least readable part of the marker.
+    for choice in AccountPalette.choices {
+      let fill = try! #require(Color(hex: choice.hex))
+      let ink = AccountMarker.readableInk(on: fill)
+      let ratio = contrast(ink, on: fill)
+      #expect(ratio >= 4.5,
+              "\(choice.name) initial is \(String(format: "%.2f", ratio)):1")
+    }
+  }
+
+  @Test("The self-tinted chip treatment holds on the surfaces that use it",
+        arguments: AppTheme.allCases)
+  func selfTintedChipsAreLegible(theme: AppTheme) {
+    // The pattern is a label in `accentBlueText` over
+    // `accentBlueText.opacity(0.12)` over a surface — Load more and the empty
+    // state's action button. A self-tint drags the backdrop TOWARD the label,
+    // so the composite can fail where the same token on the bare surface
+    // passes, and the old tests never modelled the combination.
+    //
+    // It holds on `base` and `raised`, which is where those two sites live.
+    // It does NOT hold on `control` (4.15-4.39:1) or on `selection`, both of
+    // which land back inside the 3.82-4.37 band the split token exists to
+    // escape. The remote-image banner sits on `control` and was tinted this
+    // way; it is outlined now.
+    //
+    // So this asserts the two usable surfaces pass AND the two unusable ones
+    // still fail — because if a palette change ever made `control` pass, the
+    // banner could go back to a fill, and nobody would think to check.
+    let palette = Palette.for(theme)
+    let accent = palette.accentBlueText
+
+    func ratio(on surface: Color) -> Double {
+      contrast(accent, on: flatten(accent.opacity(0.12), on: surface))
+    }
+
+    for (name, surface) in [("base", palette.base), ("raised", palette.raised)] {
+      #expect(ratio(on: surface) >= 4.5,
+              "\(theme.title): the chip treatment is used on \(name) and fails there")
+    }
+
+    #expect(ratio(on: palette.control) < 4.5,
+            "\(theme.title): control now passes — the banner may use a fill again")
+  }
 }

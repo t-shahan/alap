@@ -378,12 +378,40 @@ struct AccountMarker: View {
   var body: some View {
     Text(initial)
       .font(.system(size: diameter * 0.62, weight: .bold))
-      // White on the account colour rather than an ink level: these hues are
-      // mid-lightness by design, so a palette-following ink would invert
-      // legibility between themes while the swatch stays put.
-      .foregroundStyle(.white)
+      // Black or white, whichever the fill can actually carry.
+      //
+      // This was flatly `.white`, and `AccountPalette`'s eight hues are
+      // mid-lightness by design, so seven of the eight failed 4.5:1 against a
+      // white letter — Amber at 2.61:1, Teal at 2.98:1. Those two are the
+      // FIRST TWO assigned, which the palette's own comment picks for being
+      // "maximally distinguishable" for colour-blind readers. So the letter
+      // that exists as the fallback when hue perception fails was itself
+      // unreadable exactly where it mattered most.
+      //
+      // Black passes on seven of eight and white on the remaining one, so
+      // choosing per-fill clears the floor everywhere without touching the
+      // palette. Not a palette-following ink: the swatch does not change with
+      // the theme, so an ink that did would invert legibility for free.
+      .foregroundStyle(Self.readableInk(on: color))
       .frame(width: diameter, height: diameter)
       .background(color, in: .circle)
       .accessibilityHidden(true)
+  }
+
+  /// The higher-contrast of black and white against a fill.
+  ///
+  /// WCAG relative luminance, the same arithmetic `ThemeTests` and
+  /// `tools/palette-audit/contrast.py` use. The 0.179 threshold is where the
+  /// two ratios cross.
+  static func readableInk(on fill: Color) -> Color {
+    guard let rgb = NSColor(fill).usingColorSpace(.sRGB) else { return .white }
+    func channel(_ value: CGFloat) -> Double {
+      let v = Double(value)
+      return v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+    }
+    let luminance = 0.2126 * channel(rgb.redComponent)
+      + 0.7152 * channel(rgb.greenComponent)
+      + 0.0722 * channel(rgb.blueComponent)
+    return luminance > 0.179 ? .black : .white
   }
 }

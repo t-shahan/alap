@@ -77,6 +77,21 @@ LIGHT = dict(
 
 PALETTES = {"Signature": SIGNATURE, "Dark": DARK, "Light": LIGHT}
 
+#: `AccountPalette` in `AccountViews.swift` — a SECOND colour system, chosen
+#: for mutual distinguishability rather than for contrast, and for a long time
+#: never run through any of this. Its marker draws the account's initial on the
+#: account's own fill, and against a white letter seven of these eight failed
+#: 4.5:1. The two that failed worst are the two assigned first.
+ACCOUNT_PALETTE = [
+    ("Teal", 0x4AA3A2), ("Clay", 0xC2705A), ("Slate", 0x5B7BA8), ("Sage", 0x7D9A6D),
+    ("Plum", 0x8A6A9E), ("Amber", 0xC39A4E), ("Rose", 0xB5697F), ("Steel", 0x6F7D8C),
+]
+
+
+def readable_ink(fill: int) -> int:
+    """Black or white, whichever the fill can carry. Mirrors `AccountMarker`."""
+    return 0x000000 if luminance(fill) > 0.179 else 0xFFFFFF
+
 #: Ink is never drawn on `border`, so it is not a drawable surface.
 DRAWABLE = ("base", "sunken", "raised", "control", "selection")
 
@@ -127,10 +142,26 @@ def _report(palette: dict, name: str) -> list[str]:
     return failures
 
 
+def _report_accounts() -> list[str]:
+    print("\nAccount markers (initial on the account's own fill)")
+    failures = []
+    for name, fill in ACCOUNT_PALETTE:
+        ink = readable_ink(fill)
+        ratio = contrast(ink, fill)
+        chosen = "black" if ink == 0 else "white"
+        mark = "ok " if ratio >= TEXT_FLOOR else "FAIL"
+        print(f"  {mark} {name:<6} {chosen:<5} {ratio:5.2f}"
+              f"   (white alone {contrast(0xFFFFFF, fill):5.2f})")
+        if ratio < TEXT_FLOOR:
+            failures.append(f"Account {name}: {ratio:.2f}")
+    return failures
+
+
 if __name__ == "__main__":
     problems = []
     for name, palette in PALETTES.items():
         problems += _report(palette, name)
+    problems += _report_accounts()
     print()
     if problems:
         print("FAILURES")

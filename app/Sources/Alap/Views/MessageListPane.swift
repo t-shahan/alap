@@ -135,17 +135,16 @@ struct MessageListPane: View {
     action: @escaping () -> Void
   ) -> some View {
     Button(action: action) {
+      // NO `foregroundStyle` here. It would sit inside the style's own wrap
+      // and win, which silently opted these three buttons out of the disabled
+      // treatment — and they spend most of their life disabled. The tint goes
+      // to the style, which is the thing that knows whether they are enabled.
       Image(systemName: symbol)
         .font(Theme.Icon.medium)
-        // Disabled comes from the style's `Ink.disabled` — this used to be
-        // `tertiary.opacity(0.4)`, which measures 1.77:1 and is below the
-        // point where a glyph's shape is discernible at all. These three
-        // buttons spend most of their life in that state.
-        .foregroundStyle(tint ?? Theme.Ink.secondary)
         .padding(.horizontal, Theme.Space.base)
         .padding(.vertical, Theme.Space.tight)
     }
-    .buttonStyle(.alap())
+    .buttonStyle(.alap(tint: tint ?? Theme.Ink.secondary))
     .disabled(!isEnabled)
     .help(label)
     .accessibilityLabel(label)

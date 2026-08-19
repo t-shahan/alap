@@ -360,11 +360,14 @@ private struct ToolbarPill: View {
           Text(title).font(Theme.Font.body).fixedSize()
         }
       }
-      .foregroundStyle(tint)
       .padding(.horizontal, Theme.Space.loose)
       .padding(.vertical, Theme.Space.tight)
     }
-    .buttonStyle(.alap(role == .primary ? .primary : .quiet))
+    // The tint is the STYLE's, not the label's — see `AlapButtonStyle.tint`.
+    // Set on the label it would outrank the disabled treatment, and this pill
+    // is disabled whenever its action is nil.
+    .buttonStyle(.alap(role == .primary ? .primary : .quiet,
+                       tint: role == .primary ? nil : tint))
     .onHover { isHovering = $0 }
     .disabled(action == nil)
     .accessibilityLabel(title)
@@ -722,16 +725,27 @@ private struct RemoteImageBanner: View {
       Spacer(minLength: Theme.Space.base)
 
       Button(action: load) {
+        // Outlined, NOT tinted.
+        //
+        // `blueText` on its own 12% tint is a self-tint, and the tint drags the
+        // backdrop toward the label: over `Surface.control` — which is exactly
+        // what this banner sits on — it measures 4.37/4.39/4.15:1 across the
+        // three palettes, i.e. straight back into the 3.82-4.37 band the split
+        // token was introduced to escape. The same treatment is fine on
+        // `base` (5.0-5.8:1), which is why the two other sites keep it.
+        //
+        // Dropping the fill puts the label on bare `control` at 4.91-5.31:1,
+        // and `borderStrong` carries the affordance — it is the token for an
+        // outline that means something, and clears the 3:1 graphical floor.
         Text("Load images")
           .font(Theme.Font.small)
-          // `blueText`: this is blue drawn AS A LABEL on a surface, which
-          // measured 3.82:1 in the fill blue. It is the one action this banner
-          // offers, so it keeps the colour — in the token tuned for the job.
           .foregroundStyle(Theme.Accent.blueText)
           .padding(.horizontal, Theme.Space.loose)
           .padding(.vertical, Theme.Space.tight)
-          .background(Theme.Accent.blueText.opacity(0.12),
-                      in: .rect(cornerRadius: Theme.Radius.control))
+          .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.control)
+              .strokeBorder(Theme.Surface.borderStrong, lineWidth: 1)
+          }
       }
       .buttonStyle(.alap())
     }
