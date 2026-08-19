@@ -44,7 +44,7 @@ struct Sidebar: View {
     .padding(.bottom, Theme.Space.wide)
     .frame(maxHeight: .infinity, alignment: .top)
     .background(Theme.Surface.sunken)
-    .reservingTrafficLights()
+    .masthead()
     .paneRule()
   }
 

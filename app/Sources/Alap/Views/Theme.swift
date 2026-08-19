@@ -512,6 +512,24 @@ enum Theme {
     /// `display` at the empty state's smaller size.
     static let displaySmall = SwiftUI.Font.system(size: 17, weight: .semibold, design: .serif)
 
+    /// The app's own name, and nothing else.
+    ///
+    /// The pairing rule above — serif where the app PRESENTS someone's words,
+    /// SF where it OPERATES — has a third case it does not cover, because a
+    /// wordmark is neither. It is the app naming itself: one string, one site,
+    /// and the only one in the window that should read as a mark rather than
+    /// as copy.
+    ///
+    /// A token of its own rather than `display` at another size, because the
+    /// two answer to different things. `display` follows the subject line, and
+    /// if a future subject wants a different size or weight the wordmark must
+    /// not be dragged along behind it.
+    ///
+    /// Semibold at 16pt: large enough to be the first thing read in the pane,
+    /// small enough that it is a signature on the interface rather than a
+    /// headline over it.
+    static let wordmark = SwiftUI.Font.system(size: 16, weight: .semibold, design: .serif)
+
     private static func font(_ size: CGFloat, _ weight: SwiftUI.Font.Weight) -> SwiftUI.Font {
       .system(size: size, weight: weight, design: .default)
     }
@@ -606,6 +624,15 @@ enum Theme {
     /// sizes from `Theme.Icon`; what grows is the region that responds.
     static let hitTarget: CGFloat = 24
     static let toolbar: CGFloat = 48
+
+    /// The band across the top of the sidebar that carries the wordmark.
+    ///
+    /// Not AppKit's title bar height — the window hides its title bar and the
+    /// system insets the content past the traffic lights on its own, so this
+    /// band sits below them and is the app's own. 28pt is what the blank
+    /// reservation it replaces measured, kept exactly so the pane's content
+    /// does not move.
+    static let masthead: CGFloat = 28
   }
 
   // MARK: - Motion
