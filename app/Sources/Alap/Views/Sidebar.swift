@@ -5,6 +5,7 @@ struct Sidebar: View {
   @Bindable var store: MailStore
   var daemon: SyncDaemon?
   @State private var connector = AccountConnector()
+  @State private var disconnector = AccountDisconnector()
 
   var body: some View {
     VStack(alignment: .leading, spacing: Theme.Space.wide) {
@@ -30,6 +31,14 @@ struct Sidebar: View {
     .sheet(isPresented: .constant(connector.phase != .idle)) {
       ConnectAccountSheet(connector: connector)
     }
+    // A failed sign-out is surfaced, never swallowed. The dangerous outcome is
+    // one that reports success and leaves the credential on disk, so the alert
+    // says which half completed.
+    .alert("Could not disconnect", isPresented: disconnectFailed) {
+      Button("OK") { disconnector.dismissError() }
+    } message: {
+      if case .failed(let detail) = disconnector.phase { Text(detail) }
+    }
     .padding(.horizontal, Theme.Space.base)
     .padding(.top, Theme.Space.loose)
     .padding(.bottom, Theme.Space.wide)
@@ -37,6 +46,13 @@ struct Sidebar: View {
     .background(Theme.Surface.sunken)
     .reservingTrafficLights()
     .paneRule()
+  }
+
+  private var disconnectFailed: Binding<Bool> {
+    Binding(
+      get: { if case .failed = disconnector.phase { return true }; return false },
+      set: { if !$0 { disconnector.dismissError() } }
+    )
   }
 
   /// Starts a new message.
@@ -82,6 +98,17 @@ struct Sidebar: View {
           select: { store.selectedMailbox = .account(id: account.id) },
           save: { name, color in
             await store.updateAccount(account.id, displayName: name, color: color)
+          },
+          disconnect: disconnector.isRunning ? nil : {
+            disconnector.disconnect(accountId: account.id) {
+              // The mailbox being viewed may be the one that just went away.
+              // Zero will drop the rows on its own, but the SELECTION is the
+              // app's own state and would otherwise point at a label that no
+              // longer resolves — an empty list with no explanation.
+              if store.selectedMailbox == .account(id: account.id) {
+                store.selectedMailbox = .allInboxes
+              }
+            }
           }
         )
       }

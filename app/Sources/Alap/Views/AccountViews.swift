@@ -12,11 +12,35 @@ struct AccountRowView: View {
   let isSelected: Bool
   let select: () -> Void
   let save: (String?, String?) async -> Void
+  /// Signs the account out. Nil while a disconnect is already running, which
+  /// is what stops a second one being started against the same mailbox.
+  var disconnect: (() -> Void)?
 
   @State private var isHovering = false
   @State private var isEditing = false
 
+  /// The row and its ⋯ are SIBLINGS, not nested.
+  ///
+  /// The ⋯ used to be an `Image` with an `.onTapGesture` inside the row's own
+  /// `Button`, and it did nothing at all: the button owns the whole hit area,
+  /// so the tap never reached the gesture. It was also hover-gated, so there
+  /// was no keyboard or VoiceOver path to it either — which made renaming,
+  /// recolouring and (once it existed) signing out unreachable by any means
+  /// except a mouse that happened to land on eighteen points of glyph.
+  ///
+  /// A `ZStack` puts them side by side. Two controls need two buttons.
   var body: some View {
+    ZStack(alignment: .trailing) {
+      rowButton
+      trailingControl
+    }
+    .onHover { isHovering = $0 }
+    .popover(isPresented: $isEditing, arrowEdge: .trailing) {
+      AccountSettingsPopover(account: account, save: save, disconnect: disconnect)
+    }
+  }
+
+  private var rowButton: some View {
     Button(action: select) {
       HStack(spacing: Theme.Space.base) {
         // Colour AND an initial. Colour was the only channel separating one
@@ -34,26 +58,15 @@ struct AccountRowView: View {
 
         Spacer(minLength: Theme.Space.base)
 
-        // The ⋯ replaces the count on hover rather than sitting beside it.
-        // A 220pt sidebar has no room for both, and an always-visible control
-        // on every row is clutter in the one part of the app that should be
-        // quietest.
-        if isHovering || isEditing {
-          Image(systemName: "ellipsis")
-            .font(Theme.Icon.small)
-            .foregroundStyle(Theme.Ink.secondary)
-            .frame(width: 18, height: 18)
-            .background(Theme.Surface.raised, in: .rect(cornerRadius: Theme.Radius.tight))
-            .onTapGesture { isEditing = true }
-            .help("Account settings")
-            .accessibilityLabel("Account settings for \(account.emailAddress)")
-        } else if unread > 0 {
-          Text("\(unread)")
-            .font(Theme.Font.micro)
-            .fontWeight(.medium)
-            .foregroundStyle(Theme.Ink.secondary)
-            .monospacedDigit()
-        }
+        // Room reserved for the ⋯ that sits above this row, so the count does
+        // not shift sideways when the pointer arrives.
+        Text(unread > 0 ? "\(unread)" : "")
+          .font(Theme.Font.micro)
+          .fontWeight(.medium)
+          .foregroundStyle(Theme.Ink.secondary)
+          .monospacedDigit()
+          .opacity(showsOptions ? 0 : 1)
+          .frame(minWidth: 24, alignment: .trailing)
       }
       .padding(.horizontal, Theme.Space.loose)
       // One height for every navigation row in this pane. Mailbox rows were
@@ -68,11 +81,37 @@ struct AccountRowView: View {
     }
     // Hover and pressed come from the shared style now, not from this view.
     .buttonStyle(.alap())
-    .onHover { isHovering = $0 }
     .help(account.emailAddress)
-    .popover(isPresented: $isEditing, arrowEdge: .trailing) {
-      AccountSettingsPopover(account: account, save: save)
+  }
+
+  /// The ⋯, as a real button.
+  ///
+  /// Shown on hover AND on the selected row, and always present to the
+  /// accessibility tree.
+  ///
+  /// Hover alone is the normal macOS sidebar idiom, but it is a poor way to
+  /// find something you do not already know is there — and signing out is
+  /// exactly the thing a reader goes looking for without knowing where it
+  /// lives. The selected row carries it permanently at no clutter cost, since
+  /// there is only ever one.
+  ///
+  /// `.accessibilityHidden(false)` plus a zero opacity rather than an `if` is
+  /// what keeps it focusable while invisible, so there is a keyboard path even
+  /// when there is no pointer.
+  private var showsOptions: Bool { isHovering || isEditing || isSelected }
+
+  private var trailingControl: some View {
+    Button { isEditing = true } label: {
+      Image(systemName: "ellipsis")
+        .font(Theme.Icon.small)
+        .frame(width: 24, height: 24)
     }
+    .buttonStyle(.alap(.secondary, radius: Theme.Radius.tight))
+    .opacity(showsOptions ? 1 : 0)
+    .padding(.trailing, Theme.Space.base)
+    .help("Account options")
+    .accessibilityLabel("Options for \(account.emailAddress)")
+    .accessibilityHidden(false)
   }
 }
 
@@ -272,14 +311,22 @@ enum AccountPalette {
 struct AccountSettingsPopover: View {
   let account: AccountRow
   let save: (String?, String?) async -> Void
+  /// Nil when there is nothing to disconnect to — a single connected mailbox
+  /// still offers it, because signing out of the only account is a legitimate
+  /// thing to want and refusing it would be the app deciding for you.
+  var disconnect: (() -> Void)?
 
   @Environment(\.dismiss) private var dismiss
   @State private var name: String
   @State private var color: String
+  @State private var isConfirmingDisconnect = false
 
-  init(account: AccountRow, save: @escaping (String?, String?) async -> Void) {
+  init(account: AccountRow,
+       save: @escaping (String?, String?) async -> Void,
+       disconnect: (() -> Void)? = nil) {
     self.account = account
     self.save = save
+    self.disconnect = disconnect
     _name = State(initialValue: account.displayName == account.emailAddress
                   ? "" : account.displayName)
     _color = State(initialValue: account.color.lowercased())
@@ -324,6 +371,11 @@ struct AccountSettingsPopover: View {
         .foregroundStyle(Theme.Ink.tertiary)
         .lineLimit(1)
 
+      if disconnect != nil {
+        Divider().overlay(Theme.Surface.border)
+        disconnectRow
+      }
+
       HStack {
         Spacer()
         Button("Done") { commit() }
@@ -331,7 +383,60 @@ struct AccountSettingsPopover: View {
       }
     }
     .padding(Theme.Space.wide)
-    .frame(width: 260)
+    .frame(width: 280)
+  }
+
+  /// Sign out.
+  ///
+  /// Phrased as what it costs rather than as a neutral toggle, which is the
+  /// same discipline the remote-image banner uses: this deletes the local copy
+  /// of the mailbox, and saying "Disconnect" alone would let someone find that
+  /// out afterwards.
+  ///
+  /// Destructive and irreversible, so it is confirmed — and the confirmation
+  /// names the account, because a popover anchored to the wrong row is exactly
+  /// the mistake this guards against.
+  private var disconnectRow: some View {
+    VStack(alignment: .leading, spacing: Theme.Space.tight) {
+      Button {
+        isConfirmingDisconnect = true
+      } label: {
+        HStack(spacing: Theme.Space.base) {
+          Image(systemName: "rectangle.portrait.and.arrow.right")
+            .font(Theme.Icon.small)
+          Text("Disconnect account").font(Theme.Font.body)
+          Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Theme.Space.base)
+        .frame(height: 28)
+      }
+      .buttonStyle(.alap(tint: Theme.Accent.red))
+
+      Text("Removes the saved credential and deletes this mailbox from this "
+           + "Mac. Your mail stays in Gmail.")
+        .font(Theme.Font.micro)
+        .fontWeight(.regular)
+        .foregroundStyle(Theme.Ink.tertiary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, Theme.Space.base)
+    }
+    .confirmationDialog(
+      "Disconnect \(account.emailAddress)?",
+      isPresented: $isConfirmingDisconnect,
+      titleVisibility: .visible
+    ) {
+      Button("Disconnect", role: .destructive) {
+        disconnect?()
+        dismiss()
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("The saved credential is removed and every message, thread and "
+           + "attachment for this account is deleted from this Mac. Nothing is "
+           + "deleted from Gmail, and you can reconnect at any time.\n\n"
+           + "This does not revoke access at Google — do that in your Google "
+           + "Account settings if you want the grant withdrawn too.")
+    }
   }
 
   private func swatch(_ hex: String, name: String) -> some View {

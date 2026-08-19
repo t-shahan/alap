@@ -359,6 +359,12 @@ Result<void> PostgresStore::delete_message(const std::string& account_id,
               {ids::message(account_id, remote_message_id)});
 }
 
+Result<void> PostgresStore::delete_account(const std::string& account_id) {
+  // ON DELETE CASCADE does the rest: thread, message, message_body,
+  // message_label, label, attachment and outbox all reference account(id).
+  return exec("DELETE FROM account WHERE id = $1", {account_id});
+}
+
 Result<void> PostgresStore::set_history_id(const std::string& account_id,
                                            const std::string& history_id) {
   return exec(

@@ -59,6 +59,8 @@ int usage() {
   std::cerr << "usage: mailengined <command>\n\n"
                "  connect [max]         authorize a NEW mailbox, register it and backfill\n"
                "                        (emits JSON progress; this is what the app spawns)\n"
+               "  disconnect <account-id>  forget the credential and delete the mailbox\n"
+               "                        (irreversible; does not revoke the grant at Google)\n"
                "  auth <account-id>     re-authorize an EXISTING account id\n"
                "  token <account-id>    mint an access token from the stored refresh token\n"
                "  profile <account-id>  show mailbox profile and history watermark\n"
@@ -862,6 +864,50 @@ void emit(const nlohmann::json& event) {
 }
 
 /// Connects a new mailbox: authorise, register, and backfill.
+/// Disconnects a mailbox: forgets the credential, then deletes the mail.
+///
+/// ## Why the Keychain goes first
+///
+/// The two steps are not atomic and cannot be. If the process dies between
+/// them, one of two states survives, and only one of them is safe:
+///
+///   - credential gone, rows still present — the account cannot sync, so the
+///     stale mail sits there until someone re-runs this. Recoverable, and
+///     nothing is leaking.
+///   - rows gone, credential still present — the daemon's next poll finds a
+///     live token and backfills the entire mailbox again, so the disconnect
+///     silently undoes itself while the credential remains on disk.
+///
+/// So the credential is removed first, always. `Keychain::remove` succeeds when
+/// nothing was stored, which makes re-running this safe.
+///
+/// This does NOT revoke the grant at Google. Revocation is a network call that
+/// can fail, and a disconnect that depends on the network is one you cannot
+/// perform on a plane. The token is gone from this machine, which is what the
+/// button promises; a reader who wants the grant withdrawn does that at
+/// myaccount.google.com, and the README says so.
+int cmd_disconnect(const std::string& account_id) {
+  const mailengine::Keychain keychain;
+  if (auto removed = keychain.remove(account_id); !removed) {
+    std::cerr << "error: could not remove the stored credential: "
+              << removed.error().message << "\n";
+    return 1;
+  }
+  std::cout << "credential removed for " << account_id << "\n";
+
+  mailengine::PostgresStore store;
+  if (!connect_store(store)) return 1;
+
+  if (auto deleted = store.delete_account(account_id); !deleted) {
+    std::cerr << "error: credential is gone but the mail could not be deleted: "
+              << deleted.error().message << "\n"
+              << "  the account cannot sync in this state; re-run to finish.\n";
+    return 1;
+  }
+  std::cout << "disconnected " << account_id << "\n";
+  return 0;
+}
+
 int cmd_connect(int64_t max_messages) {
   const mailengine::OAuthClient client(config_from_env());
 
@@ -1144,6 +1190,10 @@ int main(int argc, char** argv) {
   if (command == "drain") {
     if (argc < 3) return usage();
     return cmd_drain(argv[2]);
+  }
+  if (command == "disconnect") {
+    if (argc < 3) return usage();
+    return cmd_disconnect(argv[2]);
   }
   if (command == "connect") {
     return cmd_connect(argc > 2 ? std::atoll(argv[2]) : 0);

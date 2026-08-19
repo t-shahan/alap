@@ -91,6 +91,19 @@ class PostgresStore {
   [[nodiscard]] Result<void> delete_message(const std::string& account_id,
                                             const std::string& remote_message_id);
 
+  /// @brief Removes an account and everything belonging to it.
+  ///
+  /// Every table that references `account` does so `ON DELETE CASCADE`, so this
+  /// one statement clears the mailbox: threads, messages, bodies, labels,
+  /// attachments and any queued outbox work. Deliberately irreversible — the
+  /// point of disconnecting is that the mail is no longer on this machine.
+  ///
+  /// It does NOT touch the Keychain. The credential is the caller's to remove,
+  /// and removing it first is what makes a half-finished disconnect safe: an
+  /// account whose token is gone cannot sync, whereas rows deleted with a live
+  /// token would simply come back on the next poll.
+  [[nodiscard]] Result<void> delete_account(const std::string& account_id);
+
   /// @brief Advances the incremental-sync watermark.
   [[nodiscard]] Result<void> set_history_id(const std::string& account_id,
                                             const std::string& history_id);
