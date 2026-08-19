@@ -63,7 +63,25 @@ ok=[d for d in res if "error" not in d]
 errs=[d for d in res if "error" in d]
 scaled=[d for d in ok if d["scale"]<0.999]
 import statistics
+# ## Which layout the SENDER thinks it is drawing
+#
+# Marketing mail overwhelmingly switches to its single-column phone layout at
+# `max-width: 600px`, and a media query matches the VIEWPORT — which here is the
+# web view, not the window. The four pane widths this harness measures
+# (557/645/685/700) straddle that line: at 557 a message renders its MOBILE
+# layout, at 645 and up its desktop one.
+#
+# That is not obviously wrong — a 557pt column genuinely is phone-shaped, and
+# rendering the layout the sender designed for that width beats scaling a
+# desktop layout down. But it is a layout threshold nobody in this codebase
+# chose, and a message that renders correctly at 685 now says nothing about 557.
+# So the side is REPORTED, and the corpus wants measuring at both.
+MAIL_BREAKPOINT = 600
+side = "MOBILE" if int(WIDTH) < MAIL_BREAKPOINT else "desktop"
 print(f"width={WIDTH}  rendered={len(ok)}  errors={len(errs)}")
+comparison = "<" if side == "MOBILE" else ">="
+print(f"  mail breakpoint      : {WIDTH} {comparison} {MAIL_BREAKPOINT}"
+      f"  ->  senders render their {side} layout")
 if ok:
     print(f"  overflowing the pane : {len(scaled)}/{len(ok)}  ({100*len(scaled)//max(len(ok),1)}%)")
     if scaled:
@@ -83,6 +101,14 @@ if ok:
         print(f"    worst: app told {w['appHeight']:.0f} of {w['post']['docScrollHeight']} "
               f"({100*lost/w['post']['docScrollHeight']:.0f}% lost)")
     print(f"  rendered on the DARK canvas: {sum(dark_docs)}/{len(dark_docs)}")
+    # Cross-check: the viewport the document actually saw, as measured, rather
+    # than as assumed from the pane width. A mismatch means the harness and the
+    # app disagree about how wide the web view is, which would make every
+    # number above unattributable.
+    measured = [d["pre"].get("mobileLayout") for d in ok if "pre" in d]
+    if measured and any(m is not None for m in measured):
+        mobiles = sum(1 for m in measured if m)
+        print(f"  viewport under {MAIL_BREAKPOINT}px: {mobiles}/{len(measured)} documents")
     lc=sum(d.get('lowContrast',0) for d in ok); ck=sum(d.get('checked',0) for d in ok)
     print(f"  low-contrast text blocks: {lc}/{ck}")
     bad=[d for d in ok if d.get('lowContrast',0)>0]
@@ -142,3 +168,6 @@ if CHECK:
             print("  " + f)
         sys.exit(1)
     print("\nPASS - the reading pane holds every threshold")
+    if side == "MOBILE":
+        print("  NOTE: measured on the mobile side of the mail breakpoint. Run the "
+              "same sweep at 645+ before concluding anything about the desktop layout.")

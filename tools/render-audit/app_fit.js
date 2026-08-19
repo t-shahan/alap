@@ -1,19 +1,21 @@
       (function () {
-        var body = document.body;
-        if (!body) { return 0; }
-        body.style.zoom = '';
-        body.style.paddingLeft = '';
-        body.style.paddingRight = '';
+        var fit = document.getElementById('fit');
+        if (!fit) { return 0; }
+        fit.style.transform = '';
+        fit.style.width = '';
+        fit.style.paddingLeft = '';
+        fit.style.paddingRight = '';
+
         var available = document.documentElement.clientWidth;
-        var content = body.scrollWidth;
+        var content = fit.scrollWidth;
         // Padding is the first thing to go, before any shrinking. A message
         // laid out for 600-700px would otherwise pay for our margins twice:
         // once in lost width and again in being scaled down to fit what was
         // left. Text mail keeps the margins because it never needs the room.
         if (available > 0 && content > available) {
-          body.style.paddingLeft = '0';
-          body.style.paddingRight = '0';
-          content = body.scrollWidth;
+          fit.style.paddingLeft = '0';
+          fit.style.paddingRight = '0';
+          content = fit.scrollWidth;
         }
         // A width of zero means the view has not been laid out yet. Dividing
         // by it would scale every message to the 0.5 floor below and shrink a
@@ -23,12 +25,22 @@
         // Below this the message is unreadable and fitting it is not a
         // kindness; let it clip rather than shrink to nothing.
         if (scale < 0.5) { scale = 0.5; }
-        if (scale < 1) { body.style.zoom = scale; }
-        // Read the height AFTER applying the scale, and do NOT scale it again.
-        // `scrollHeight` already reflects `zoom` — multiplying a second time
-        // reported 982px for a 1303px message and silently cut a quarter of it
-        // off, which looked like images failing to load. Measured across 30
-        // real messages before this was believed.
-        return Math.ceil(document.documentElement.scrollHeight);
+        if (scale < 1) {
+          fit.style.transformOrigin = 'top left';
+          fit.style.transform = 'scale(' + scale + ')';
+          // Keep the PRE-scale layout width, or the content reflows into the
+          // narrower box and the scale is computed against a moving target.
+          fit.style.width = (100 / scale) + '%';
+        }
+        // `getBoundingClientRect`, NOT `scrollHeight`.
+        //
+        // The old code measured `scrollHeight` and carried a hard-won comment
+        // saying not to scale the result again, because `scrollHeight` already
+        // reflected `zoom`. That fact INVERTS here: `scrollHeight` is a layout
+        // property and `transform` is a paint-time operation, so under a
+        // transform `scrollHeight` reports the UNSCALED height and would
+        // over-report by 1/scale. The bounding rect is the one that reflects
+        // the transform, which is why it replaces it.
+        return Math.ceil(fit.getBoundingClientRect().height);
       })()
       

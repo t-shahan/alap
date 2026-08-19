@@ -62,7 +62,7 @@ final class Driver: NSObject, WKNavigationDelegate {
   }
 
   /// The case probe runs FIRST, on the pristine layout, before the app's fit
-  /// script has stripped the body padding or applied `zoom`. A regression case
+  /// script has stripped the padding or applied its transform. A regression case
   /// asks "did this document lay itself out correctly", and the answer must not
   /// depend on how much the pane then squeezed it.
   func runCaseProbe() {
@@ -86,15 +86,31 @@ final class Driver: NSObject, WKNavigationDelegate {
   func diagnose() {
     let probe = """
       (function () {
-        var b = document.body, d = document.documentElement;
-        b.style.zoom = '';
-        var pre = { clientWidth: d.clientWidth, bodyScrollWidth: b.scrollWidth,
-                    docScrollHeight: d.scrollHeight };
-        var avail = d.clientWidth, content = b.scrollWidth;
+        var d = document.documentElement;
+        var f = document.getElementById('fit') || document.body;
+        f.style.transform = ''; f.style.width = '';
+        var pre = { clientWidth: d.clientWidth, bodyScrollWidth: f.scrollWidth,
+                    docScrollHeight: d.scrollHeight,
+                    // Which side of the 600px threshold marketing mail almost
+                    // universally switches layouts at. Media queries match the
+                    // VIEWPORT, which here is the web view rather than the
+                    // window — so at the narrow pane widths a message renders
+                    // its PHONE layout, at a threshold nobody in this codebase
+                    // chose. Reported so the corpus can be read at both.
+                    mobileLayout: d.clientWidth < 600 };
+        var avail = d.clientWidth, content = f.scrollWidth;
         var scale = (avail > 0 && content > avail) ? avail / content : 1;
         if (scale < 0.5) scale = 0.5;
-        if (scale < 1) b.style.zoom = scale;
-        var post = { docScrollHeight: d.scrollHeight };
+        if (scale < 1) {
+          f.style.transformOrigin = 'top left';
+          f.style.transform = 'scale(' + scale + ')';
+          f.style.width = (100 / scale) + '%';
+        }
+        // A transform is paint-time, so `scrollHeight` reports the UNSCALED
+        // height and the bounding rect is the one that reflects it. This is
+        // the exact inversion of what `zoom` did, and it has to match what the
+        // app now measures or the height gate compares two different numbers.
+        var post = { docScrollHeight: Math.ceil(f.getBoundingClientRect().height) };
         var imgs = Array.prototype.slice.call(document.images);
 
         // Contrast probe: text whose colour was inherited from our own CSS
@@ -162,7 +178,10 @@ final class Driver: NSObject, WKNavigationDelegate {
     // Size the view to the post-scale content height so nothing is cut off by
     // the frame itself -- we want to see what the document does, not what the
     // frame allows.
-    webView.evaluateJavaScript("Math.ceil(document.documentElement.scrollHeight)") { value, _ in
+    webView.evaluateJavaScript(
+      "Math.ceil((document.getElementById('fit') || document.body)"
+      + ".getBoundingClientRect().height)"
+    ) { value, _ in
       let h = (value as? NSNumber)?.doubleValue ?? 800
       self.webView.frame = NSRect(x: 0, y: 0, width: self.webView.frame.width, height: min(h, 6000))
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {

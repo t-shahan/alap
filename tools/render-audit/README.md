@@ -83,3 +83,30 @@ it by the scale a second time silently discards a quarter of the message.
 
 Postgres running with the `mailapp` database. Reads message bodies directly;
 it does not need the app, zero-cache, or the sync daemon.
+
+## The 600px mail breakpoint
+
+Every sweep now reports which side of `max-width: 600px` the pane width lands
+on, and `--check` says so again on the way out when it is the mobile side.
+
+This matters because a media query matches the **viewport**, and the viewport
+here is the web view rather than the window. The four widths this harness
+measures — 557 / 645 / 685 / 700 — straddle the line that marketing mail almost
+universally switches layouts at, so at 557 a message renders its *phone* layout
+and at 645 and up its desktop one.
+
+That is not obviously wrong: a 557pt column genuinely is phone-shaped, and
+rendering the layout the sender designed for that width beats scaling a desktop
+layout down. But it is a layout threshold nobody in this codebase chose, and it
+means **a message that renders correctly at 685 says nothing about 557.**
+Measure the corpus at both:
+
+```sh
+python3 sweep.py 557 30 --check
+python3 sweep.py 685 30 --check
+```
+
+The `viewport under 600px` line is a cross-check on the same fact, measured
+inside the document rather than assumed from the argument — if the two ever
+disagree, the harness and the app are rendering at different widths and every
+other number in the report is unattributable.
