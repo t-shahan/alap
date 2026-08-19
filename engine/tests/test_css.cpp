@@ -622,3 +622,59 @@ TEST(Css, DropsFontFaceRegardlessOfSpelling) {
     EXPECT_TRUE(contains(out.html, "color:red")) << spelling;
   }
 }
+
+// MARK: - The style attribute is a tracking surface too
+//
+// A remote `url()` in a <style> BLOCK was defused and counted, while the same
+// URL in a `style` ATTRIBUTE stayed live and uncounted. So a tracking pixel
+// written as `style="background-image:url(https://tracker/p.gif)"` fired
+// regardless of the remote-images preference, and did not even appear in the
+// "N images not loaded" count the reading pane offers to load.
+//
+// `<img src>` and `<style>` both honour the preference. There is no reason the
+// third route into the same fetch should not.
+
+TEST(Css, AStyleAttributeHonoursTheRemoteImagePreference) {
+  const auto out = sanitize(
+      R"HTML(<td style="background-image:url(https://tracker.test/p.gif);color:red">x</td>)HTML");
+  EXPECT_FALSE(contains(out.html, "url(https://tracker.test"));
+  EXPECT_EQ(out.blocked_remote_images, 1);
+  // The rest of the declaration list is untouched.
+  EXPECT_TRUE(contains(out.html, "color:red"));
+}
+
+TEST(Css, AStyleAttributeKeepsRemoteUrlsWhenImagesAreAllowed) {
+  SanitizeOptions options;
+  options.allow_remote_images = true;
+  const auto out = sanitize(
+      R"HTML(<td style="background-image:url(https://cdn.test/hero.jpg)">x</td>)HTML",
+      options);
+  EXPECT_TRUE(contains(out.html, "url(https://cdn.test/hero.jpg)"));
+  EXPECT_EQ(out.blocked_remote_images, 0);
+}
+
+TEST(Css, TheTwoStyleRoutesAgreeWithEachOther) {
+  // The bug was an asymmetry, so the regression test is the symmetry.
+  const std::string url = "https://tracker.test/p.gif";
+  const auto attr = sanitize(
+      "<td style=\"background-image:url(" + url + ")\">x</td>");
+  const auto block = sanitize(
+      "<style>.a{background-image:url(" + url + ")}</style>");
+  EXPECT_EQ(attr.blocked_remote_images, block.blocked_remote_images);
+  EXPECT_EQ(contains(attr.html, "url(" + url), contains(block.html, "url(" + url));
+}
+
+TEST(Css, AStyleAttributeStillKeepsInlineAndCidImages) {
+  // Blocking is about REMOTE fetches. A cid: reference is an attachment
+  // already on disk and a raster data: URI carries its own bytes; neither
+  // reaches the network, so neither should be defused.
+  const auto cid = sanitize(
+      R"HTML(<td style="background-image:url(cid:logo@x)">x</td>)HTML");
+  EXPECT_TRUE(contains(cid.html, "cid:logo@x"));
+  EXPECT_EQ(cid.blocked_remote_images, 0);
+
+  const auto raster = sanitize(
+      R"HTML(<td style="background-image:url(data:image/png;base64,iVBOR)">x</td>)HTML");
+  EXPECT_TRUE(contains(raster.html, "base64,iVBOR"));
+  EXPECT_EQ(raster.blocked_remote_images, 0);
+}

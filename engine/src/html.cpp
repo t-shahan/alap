@@ -1399,8 +1399,15 @@ SanitizeResult sanitize(const std::string& input, const SanitizeOptions& options
         //
         // Re-escaped on the way out by the caller below, so the attribute is
         // still well-formed markup.
+        // The counter is passed for the SAME reason the stylesheet path passes
+        // it: a remote `url()` here is a tracking pixel, and this was the one
+        // route into that fetch which ignored the preference. A pixel written
+        // as `style="background-image:url(https://tracker/p.gif)"` loaded
+        // whatever the setting said, and never appeared in the count the
+        // reading pane offers to load.
         const std::string filtered = sanitize_style(
-            unescape_entities(attribute.value), result.removed_active_content);
+            unescape_entities(attribute.value), result.removed_active_content,
+            options.allow_remote_images ? nullptr : &result.blocked_remote_images);
         if (filtered.empty()) continue;
         out += " style=\"" + escape_text(filtered) + "\"";
         continue;

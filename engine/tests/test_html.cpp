@@ -502,10 +502,19 @@ TEST(Style, DropsPositioningThatCouldOverlayTheInterface) {
 }
 
 TEST(Style, AllowsImageUrlsButOnlySafeSchemes) {
-  // Hero images in mail are CSS backgrounds. The scheme is checked here; the
-  // CSP decides whether the fetch is actually permitted at render time.
+  // Hero images in mail are CSS backgrounds, so the SCHEME has to be checked
+  // rather than `url()` banned outright.
+  //
+  // Asserted with images allowed. This used to pass under the default because
+  // a remote URL in a `style` attribute stayed live there, unlike the same URL
+  // in a `<style>` block — which was a tracking hole, not a feature. Now that
+  // both routes honour the preference, testing the scheme check under the
+  // default would be testing the preference instead.
+  SanitizeOptions allowed;
+  allowed.allow_remote_images = true;
   const auto ok = sanitize(
-      R"CSS(<td style="background-image:url(https://cdn.test/hero.jpg)">x</td>)CSS");
+      R"CSS(<td style="background-image:url(https://cdn.test/hero.jpg)">x</td>)CSS",
+      allowed);
   EXPECT_TRUE(contains(ok.html, "background-image:url(https://cdn.test/hero.jpg)"));
 
   for (const std::string attack : {"background-image:url(javascript:alert(1))",
