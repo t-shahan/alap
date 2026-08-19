@@ -781,3 +781,24 @@ TEST(Style, KeepsAStylesheetThatLivesInTheHead) {
   EXPECT_FALSE(contains(out.html, "Subject line"));
   EXPECT_FALSE(contains(out.html, "charset"));
 }
+
+TEST(Sanitize, KeepsTheMessageWhenItIsWrappedInAForm) {
+  // ASP.NET WebForms wraps an entire page in a single <form>, and mail
+  // generated from such a page arrives the same way. `form` was among the tags
+  // whose CONTENTS are discarded, so the whole message went with it — a
+  // CareFirst Explanation of Benefits arrived as 31,484 bytes and was stored
+  // as 23, rendering as an empty reading pane.
+  const auto out = sanitize(
+      "<body><form name=\"f\" method=\"post\" action=\"archive.aspx\">"
+      "<input type=\"hidden\" name=\"tok\" value=\"secret\">"
+      "<p>Your statement is ready.</p>"
+      "<button type=\"submit\">Send</button>"
+      "</form></body>");
+  EXPECT_TRUE(contains(out.html, "Your statement is ready."));
+  // The form machinery itself still never reaches the output.
+  EXPECT_FALSE(contains(out.html, "<form"));
+  EXPECT_FALSE(contains(out.html, "<input"));
+  EXPECT_FALSE(contains(out.html, "<button"));
+  EXPECT_FALSE(contains(out.html, "archive.aspx"));
+  EXPECT_FALSE(contains(out.html, "secret"));
+}

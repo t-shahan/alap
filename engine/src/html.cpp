@@ -38,6 +38,17 @@ const std::unordered_set<std::string>& allowed_tags() {
 /// These carry executable or externally-fetched material rather than text, so
 /// preserving what is inside them would defeat the point.
 ///
+/// `form` is deliberately ABSENT, for the same reason `head` is. ASP.NET
+/// WebForms wraps an entire page in one, and mail generated from such a page
+/// arrives as `<body><form>…the whole message…</form></body>`. Discarding the
+/// form's CONTENTS discarded the message: a CareFirst Explanation of Benefits
+/// arrived as 31,484 bytes and was stored as 23, rendering as an empty pane.
+///
+/// Nothing is lost by keeping them. The form element itself is not in the
+/// allowlist so it never reaches the output, `input`, `button` and `select`
+/// are not either, and the render-time CSP carries `form-action 'none'`, so
+/// there is nothing left to submit to even if one slipped through.
+///
 /// `head` is deliberately ABSENT. It was here, and it meant the entire head —
 /// including the `<style>` block — was discarded before the stylesheet
 /// handling could ever see it. Real mail puts its stylesheet in the head, so
@@ -60,7 +71,7 @@ const std::unordered_set<std::string>& allowed_tags() {
 /// itself and never reaches this branch for it.
 const std::unordered_set<std::string>& void_content_tags() {
   static const std::unordered_set<std::string> tags = {
-      "script", "iframe", "object", "embed", "applet", "form",
+      "script", "iframe", "object", "embed", "applet",
       "noscript", "template", "svg", "math", "title",
   };
   return tags;
