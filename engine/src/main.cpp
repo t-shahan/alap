@@ -31,6 +31,7 @@
 #include "mailengine/gmail.hpp"
 #include "mailengine/identity.hpp"
 #include "mailengine/html.hpp"
+#include "mailengine/disconnect.hpp"
 #include "mailengine/keychain.hpp"
 #include "mailengine/oauth.hpp"
 #include "mailengine/outbox.hpp"
@@ -886,22 +887,48 @@ void emit(const nlohmann::json& event) {
 /// perform on a plane. The token is gone from this machine, which is what the
 /// button promises; a reader who wants the grant withdrawn does that at
 /// myaccount.google.com, and the README says so.
-int cmd_disconnect(const std::string& account_id) {
-  const mailengine::Keychain keychain;
-  if (auto removed = keychain.remove(account_id); !removed) {
-    std::cerr << "error: could not remove the stored credential: "
-              << removed.error().message << "\n";
-    return 1;
+/// Adapters onto the real Keychain and Postgres.
+///
+/// The sequence itself lives in `mailengine::disconnect_account`, in the
+/// library, so the ordering that makes it safe can be asserted against fakes —
+/// see `test_disconnect.cpp`. These two classes exist only to carry the real
+/// implementations across that seam; anything with a decision in it belongs on
+/// the other side of it.
+class KeychainRemover final : public mailengine::CredentialRemover {
+ public:
+  mailengine::Result<void> remove(const std::string& account_id) override {
+    return keychain_.remove(account_id);
   }
-  std::cout << "credential removed for " << account_id << "\n";
 
+ private:
+  mailengine::Keychain keychain_;
+};
+
+class StoreDeleter final : public mailengine::MailboxDeleter {
+ public:
+  explicit StoreDeleter(mailengine::PostgresStore& store) : store_(store) {}
+
+  mailengine::Result<void> delete_account(const std::string& account_id) override {
+    return store_.delete_account(account_id);
+  }
+
+ private:
+  mailengine::PostgresStore& store_;
+};
+
+int cmd_disconnect(const std::string& account_id) {
+  // Postgres is connected BEFORE the credential is removed, so a database that
+  // is simply down fails the command outright rather than through the
+  // recoverable-but-untidy path of a removed credential and intact mail.
   mailengine::PostgresStore store;
   if (!connect_store(store)) return 1;
 
-  if (auto deleted = store.delete_account(account_id); !deleted) {
-    std::cerr << "error: credential is gone but the mail could not be deleted: "
-              << deleted.error().message << "\n"
-              << "  the account cannot sync in this state; re-run to finish.\n";
+  KeychainRemover credentials;
+  StoreDeleter mailbox(store);
+
+  if (auto done = mailengine::disconnect_account(credentials, mailbox, account_id);
+      !done) {
+    std::cerr << "error: " << done.error().message << "\n";
     return 1;
   }
   std::cout << "disconnected " << account_id << "\n";

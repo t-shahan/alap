@@ -65,6 +65,7 @@ add_library(mailengine_core
   src/store.cpp
   src/sync.cpp
   src/outbox.cpp
+  src/disconnect.cpp
   src/search.cpp
   src/bench.cpp
   src/html.cpp
@@ -136,6 +137,7 @@ if(MAILENGINE_BUILD_TESTS)
     tests/test_css.cpp
     tests/test_attachments.cpp
     tests/test_compose.cpp
+    tests/test_disconnect.cpp
   )
   target_link_libraries(mailengine_tests PRIVATE mailengine_core GTest::gtest_main)
 
