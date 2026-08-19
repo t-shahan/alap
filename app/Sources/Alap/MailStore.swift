@@ -1056,6 +1056,15 @@ final class MailStore {
     await downloadAttachment(attachment)
   }
 
+  /// The open conversation's real attachments, in the order they appear.
+  ///
+  /// Inline parts are excluded: those are the message's own images, already
+  /// rendered in the body, and offering to "open" one is offering to open a
+  /// piece of the thing you are looking at.
+  var openAttachments: [AttachmentRow] {
+    (detail?.messages ?? []).flatMap(\.attachments).filter { !$0.isInline }
+  }
+
   /// Content-ID → downloaded file, for the thread on screen.
   ///
   /// Only the open conversation, never an accumulated cache: the map is what

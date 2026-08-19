@@ -171,11 +171,50 @@ struct MailCommands: Commands {
 
       Divider()
 
+      attachments
+
+      Divider()
+
       Button("Next Message") { store.moveSelection(by: 1) }
         .keyboardShortcut(.downArrow, modifiers: .command)
       Button("Previous Message") { store.moveSelection(by: -1) }
         .keyboardShortcut(.upArrow, modifiers: .command)
     }
+  }
+
+  /// The attachment actions, mirrored out of the chip's context menu.
+  ///
+  /// The chips were reachable by pointer only: they had a context menu with
+  /// Open / Reveal / Save a Copy and no keyboard path to any of it. A context
+  /// menu is not a substitute for a menu bar — a shortcut nobody can discover
+  /// may as well not exist, and one nobody can REACH definitely does not.
+  ///
+  /// Nested per file rather than flattened: a thread can carry several
+  /// attachments, and three items each would make this menu unreadable at
+  /// four files.
+  @ViewBuilder
+  private var attachments: some View {
+    let files = store.openAttachments
+    Menu("Attachments") {
+      ForEach(files) { attachment in
+        Menu(attachment.filename) {
+          Button("Open") { Task { await store.openAttachment(attachment) } }
+          if case .ready(let file) = store.state(of: attachment) {
+            Button("Reveal in Finder") { AttachmentActions.reveal(file) }
+            Divider()
+            Button("Save a Copy…") {
+              AttachmentActions.saveCopy(of: file, named: attachment.filename)
+            }
+          } else {
+            // Named rather than absent, so the menu says WHY the other two are
+            // not here: the bytes are not on disk yet.
+            Button("Download") { Task { await store.downloadAttachment(attachment) } }
+              .disabled(!attachment.canDownload)
+          }
+        }
+      }
+    }
+    .disabled(files.isEmpty)
   }
 }
 

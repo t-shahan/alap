@@ -241,6 +241,17 @@ struct MessageListPane: View {
       .onAppear { store.growThreadsIfNeeded(reaching: thread.id) }
       .listRowInsets(EdgeInsets())
       .listRowBackground(background(for: thread))
+      // Full-bleed, so the separator starts at the pane edge rather than at
+      // the row's content.
+      //
+      // `List` insets separators to the leading edge of the row's TEXT by
+      // default, which left the account rail as the one column nothing
+      // separated — a ladder of hairlines with a coloured strip running past
+      // the end of each rung. The review called that the worst of both
+      // options; now that the pane seams carry a real rule, the row separator
+      // should either match them or not exist, and matching is cheaper than
+      // arguing about density.
+      .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
       .contextMenu { menu(for: thread) }
   }
 

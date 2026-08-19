@@ -482,11 +482,11 @@ private struct AttachmentChip: View {
     .contextMenu {
       if case .ready(let file) = state {
         Button("Open") { NSWorkspace.shared.open(file) }
-        Button("Reveal in Finder") {
-          NSWorkspace.shared.activateFileViewerSelecting([file])
-        }
+        Button("Reveal in Finder") { AttachmentActions.reveal(file) }
         Divider()
-        Button("Save a Copy…") { saveCopy(of: file) }
+        Button("Save a Copy…") {
+          AttachmentActions.saveCopy(of: file, named: attachment.filename)
+        }
       } else if case .idle = state {
         Button("Download", action: download)
       } else if case .failed = state {
@@ -561,22 +561,6 @@ private struct AttachmentChip: View {
     case .ready, .idle, .failed: open()
     case .downloading, .unavailable: break
     }
-  }
-
-  /// Copies the blob out under its real filename.
-  ///
-  /// The cache stores it under its content hash, so the file on disk is not
-  /// named anything a person would recognise. Exporting is where the display
-  /// name from Postgres finally gets applied — and note it is applied by
-  /// NSSavePanel, which resolves the user's chosen destination itself. The
-  /// email-supplied name never becomes a path we construct.
-  private func saveCopy(of file: URL) {
-    let panel = NSSavePanel()
-    panel.nameFieldStringValue = attachment.filename
-    panel.canCreateDirectories = true
-    guard panel.runModal() == .OK, let destination = panel.url else { return }
-    try? FileManager.default.removeItem(at: destination)
-    try? FileManager.default.copyItem(at: file, to: destination)
   }
 }
 

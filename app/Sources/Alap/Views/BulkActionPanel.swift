@@ -27,16 +27,25 @@ struct BulkActionPanel: View {
   ///
   /// Past a dozen the list stops being a check and starts being a wall — at
   /// that point the count is the more honest summary.
-  private static let previewLimit = 12
-
   private var selected: [ThreadRow] { store.selectedThreads }
 
+  /// Preview first and filling the pane; actions pinned beneath it.
+  ///
+  /// The preview used to stop at twelve rows and say "and 488 more" while
+  /// roughly 45% of the tallest region in the window sat empty below the
+  /// actions. That is the wrong way round for a panel whose whole argument is
+  /// that seeing WHICH conversations you are about to archive beats being told
+  /// how many — it truncated the evidence to preserve whitespace.
+  ///
+  /// Now the list takes the room and scrolls, and the actions sit under it,
+  /// which also reads in the order the decision is made: this is what you
+  /// picked, here is what you can do to it.
   var body: some View {
     VStack(alignment: .leading, spacing: Theme.Space.pane) {
       header
       preview
+        .frame(maxHeight: .infinity, alignment: .top)
       actions
-      Spacer(minLength: 0)
     }
     .padding(Theme.Space.pane)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -75,9 +84,15 @@ struct BulkActionPanel: View {
     return parts.joined(separator: " · ")
   }
 
+  /// Every selected conversation, lazily.
+  ///
+  /// `LazyVStack` is what makes showing all of them cheap — a 500-row
+  /// selection materialises only the rows on screen, so there is no longer a
+  /// reason to cap the list at a number that fits an arbitrary height.
   private var preview: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      ForEach(selected.prefix(Self.previewLimit)) { thread in
+    ScrollView {
+      LazyVStack(alignment: .leading, spacing: 0) {
+      ForEach(selected) { thread in
         HStack(spacing: Theme.Space.loose) {
           Circle()
             .fill(store.tint(forAccount: thread.accountId) ?? Theme.Accent.muted)
@@ -116,15 +131,9 @@ struct BulkActionPanel: View {
         .accessibilityLabel(
           "\(thread.displayName), \(thread.subject), \(thread.displayTime)")
       }
-
-      if selected.count > Self.previewLimit {
-        Text("and \(selected.count - Self.previewLimit) more")
-          .font(Theme.Font.small)
-          .foregroundStyle(Theme.Ink.tertiary)
-          .padding(.vertical, Theme.Space.tight)
-          .padding(.horizontal, Theme.Space.loose)
       }
     }
+    .scrollIndicators(.automatic)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(Theme.Surface.base, in: .rect(cornerRadius: Theme.Radius.panel))
     .overlay {
