@@ -91,13 +91,32 @@ struct ContentView: View {
   /// anchors mean both views grow from and shrink into the same corner, which
   /// alone delivers most of the metaphor.
   ///
-  /// **`matchedGeometryEffect` is deliberately not used here.** It is the
-  /// hero version of this and it is specified — but frame interpolation across
-  /// a 520pt panel containing a live `TextEditor` re-lays-out the editor on
-  /// every frame of the animation, and whether that stutters is a question only
-  /// a running build against a real mailbox can answer. The corner-scale
-  /// entrance is already the difference between "pops" and "expands from the
-  /// corner"; the hero layer is an addition to make on evidence, not on faith.
+  /// ## `matchedGeometryEffect` was tried here and removed. Do not re-add it.
+  ///
+  /// The hero version of this — pairing the button and the panel on a shared
+  /// `id` with `anchor: .bottomTrailing` — was implemented and inspected on a
+  /// running build at 900pt, where the FAB exists. It was worse, and not in
+  /// the way that was anticipated.
+  ///
+  /// The predicted risk was the `TextEditor` re-laying-out mid-animation. That
+  /// did not happen: the fields render cleanly at every intermediate frame.
+  /// What happens instead is that the panel enters from the **top-left**,
+  /// travels down and right, and then overshoots past the corner before
+  /// settling — captured across a frame burst. So the modifier produces the
+  /// precise opposite of the metaphor it was meant to deliver, which is a
+  /// panel that grew out of the button in the bottom-right corner.
+  ///
+  /// The cause is that the interpolated frame overrides the `ZStack`'s
+  /// `.bottomTrailing` alignment rather than cooperating with it, and the two
+  /// matched views carry their own differing `.padding` inside the measured
+  /// frame — so the geometry being interpolated between is not the geometry
+  /// either view actually occupies.
+  ///
+  /// Anyone re-attempting this needs to move the padding OUTSIDE both matched
+  /// views first, and then verify on a running build rather than in a
+  /// screenshot: a still frame cannot show a trajectory. The corner-scale
+  /// entrance below is already the difference between "pops" and "expands from
+  /// the corner", and it is correct.
   @ViewBuilder
   private func composerOverlay(_ layout: PaneLayout) -> some View {
     ZStack(alignment: .bottomTrailing) {
