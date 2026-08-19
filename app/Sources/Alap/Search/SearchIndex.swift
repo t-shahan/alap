@@ -63,6 +63,26 @@ final class SearchIndex {
     if let db { sqlite3_close(db) }
   }
 
+  /// Total messages in the index.
+  ///
+  /// `COUNT(*)` on an FTS5 table walks it, which at ~32k rows is single-digit
+  /// milliseconds. That is cheap once and ruinous per render, so the store
+  /// caches the answer and refreshes it alongside a delivery — never from a
+  /// view body.
+  ///
+  /// Returns nil rather than zero when the index is unavailable: "0 messages"
+  /// over a full mailbox is a worse reading than no reading.
+  func messageCount() -> Int? {
+    guard let db, isAvailable else { return nil }
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(db, "SELECT count(*) FROM message_fts", -1, &statement, nil)
+            == SQLITE_OK
+    else { return nil }
+    defer { sqlite3_finalize(statement) }
+    guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+    return Int(sqlite3_column_int64(statement, 0))
+  }
+
   /// Returns matching thread ids, newest first.
   ///
   /// ## Why recency and not relevance

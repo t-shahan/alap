@@ -188,25 +188,45 @@ struct MessageWebView: NSViewRepresentable {
     /// their design, and a horizontal scrollbar inside a message is worse than
     /// either.
     ///
-    /// Runs in the same pass as the height measurement because the height is
-    /// only meaningful AFTER the scale is applied.
+    /// ## Why `transform` and not `zoom`
+    ///
+    /// This used to set `body.style.zoom`. `zoom` is non-standard and has
+    /// LAYOUT semantics: WebKit re-runs layout at the scaled size, which
+    /// desynchronises anything whose position depends on a computed box —
+    /// floats, `table-layout: fixed` cells, absolutely positioned overlays,
+    /// and `mso-`-conditioned Outlook markup, which is most marketing mail.
+    ///
+    /// It also interacts badly with the sender's own media queries. Those
+    /// evaluate against the VIEWPORT, which is this web view rather than the
+    /// window, and the pane widths in play (557/645/685/700pt) straddle the
+    /// 600px threshold nearly all marketing mail switches layouts at. Under
+    /// `zoom` the query resolves against the un-zoomed viewport while the
+    /// content is re-laid out at the scaled size; under `transform` it cleanly
+    /// does not, because a transform is a paint-time operation and changes no
+    /// layout at all.
+    ///
+    /// The scale target is `#fit` rather than `<body>`: a transform on the body
+    /// interacts badly with viewport sizing, and the fit pass has to own the
+    /// element whose padding it surrenders.
     private static let fitAndMeasure = """
       (function () {
-        var body = document.body;
-        if (!body) { return 0; }
-        body.style.zoom = '';
-        body.style.paddingLeft = '';
-        body.style.paddingRight = '';
+        var fit = document.getElementById('fit');
+        if (!fit) { return 0; }
+        fit.style.transform = '';
+        fit.style.width = '';
+        fit.style.paddingLeft = '';
+        fit.style.paddingRight = '';
+
         var available = document.documentElement.clientWidth;
-        var content = body.scrollWidth;
+        var content = fit.scrollWidth;
         // Padding is the first thing to go, before any shrinking. A message
         // laid out for 600-700px would otherwise pay for our margins twice:
         // once in lost width and again in being scaled down to fit what was
         // left. Text mail keeps the margins because it never needs the room.
         if (available > 0 && content > available) {
-          body.style.paddingLeft = '0';
-          body.style.paddingRight = '0';
-          content = body.scrollWidth;
+          fit.style.paddingLeft = '0';
+          fit.style.paddingRight = '0';
+          content = fit.scrollWidth;
         }
         // A width of zero means the view has not been laid out yet. Dividing
         // by it would scale every message to the 0.5 floor below and shrink a
@@ -216,13 +236,23 @@ struct MessageWebView: NSViewRepresentable {
         // Below this the message is unreadable and fitting it is not a
         // kindness; let it clip rather than shrink to nothing.
         if (scale < 0.5) { scale = 0.5; }
-        if (scale < 1) { body.style.zoom = scale; }
-        // Read the height AFTER applying the scale, and do NOT scale it again.
-        // `scrollHeight` already reflects `zoom` — multiplying a second time
-        // reported 982px for a 1303px message and silently cut a quarter of it
-        // off, which looked like images failing to load. Measured across 30
-        // real messages before this was believed.
-        return Math.ceil(document.documentElement.scrollHeight);
+        if (scale < 1) {
+          fit.style.transformOrigin = 'top left';
+          fit.style.transform = 'scale(' + scale + ')';
+          // Keep the PRE-scale layout width, or the content reflows into the
+          // narrower box and the scale is computed against a moving target.
+          fit.style.width = (100 / scale) + '%';
+        }
+        // `getBoundingClientRect`, NOT `scrollHeight`.
+        //
+        // The old code measured `scrollHeight` and carried a hard-won comment
+        // saying not to scale the result again, because `scrollHeight` already
+        // reflected `zoom`. That fact INVERTS here: `scrollHeight` is a layout
+        // property and `transform` is a paint-time operation, so under a
+        // transform `scrollHeight` reports the UNSCALED height and would
+        // over-report by 1/scale. The bounding rect is the one that reflects
+        // the transform, which is why it replaces it.
+        return Math.ceil(fit.getBoundingClientRect().height);
       })()
       """
 
@@ -297,12 +327,41 @@ enum MessageDocument {
   /// Counted from the markup rather than tracked through the database, because
   /// the answer needed is "in what is on screen right now", and the document is
   /// what is on screen right now.
+  /// Counted from BOTH markers the sanitiser writes.
+  ///
+  /// `<img>` gets `data-blocked`. A remote `background-image` in a retained
+  /// `<style>` block gets its URL rewritten to a `blocked-remote:` scheme
+  /// instead, because a rule in a stylesheet belongs to no element until it
+  /// matches one — there is nothing to hang an attribute on. Counting only the
+  /// first meant a message whose remote images are all CSS backgrounds showed
+  /// no banner at all, and so had no route to loading them.
+  ///
+  /// `ranges(of:)` rather than `components(separatedBy:)`, which allocated the
+  /// full split array for every body on every render pass.
   static func blockedImageCount(in messages: [MessageRow]) -> Int {
     messages.reduce(0) { total, message in
       guard let html = message.body?.htmlBody else { return total }
-      return total + html.components(separatedBy: "data-blocked=").count - 1
+      return total
+        + html.ranges(of: "data-blocked=").count
+        + html.ranges(of: Self.blockedCSSMarker).count
+        + html.ranges(of: Self.blockedCSSAttributeMarker).count
     }
   }
+
+  /// The scheme the engine parks a blocked CSS URL behind, quote included so
+  /// the substitution that restores it cannot match a bare mention in text.
+  private static let blockedCSSMarker = "\"blocked-remote:"
+
+  /// The same marker as it survives inside a `style` ATTRIBUTE.
+  ///
+  /// The engine parks a blocked CSS URL behind `"blocked-remote:` in both
+  /// places, but an attribute value is entity-escaped on the way out — it has
+  /// to be, or the quote would end the attribute — so the stored bytes read
+  /// `&quot;blocked-remote:` there and `"blocked-remote:` in a `<style>` block.
+  /// Matching only the second left every attribute-borne background image
+  /// permanently dead once the attribute path started honouring the images
+  /// preference: blocked at ingest, and never restored at render.
+  private static let blockedCSSAttributeMarker = "&quot;blocked-remote:"
 
   /// - Parameter showRemoteImages: Restores the URLs the sanitiser withheld.
   ///   Defaults to on, following `ReadingSettings.loadsRemoteImages`. Mail is
@@ -310,7 +369,7 @@ enum MessageDocument {
   ///   version behind, it leaves a skeleton of empty cells. The privacy cost is
   ///   real and the setting states it plainly, but it is no longer the default.
   static func build(for messages: [MessageRow], isDark: Bool,
-                    showRemoteImages: Bool = true) -> String {
+                    showRemoteImages: Bool = true) -> RenderedMessage {
     let showHeaders = messages.count > 1
     // HTML mail is rendered on WHITE only when it brings colours of its own.
     //
@@ -333,11 +392,18 @@ enum MessageDocument {
     // `bgcolor` or one `color:` anywhere is enough to keep the light page. The
     // failure mode of guessing wrong in that direction is a white background
     // nobody wanted; the other direction is dark text on a dark background,
-    // which is unreadable. `<style>` blocks are dropped on ingest, so inline
-    // styles and `<font>` are the only places a colour can come from.
+    // which is unreadable.
+    //
+    // The bare substring `background` used to be in this list, justified by
+    // "`<style>` blocks are dropped on ingest, so inline styles and `<font>`
+    // are the only places a colour can come from." That is no longer true —
+    // the sanitiser keeps stylesheets and admits `class` — so `background`
+    // matched `background-image`, `background-position` and any
+    // `class="background-cell"` in retained markup, and the dark-canvas branch
+    // was close to dead. The markers below all name a COLOUR specifically.
     let bringsOwnColours = messages.contains { message in
       guard let html = message.body?.htmlBody else { return false }
-      for marker in ["bgcolor", "background", "color:", "color=", "<font"] {
+      for marker in ["bgcolor", "background-color", "color:", "color=", "<font"] {
         if html.range(of: marker, options: .caseInsensitive) != nil { return true }
       }
       return false
@@ -345,32 +411,57 @@ enum MessageDocument {
     let lightCanvas = hasHTML && bringsOwnColours
 
     let bodies = messages.map { message -> String in
+      // Prefixed class names. These are the APP's chrome sitting in a document
+      // full of the sender's CSS, and `msg-head` / `from` / `addr` / `when`
+      // are exactly the kind of names a newsletter template also uses. A
+      // collision should require intent rather than coincidence.
       let header = !showHeaders ? "" : """
-        <div class="msg-head">
-          <span class="from">\(escape(message.displayName))</span>
-          <span class="addr">\(escape(message.fromEmail))</span>
-          <span class="when">\(escape(message.sentDate.formatted(date: .abbreviated, time: .shortened)))</span>
+        <div class="alap-msg-head">
+          <span class="alap-from">\(escape(message.displayName))</span>
+          <span class="alap-addr">\(escape(message.fromEmail))</span>
+          <span class="alap-when">\(escape(message.sentDate.formatted(date: .abbreviated, time: .shortened)))</span>
         </div>
         """
       // Messages with no HTML fall back to their plain text, wrapped so it
       // keeps its own line breaks.
       var content = message.hasRenderableHTML
         ? (message.body?.htmlBody ?? "")
-        : "<pre class=\"plain\">\(escape(message.displayBody))</pre>"
+        : "<pre class=\"alap-plain\">\(escape(message.displayBody))</pre>"
       if showRemoteImages {
         content = restoringRemoteImages(in: content)
       }
-      return "<article>\(header)\(content)</article>"
+      return "<article class=\"alap-msg\">\(header)\(content)</article>"
     }
 
-    return """
+    // ## Why the app's stylesheet is emitted AFTER the bodies
+    //
+    // A retained `<style>` block sits in the body, scoped to nothing. With the
+    // app's rules in `<head>` they came FIRST in document order, so the app
+    // lost every specificity tie to a sender — and `msg-head`, `from`, `addr`,
+    // `when` and `pre.plain` were unprefixed names in a document full of
+    // stranger CSS. The app had stopped owning its own chrome. These headers
+    // render only in multi-message threads, which is exactly the case that also
+    // carries more than one sender stylesheet.
+    //
+    // Emitting last wins those ties on the same document-order rule that lost
+    // them, and takes nothing from the sender: every selector below names an
+    // `alap-` class or a structural element the app introduced.
+    //
+    // None of this was ever a security question — the property allowlist
+    // refuses positioning, `content`, `expression()` and custom properties, the
+    // selector allowlist refuses combinators, and 50 tests in `test_css.cpp`
+    // say so. It is a fidelity question.
+    let document = """
       <!doctype html>
       <html><head><meta charset="utf-8">
       <meta http-equiv="Content-Security-Policy"
             content="default-src 'none'; img-src cid: data:\(showRemoteImages ? " https:" : ""); style-src 'unsafe-inline'; font-src 'none'; form-action 'none'; base-uri 'none';\(showRemoteImages ? " upgrade-insecure-requests;" : "")">
-      <style>\(css(isDark: isDark && !lightCanvas))</style>
-      </head><body>\(bodies.joined())</body></html>
+      <style>\(baseCSS(isDark: isDark && !lightCanvas))</style>
+      </head><body><div id="fit">\(bodies.joined())</div>
+      <style>\(chromeCSS(isDark: isDark && !lightCanvas))</style>
+      </body></html>
       """
+    return RenderedMessage(html: document, usesLightCanvas: lightCanvas)
   }
 
   /// Puts withheld image URLs back into `src`.
@@ -386,6 +477,12 @@ enum MessageDocument {
     html
       .replacingOccurrences(of: "data-blocked-src=\"", with: "src=\"")
       .replacingOccurrences(of: "data-blocked=\"remote\"", with: "")
+      // The CSS half. Without it, a message whose remote images are all
+      // `background-image` had no route back to loading them in EITHER
+      // preference state — ingest sanitises with images off and stores the
+      // result, so the live URL exists nowhere else.
+      .replacingOccurrences(of: Self.blockedCSSMarker, with: "\"")
+      .replacingOccurrences(of: Self.blockedCSSAttributeMarker, with: "&quot;")
   }
 
   /// ## Why `font-src 'none'` is stated rather than inherited
@@ -419,7 +516,37 @@ enum MessageDocument {
   /// no scripts, no fonts, no frames and no remote images can load even if
   /// something slipped past the sanitiser. `img-src cid: data:` permits only
   /// content we already hold locally.
-  private static func css(isDark: Bool) -> String {
+  /// The page itself: canvas, default text, and the one rule the fit pass
+  /// operates on.
+  ///
+  /// Stays in `<head>`, because these are DEFAULTS a sender is entitled to
+  /// override — a message that sets its own body colour should win. Everything
+  /// the app needs to keep is in `chromeCSS`, after the bodies.
+  ///
+  /// ## Why there is no cell padding here
+  ///
+  /// `td, th { padding: 4px 8px }` used to be in this sheet, and it corrupted
+  /// the layout of exactly the mail this renderer exists for. Marketing and
+  /// transactional mail is built out of DEEPLY NESTED tables — the cells are
+  /// layout scaffolding, not data — so the padding applies at every level and
+  /// accumulates. On a real six-level daycare report the content column
+  /// collapsed to ~185px inside a 664px pane, every line wrapped, and the
+  /// document ran to 3,516px against the 1,750px it should be: half of it was
+  /// our padding.
+  ///
+  /// Measured over a 20-message corpus at 664px, removing it made **19 of 20
+  /// documents shorter**, the corpus 13% shorter overall, and the worst two
+  /// 49% shorter — and took pane overflow from 1/20 to 0/20 and height
+  /// mismatches from 4/20 to 2/20.
+  ///
+  /// It was always wrong; it got worse when the sanitiser began keeping
+  /// `<style>` and `class`, because more messages now lay themselves out the
+  /// way their sender designed and this rule fought every one of them.
+  ///
+  /// Senders that want cell padding set `cellpadding` or an inline style, and
+  /// both still work. Choosing the sender's cell metrics for them is not a
+  /// mail client's job.
+  private static func baseCSS(isDark: Bool) -> String {
     let text = isDark ? "#d8dee9" : "#1c1f24"
     let secondary = isDark ? "#8a94a6" : "#6b7280"
     let rule = isDark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)"
@@ -432,23 +559,20 @@ enum MessageDocument {
     return """
       :root { color-scheme: \(isDark ? "dark" : "light"); }
       html, body {
-        margin: 0; background: \(canvas);
+        margin: 0; padding: 0; background: \(canvas);
         color: \(text);
         font: 14px/1.55 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
         -webkit-text-size-adjust: 100%;
       }
-      /* Breathing room for ordinary mail. Surrendered by the fit pass below
-         when a message genuinely needs the width, so text messages read well
-         without costing wide marketing layouts the room they are built for. */
-      body { padding: 0 24px; }
-      article { padding: 0 0 28px; }
-      article + article { border-top: 1px solid \(rule); padding-top: 20px; }
-      .msg-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 14px; flex-wrap: wrap; }
-      .from { font-weight: 600; font-size: 13px; }
-      .addr, .when { color: \(secondary); font-size: 12px; }
-      .when { margin-left: auto; font-variant-numeric: tabular-nums; }
-      .plain { font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
-               white-space: pre-wrap; word-wrap: break-word; margin: 0; }
+      /* The fit pass's target. Breathing room for ordinary mail, surrendered
+         by that pass when a message genuinely needs the width — so text mail
+         reads well without costing wide marketing layouts the room they are
+         built for.
+
+         `border-box` is NOT optional: the fit pass sets `width` as a
+         percentage while padding may still be applied, and under the default
+         `content-box` the element would overflow by exactly the padding. */
+      #fit { box-sizing: border-box; padding: 0 24px; }
       a { color: \(link); }
       blockquote {
         margin: 12px 0; padding-left: 14px;
@@ -457,8 +581,38 @@ enum MessageDocument {
       /* Mail HTML routinely specifies widths far wider than the pane. */
       img, table { max-width: 100% !important; height: auto; }
       table { border-collapse: collapse; }
-      td, th { padding: 4px 8px; }
+      /* Deliberately no `td`/`th` padding — see the note above. */
       pre { white-space: pre-wrap; word-wrap: break-word; }
+      """
+  }
+
+  /// The app's own chrome, emitted after the bodies so it wins ties.
+  ///
+  /// Every selector here names something the app introduced. `img[data-blocked]`
+  /// is included for the same reason the classes are: it is one
+  /// attribute-selector rule holding a withheld image's box open, and a sender
+  /// rule of equal specificity earlier in the document could otherwise make a
+  /// blocked image look like a loaded one.
+  private static func chromeCSS(isDark: Bool) -> String {
+    let secondary = isDark ? "#8a94a6" : "#6b7280"
+    let rule = isDark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)"
+
+    return """
+      article.alap-msg { padding: 0 0 28px; }
+      article.alap-msg + article.alap-msg {
+        border-top: 1px solid \(rule); padding-top: 20px;
+      }
+      .alap-msg-head {
+        display: flex; gap: 8px; align-items: baseline;
+        margin-bottom: 14px; flex-wrap: wrap;
+      }
+      .alap-from { font-weight: 600; font-size: 13px; }
+      .alap-addr, .alap-when { color: \(secondary); font-size: 12px; }
+      .alap-when { margin-left: auto; font-variant-numeric: tabular-nums; }
+      .alap-plain {
+        font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: pre-wrap; word-wrap: break-word; margin: 0;
+      }
       /* A blocked image keeps its box rather than collapsing to nothing.
          `display: none` removed the element from layout entirely, so a message
          laid out as a table of image slices fell apart into stray padding and
@@ -481,4 +635,18 @@ enum MessageDocument {
       .replacingOccurrences(of: ">", with: "&gt;")
       .replacingOccurrences(of: "\"", with: "&quot;")
   }
+}
+
+/// A composed thread document, and what the app has to know about it.
+///
+/// The canvas decision used to be computed inside `build` and thrown away, so
+/// the reading pane could not tell whether it was about to draw a white page
+/// or a transparent one — and therefore drew every message flush to the edge
+/// of a dark window either way.
+struct RenderedMessage: Equatable {
+  let html: String
+  /// True when the message brought its own colours and is being rendered on a
+  /// white page. The pane frames those as documents rather than adopting them
+  /// as surfaces.
+  let usesLightCanvas: Bool
 }

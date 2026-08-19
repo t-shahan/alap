@@ -1,0 +1,76 @@
+import Foundation
+import Testing
+@testable import Alap
+
+/// The row's shape at each density.
+///
+/// Density is the direction's most falsifiable claim — "about 20 conversations
+/// in a standard window" — so it gets a test rather than a screenshot.
+struct RowAnatomyTests {
+  @Test("Compact fits the stated number of conversations")
+  func compactMeetsTheBar() {
+    // The whole argument for density: at the old ~81pt row a 900pt window
+    // showed NINE conversations, which is not enough context to triage a
+    // 32,000-message mailbox against.
+    let compact = RowAnatomy(.compact)
+
+    #expect(compact.height == 44)
+    #expect(compact.visibleRows(inListHeight: 880) >= 20)
+  }
+
+  @Test("Every density sits on the 4pt grid", arguments: ListDensity.allCases)
+  func heightsAreOnGrid(density: ListDensity) {
+    let anatomy = RowAnatomy(density)
+    #expect(anatomy.height.truncatingRemainder(dividingBy: 4) == 0)
+  }
+
+  @Test("Heights are ordered and fixed", arguments: ListDensity.allCases)
+  func heightIsDeterministic(density: ListDensity) {
+    // Fixed per density, not emergent from content — which is what lets `List`
+    // use a constant row height and is why the flag no longer makes one row
+    // taller than its neighbours.
+    #expect(RowAnatomy(density) == RowAnatomy(density))
+  }
+
+  @Test("Denser rows are shorter, in order")
+  func densitiesAreOrdered() {
+    #expect(RowAnatomy(.compact).height < RowAnatomy(.comfortable).height)
+    #expect(RowAnatomy(.comfortable).height < RowAnatomy(.relaxed).height)
+  }
+
+  @Test("Only compact runs the subject and snippet together")
+  func onlyCompactIsSingleLine() {
+    // In compact the snippet runs on after the subject in one `Text`, so
+    // truncation eats the snippet first. The other two give it its own lines.
+    #expect(RowAnatomy(.compact).isSingleLine)
+    #expect(RowAnatomy(.compact).snippetLines == 0)
+    #expect(RowAnatomy(.comfortable).isSingleLine == false)
+    #expect(RowAnatomy(.comfortable).snippetLines == 1)
+    #expect(RowAnatomy(.relaxed).snippetLines == 2)
+  }
+
+  @Test("Comfortable is the default")
+  func comfortableIsDefault() {
+    // Decided by opening the running build against a real mailbox rather than
+    // by argument: at this list's width compact truncates the subject to a
+    // stub, and a row that tells you who wrote but not what about is not a
+    // triage row. Comfortable still shows ~14 conversations against the old 9.
+    #expect(ListDensity.standard == .comfortable)
+    #expect(RowAnatomy(.standard).snippetLines == 1)
+  }
+
+  @Test("The densities are still offered densest-first")
+  func orderingIsUnchanged() {
+    // The picker reads as a scale, so the ORDER stays by density even though
+    // the default is no longer the first entry.
+    #expect(ListDensity.allCases == [.compact, .comfortable, .relaxed])
+  }
+
+  @Test("Density identifiers round-trip for persistence",
+        arguments: ListDensity.allCases)
+  func rawValuesRoundTrip(density: ListDensity) {
+    // These land in UserDefaults, so renaming a case silently resets
+    // everyone's choice.
+    #expect(ListDensity(rawValue: density.rawValue) == density)
+  }
+}

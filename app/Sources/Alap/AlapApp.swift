@@ -39,7 +39,10 @@ struct AlapApp: App {
 
   var body: some Scene {
     WindowGroup {
-      ContentView(store: store)
+      // The daemon passed explicitly rather than through the environment: it
+      // is one value one level deep, and the footer reading it is the only
+      // thing standing between a dead sync process and no symptom at all.
+      ContentView(store: store, daemon: daemon)
         // The narrowest layout is a hidden sidebar (0) + list (300) + the reading
         // pane floor (380). Below that something has to be squeezed, so the
         // window refuses instead.

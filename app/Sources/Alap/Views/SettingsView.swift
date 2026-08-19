@@ -5,8 +5,9 @@ import SwiftUI
 /// Deliberately small. A settings window is where preferences go to be found,
 /// not where features go to hide — anything that belongs in the main window
 /// should stay there. Today that is the theme, which already has a menu and a
-/// control in the sidebar, and the remote-image switch, which has nowhere else
-/// to live because it is a standing decision rather than a per-message one.
+/// control in the sidebar; the list density, which is where a Mac user looks
+/// for it; and the remote-image switch, which has nowhere else to live because
+/// it is a standing decision rather than a per-message one.
 struct SettingsView: View {
   @Bindable var settings: ReadingSettings
   @Bindable var themes: ThemeController
@@ -22,6 +23,23 @@ struct SettingsView: View {
         .pickerStyle(.inline)
       } header: {
         Text("Appearance").font(Theme.Font.bodyEmphasis)
+      }
+
+      Section {
+        Picker("Density", selection: $settings.listDensity) {
+          ForEach(ListDensity.allCases) { density in
+            Text(density.title).tag(density)
+          }
+        }
+        .pickerStyle(.inline)
+
+        Text(settings.listDensity.subtitle)
+          .font(Theme.Font.micro)
+          .fontWeight(.regular)
+          .foregroundStyle(Theme.Ink.tertiary)
+          .fixedSize(horizontal: false, vertical: true)
+      } header: {
+        Text("Conversation list").font(Theme.Font.bodyEmphasis)
       }
 
       Section {

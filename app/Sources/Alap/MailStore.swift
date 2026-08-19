@@ -76,6 +76,38 @@ final class MailStore {
   private(set) var threads: [ThreadRow] = []
   private(set) var threadsLoaded = false
 
+  /// Threads that arrived in a live update within the last moment.
+  ///
+  /// Drives the row's arrival flash; ids leave the set `arrivalDecay` after
+  /// entering, animated, and the removal is what fades the tint out. The sync
+  /// loop delivers new mail in about six seconds with no refresh, and the app
+  /// used to render that as a silent list mutation — a genuinely magic moment
+  /// shown as nothing at all.
+  private(set) var recentlyArrived: Set<String> = []
+
+  /// How long a row stays marked as newly arrived.
+  static let arrivalDecay: Duration = .seconds(1.5)
+
+  /// When a live update last actually changed which conversations exist.
+  ///
+  /// Not persisted across launches, deliberately: "synced 3 days ago" at
+  /// launch, before the first poll has completed, is stale information
+  /// presented as current.
+  private(set) var lastDelivery: Date?
+
+  /// What the last search cost, or nil when nothing is being searched.
+  ///
+  /// The direction's whole pitch rests on numbers the app never measured. This
+  /// is the measurement, and it doubles as a regression sentinel: if it ever
+  /// reads 40 ms, someone has broken the early-termination design
+  /// `SearchIndex` documents.
+  private(set) var lastSearch: SearchStats?
+
+  /// Total messages in the local index, or nil when the index is unavailable.
+  ///
+  /// Measured at open and after each delivery, never per render.
+  private(set) var indexedMessageCount: Int?
+
   /// The sidebar destination currently being shown.
   ///
   /// Replaces the old "selected label or nil" model, because the design's
@@ -224,6 +256,7 @@ final class MailStore {
 
   func start() {
     bridge.start()
+    refreshIndexCount()
 
     bridge.subscribe(id: "accounts", query: "accounts.all", as: AccountRow.self) { [weak self] rows, _ in
       self?.accounts = rows
@@ -369,13 +402,25 @@ final class MailStore {
   /// sidebar click.
   private func resubscribeThreads() {
     threadsLoaded = false
+    if !isSearching { lastSearch = nil }
 
     // STAGE TWO of search. FTS5 has already matched and returned thread ids;
     // feeding them through ZQL rather than rendering SQLite rows directly is
     // what keeps results live — a thread marked read while the results are on
     // screen updates itself.
     if isSearching {
+      // Timed here because this is the only call site, and because a claim
+      // about being fast that the product cannot measure is a claim nobody can
+      // check — including whoever later changes the query.
+      let clock = ContinuousClock()
+      let started = clock.now
       let ids = search.threadIDs(matching: searchText)
+      let elapsed = started.duration(to: clock.now)
+      lastSearch = SearchStats(
+        matched: ids.count,
+        milliseconds: Double(elapsed.components.attoseconds) / 1e15
+          + Double(elapsed.components.seconds) * 1000
+      )
       if ids.isEmpty {
         threads = []
         threadsLoaded = true
@@ -391,6 +436,11 @@ final class MailStore {
         // FTS5 ranked these by relevance; ZQL returns them by recency. Restore
         // the relevance order, since that is what the user asked for.
         let rank = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($1, $0) })
+        // NEVER animated, and not an oversight. Results chase keystrokes, so
+        // motion here would sit between typing and seeing — which is lag
+        // wearing the costume of polish. The live subscription below is the
+        // one that animates, because mail arriving IS an event and a search
+        // result updating is not.
         self?.threads = rows.sorted { (rank[$0.id] ?? .max) < (rank[$1.id] ?? .max) }
         if isComplete { self?.threadsLoaded = true }
       }
@@ -433,11 +483,91 @@ final class MailStore {
       // but `resultType` has never reported `complete` through the bridge — so
       // gating on it left the UI saying "Loading…" permanently.
       storeLog.info("threads update: \(rows.count, privacy: .public) rows")
-      self?.threads = rows
-      self?.threadsLoaded = true
-      self?.isGrowingThreads = false
-      self?.reconcileSelection()
+      self?.applyLiveThreads(rows)
     }
+  }
+
+  /// Applies a live thread-list update, animating it when it represents events.
+  ///
+  /// ## Why `withAnimation` lives in the store
+  ///
+  /// The alternative is the view diffing consecutive arrays to decide whether
+  /// to animate — which re-derives `threadsLoaded` and `isGrowingThreads`
+  /// somewhere they are not available. Every list change in the app flows
+  /// through this one assignment, so there is exactly one place to get right.
+  ///
+  /// The guards are load-bearing, and `ThreadListDelta` states them:
+  ///
+  ///   - The first delivery of any list never animates. `resubscribeThreads()`
+  ///     clears `threadsLoaded` before every mailbox switch and every search,
+  ///     so switching from Inbox to Sent does not play 500 insert animations.
+  ///     A mailbox switch is navigation, not events.
+  ///   - Pagination never animates. Two hundred appended rows of history are
+  ///     not arriving mail.
+  ///
+  /// Archive and trash arrive here too, as Zero-confirmed list changes — so
+  /// the archived row physically collapses and the list closes over it,
+  /// without a single line written for that case.
+  private func applyLiveThreads(_ rows: [ThreadRow]) {
+    let delta = ThreadListDelta(
+      previous: threads.map(\.id),
+      current: rows.map(\.id),
+      listWasLive: threadsLoaded,
+      isGrowing: isGrowingThreads
+    )
+
+    if delta.animates {
+      withAnimation(Theme.Motion.standard) { threads = rows }
+    } else {
+      threads = rows
+    }
+    threadsLoaded = true
+    isGrowingThreads = false
+    reconcileSelection()
+
+    guard delta.animates else { return }
+    if delta.changedMembership {
+      lastDelivery = .now
+      refreshIndexCount()
+    }
+    for id in delta.arrivals { markArrived(id) }
+  }
+
+  /// Marks one id as newly arrived and schedules its decay.
+  ///
+  /// Guarded by identity on the way out, in the same shape as
+  /// `UndoStack.show`: a second arrival for the same conversation restarts the
+  /// clock rather than letting the first one clear it early.
+  ///
+  /// One welcome side effect, on purpose: **undo restores flash too.** A
+  /// restored thread re-enters as a new id in a live update, so the flash shows
+  /// you where the conversation went back to. It is not special-cased away.
+  private func markArrived(_ id: String) {
+    recentlyArrived.insert(id)
+    arrivalTasks[id]?.cancel()
+    arrivalTasks[id] = Task { [weak self] in
+      try? await Task.sleep(for: MailStore.arrivalDecay)
+      guard !Task.isCancelled else { return }
+      guard let self else { return }
+      self.arrivalTasks[id] = nil
+      // `fade`: this is an opacity/colour decay with no physical reading, and
+      // a spring would overshoot it.
+      withAnimation(Theme.Motion.fade) { _ = self.recentlyArrived.remove(id) }
+    }
+  }
+
+  @ObservationIgnored private var arrivalTasks: [String: Task<Void, Never>] = [:]
+
+  /// Clears the arrival set without waiting out the decay. For tests.
+  func clearArrivalsForTesting() {
+    for task in arrivalTasks.values { task.cancel() }
+    arrivalTasks.removeAll()
+    recentlyArrived.removeAll()
+  }
+
+  /// Re-reads the index size. Cheap, and never called per render.
+  private func refreshIndexCount() {
+    indexedMessageCount = search.isAvailable ? search.messageCount() : nil
   }
 
   /// Asks for more threads when a row near the end comes on screen.
@@ -499,6 +629,14 @@ final class MailStore {
   /// Must match `MAX_THREAD_LIMIT` in queries.ts, which rejects anything above
   /// it — exceeding it would fail the query rather than return fewer rows.
   static let maxThreadLimit = 50_000
+
+  /// Unread across every connected mailbox's inbox.
+  ///
+  /// The rail's reading, not a badge — so it returns a number rather than a
+  /// nil-when-zero optional. Zero unread is information.
+  var unreadTotal: Int {
+    labels.filter { $0.remoteId == "INBOX" }.reduce(0) { $0 + $1.unreadCount }
+  }
 
   /// Unread count for a sidebar row, or nil when it should show no badge.
   ///

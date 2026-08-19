@@ -19,9 +19,11 @@ struct AccountRowView: View {
   var body: some View {
     Button(action: select) {
       HStack(spacing: Theme.Space.base) {
-        Circle()
-          .fill(Color(hex: account.color) ?? Theme.Accent.muted)
-          .frame(width: 8, height: 8)
+        // Colour AND an initial. Colour was the only channel separating one
+        // account from another, here and on the thread stripe; a marker that
+        // also carries a letter still works when the hue does not.
+        AccountMarker(color: Color(hex: account.color) ?? Theme.Accent.muted,
+                      initial: account.shortName.first.map { String($0).uppercased() } ?? "?")
 
         VStack(alignment: .leading, spacing: 0) {
           Text(account.shortName)
@@ -38,29 +40,34 @@ struct AccountRowView: View {
         // quietest.
         if isHovering || isEditing {
           Image(systemName: "ellipsis")
-            .font(.system(size: Theme.Size.smallIcon - 2))
+            .font(Theme.Icon.small)
             .foregroundStyle(Theme.Ink.secondary)
             .frame(width: 18, height: 18)
-            .background(Theme.Surface.raised, in: .rect(cornerRadius: Theme.Radius.checkbox))
+            .background(Theme.Surface.raised, in: .rect(cornerRadius: Theme.Radius.tight))
             .onTapGesture { isEditing = true }
             .help("Account settings")
+            .accessibilityLabel("Account settings for \(account.emailAddress)")
         } else if unread > 0 {
           Text("\(unread)")
             .font(Theme.Font.micro)
             .fontWeight(.medium)
             .foregroundStyle(Theme.Ink.secondary)
+            .monospacedDigit()
         }
       }
       .padding(.horizontal, Theme.Space.loose)
-      .frame(height: 30)
+      // One height for every navigation row in this pane. Mailbox rows were
+      // 32, account rows 30, add-account 30 — three values for the same kind
+      // of thing, which is what stops a sidebar reading as a column.
+      .frame(height: Theme.Size.rowHeight)
       .background(
-        isSelected ? Theme.Surface.selection
-          : (isHovering ? Theme.Surface.control : .clear),
+        isSelected ? Theme.Surface.selection : .clear,
         in: .rect(cornerRadius: Theme.Radius.control)
       )
       .contentShape(.rect)
     }
-    .buttonStyle(.plain)
+    // Hover and pressed come from the shared style now, not from this view.
+    .buttonStyle(.alap())
     .onHover { isHovering = $0 }
     .help(account.emailAddress)
     .popover(isPresented: $isEditing, arrowEdge: .trailing) {
@@ -149,7 +156,10 @@ struct ConnectAccountSheet: View {
       VStack(alignment: .leading, spacing: Theme.Space.base) {
         Label(email, systemImage: "checkmark.circle.fill")
           .font(Theme.Font.bodyEmphasis)
-          .foregroundStyle(Theme.Accent.blue)
+          // Green, not blue. It is literally a success checkmark, and it was
+          // rendered in the action colour — blue means unread or the primary
+          // action in context, and this is neither.
+          .foregroundStyle(Theme.Accent.ok)
         Text("\(messages.formatted()) messages synced.")
           .font(Theme.Font.body)
           .foregroundStyle(Theme.Ink.secondary)
@@ -198,26 +208,24 @@ extension Color {
 /// what is currently true.
 struct ThemeSwitcher: View {
   @State private var themes = ThemeController.shared
-  @State private var isHovering = false
 
   var body: some View {
     Button {
-      withAnimation(Theme.Motion.standard) { themes.theme = next }
+      // `fade`, permanently. A palette swap is a colour interpolation, and a
+      // spring's overshoot would visibly sail past the destination palette and
+      // come back. This must never acquire a spring by riding a
+      // general-purpose token.
+      withAnimation(Theme.Motion.fade) { themes.theme = next }
     } label: {
       Image(systemName: next.symbol)
-        .font(.system(size: Theme.Size.smallIcon - 2))
-        .foregroundStyle(isHovering ? Theme.Ink.secondary : Theme.Ink.tertiary)
+        .font(Theme.Icon.small)
         .frame(width: 22, height: 22)
-        .background(
-          isHovering ? Theme.Surface.control : .clear,
-          in: .rect(cornerRadius: Theme.Radius.control)
-        )
-        .contentShape(.rect)
     }
-    .buttonStyle(.plain)
-    .onHover { isHovering = $0 }
+    .buttonStyle(.alap())
     .help("Switch to the \(next.title) appearance")
-    .accessibilityLabel("Appearance: \(themes.theme.title)")
+    // Names the ACTION. It used to report the CURRENT theme while the button
+    // switched to the next one, so the label contradicted the press.
+    .accessibilityLabel("Switch to \(next.title) appearance")
   }
 
   private var next: AppTheme {
@@ -343,13 +351,39 @@ struct AccountSettingsPopover: View {
         }
         .padding(2)
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.alap())
     .help(name)
+    .accessibilityLabel(name)
   }
 
   private func commit() {
     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
     Task { await save(trimmed.isEmpty ? nil : trimmed, color) }
     dismiss()
+  }
+}
+
+/// An account's marker: its colour, and its initial.
+///
+/// Colour was the only channel telling one account from another — the sidebar
+/// dot, the composer's From dot and the thread stripe were all hue and nothing
+/// else. `AccountPalette` already does unusually well here by separating its
+/// first two choices on lightness as well as hue, and this finishes the job:
+/// the letter survives any colour vision at all.
+struct AccountMarker: View {
+  let color: Color
+  let initial: String
+  var diameter: CGFloat = 14
+
+  var body: some View {
+    Text(initial)
+      .font(.system(size: diameter * 0.62, weight: .bold))
+      // White on the account colour rather than an ink level: these hues are
+      // mid-lightness by design, so a palette-following ink would invert
+      // legibility between themes while the swatch stays put.
+      .foregroundStyle(.white)
+      .frame(width: diameter, height: diameter)
+      .background(color, in: .circle)
+      .accessibilityHidden(true)
   }
 }

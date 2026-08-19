@@ -25,6 +25,7 @@ final class ReadingSettings {
   static let shared = ReadingSettings()
 
   private static let remoteImagesKey = "reading.loadsRemoteImages"
+  private static let densityKey = "reading.listDensity"
 
   /// Whether remote images load without being asked for.
   ///
@@ -39,10 +40,28 @@ final class ReadingSettings {
     }
   }
 
+  /// How dense the thread list is.
+  ///
+  /// Defaults to `.comfortable` — see `ListDensity.standard` for why, which is
+  /// a decision made by opening the running build rather than by argument.
+  /// Compact is one setting away for anyone who wants it.
+  var listDensity: ListDensity {
+    didSet {
+      guard listDensity != oldValue else { return }
+      UserDefaults.standard.set(listDensity.rawValue, forKey: Self.densityKey)
+    }
+  }
+
   private init() {
     // `object(forKey:)` rather than `bool(forKey:)`, which cannot tell an
     // absent key from a stored `false` and would silently override the default.
     let stored = UserDefaults.standard.object(forKey: Self.remoteImagesKey) as? Bool
     loadsRemoteImages = stored ?? true
+
+    // Same `object(forKey:)` discipline: an absent key must resolve to the
+    // designed default rather than to whatever `string(forKey:)` returns for
+    // nothing.
+    let density = UserDefaults.standard.object(forKey: Self.densityKey) as? String
+    listDensity = density.flatMap(ListDensity.init(rawValue:)) ?? .standard
   }
 }

@@ -129,7 +129,7 @@ struct RenderingTests {
 
   @Test("The document carries a restrictive CSP")
   func documentHasCSP() throws {
-    let document = MessageDocument.build(for: [try message(html: "<p>hi</p>")], isDark: false)
+    let document = MessageDocument.build(for: [try message(html: "<p>hi</p>")], isDark: false).html
 
     #expect(document.contains("Content-Security-Policy"))
     // default-src 'none' is what stops a remote tracking pixel from phoning
@@ -151,14 +151,14 @@ struct RenderingTests {
     // under this policy without this directive. The fallback is not enough.
     for images in [true, false] {
       let document = MessageDocument.build(for: [try message(html: "<p>hi</p>")],
-                                           isDark: false, showRemoteImages: images)
+                                           isDark: false, showRemoteImages: images).html
       #expect(document.contains("font-src 'none'"), "images=\(images)")
     }
   }
 
   @Test("The CSP permits no remote image origin")
   func blocksRemoteImages() throws {
-    let document = MessageDocument.build(for: [try message(html: "<p>hi</p>")], isDark: false)
+    let document = MessageDocument.build(for: [try message(html: "<p>hi</p>")], isDark: false).html
 
     // img-src allows only cid: and data:. An https: origin here would re-enable
     // the tracking pixels the engine strips on ingest.
@@ -172,8 +172,8 @@ struct RenderingTests {
     // but leaves the text at its default got our dark-theme grey on their
     // white — 11 of 30 real messages carried text under 2:1 contrast.
     let message = try message(html: ##"<table bgcolor="#ffffff"><tr><td>hi</td></tr></table>"##)
-    let light = MessageDocument.build(for: [message], isDark: false)
-    let dark = MessageDocument.build(for: [message], isDark: true)
+    let light = MessageDocument.build(for: [message], isDark: false).html
+    let dark = MessageDocument.build(for: [message], isDark: true).html
 
     #expect(light == dark, "coloured mail should not follow the app theme")
     #expect(dark.contains("background: #ffffff"), "the light page must be painted")
@@ -185,8 +185,8 @@ struct RenderingTests {
     // A two-line reply has nothing to clash with, and rendering it as a bright
     // slab in a dark window is our doing rather than the sender's.
     let message = try message(html: "<p>hi</p><p>see you then</p>")
-    let dark = MessageDocument.build(for: [message], isDark: true)
-    let light = MessageDocument.build(for: [message], isDark: false)
+    let dark = MessageDocument.build(for: [message], isDark: true).html
+    let light = MessageDocument.build(for: [message], isDark: false).html
 
     #expect(dark != light, "colourless mail should follow the theme")
     #expect(dark.contains("background: transparent"))
@@ -202,7 +202,7 @@ struct RenderingTests {
                      ##"<td bgcolor="#eee">hi</td>"##,
                      ##"<font color="red">hi</font>"##] {
       let message = try message(html: coloured)
-      let dark = MessageDocument.build(for: [message], isDark: true)
+      let dark = MessageDocument.build(for: [message], isDark: true).html
       #expect(dark.contains("color-scheme: light"), "\(coloured) should stay light")
     }
   }
@@ -212,8 +212,8 @@ struct RenderingTests {
     // Plain text has no colours of its own, so there is nothing to clash with
     // and every reason to match the surrounding window.
     let message = try plainMessage(text: "hello")
-    let light = MessageDocument.build(for: [message], isDark: false)
-    let dark = MessageDocument.build(for: [message], isDark: true)
+    let light = MessageDocument.build(for: [message], isDark: false).html
+    let dark = MessageDocument.build(for: [message], isDark: true).html
 
     #expect(light != dark, "the theme argument should still change plain text")
     #expect(dark.contains("background: transparent"))
@@ -221,7 +221,7 @@ struct RenderingTests {
 
   @Test("An empty thread still produces a valid document")
   func handlesNoMessages() {
-    let document = MessageDocument.build(for: [], isDark: false)
+    let document = MessageDocument.build(for: [], isDark: false).html
     #expect(document.contains("<html") || document.contains("<!DOCTYPE"))
   }
 
@@ -302,7 +302,7 @@ struct RemoteImageTests {
   @Test("While blocking, the URL is present but inert")
   func blockedDocumentCannotLoadRemoteImages() throws {
     let document = MessageDocument.build(
-      for: [try message(html: blocked)], isDark: true, showRemoteImages: false)
+      for: [try message(html: blocked)], isDark: true, showRemoteImages: false).html
 
     // The URL survives so it CAN be restored...
     #expect(document.contains("data-blocked-src="))
@@ -317,7 +317,7 @@ struct RemoteImageTests {
     // images, and withholding them leaves a skeleton of empty cells rather
     // than a clean text version — so the default changed and the privacy
     // control moved into Settings, where it says what it costs.
-    let document = MessageDocument.build(for: [try message(html: blocked)], isDark: true)
+    let document = MessageDocument.build(for: [try message(html: blocked)], isDark: true).html
 
     #expect(document.contains("src=\"https://t.example/a.gif\""))
     #expect(document.contains("img-src cid: data: https:"))
@@ -328,7 +328,7 @@ struct RemoteImageTests {
     // Either half alone is useless: a restored src with the old CSP is blocked
     // by WebKit, and a widened CSP with no src has nothing to load.
     let document = MessageDocument.build(
-      for: [try message(html: blocked)], isDark: true, showRemoteImages: true)
+      for: [try message(html: blocked)], isDark: true, showRemoteImages: true).html
 
     #expect(document.contains("src=\"https://t.example/a.gif\""))
     #expect(document.contains("img-src cid: data: https:"))
@@ -339,7 +339,7 @@ struct RemoteImageTests {
   func loadingDoesNotRelaxScriptPolicy() throws {
     // The one thing that must not follow from "show me the pictures".
     let document = MessageDocument.build(
-      for: [try message(html: blocked)], isDark: true, showRemoteImages: true)
+      for: [try message(html: blocked)], isDark: true, showRemoteImages: true).html
 
     #expect(document.contains("default-src 'none'"))
     #expect(!document.contains("script-src"))
@@ -354,7 +354,199 @@ struct RemoteImageTests {
     let sneaky = try message(
       html: #"<img data-evil-src="https://evil.example/x.gif" alt="x">"#)
     let document = MessageDocument.build(for: [sneaky], isDark: true,
-                                         showRemoteImages: true)
+                                         showRemoteImages: true).html
     #expect(!document.contains(" src=\"https://evil.example"))
+  }
+
+  // MARK: - The fit target, and who owns the cascade
+
+  @Test("The bodies are wrapped in a stable transform target")
+  func bodiesAreWrapped() throws {
+    // The fit pass scales `#fit`, not `<body>`: a transform on the body
+    // interacts badly with viewport sizing, and the pass has to own the
+    // element whose padding it surrenders as its first step.
+    let document = MessageDocument.build(
+      for: [try message(html: "<p>hi</p>")], isDark: true).html
+
+    #expect(document.contains(##"<body><div id="fit">"##))
+    #expect(document.contains("#fit { box-sizing: border-box; padding: 0 24px; }"))
+    // `border-box` is load-bearing, not tidiness: the fit pass sets `width` as
+    // a percentage while padding may still be live, and under `content-box`
+    // the element would overflow by exactly the padding.
+    #expect(!document.contains("body { padding: 0 24px; }"))
+  }
+
+  @Test("The app's chrome rules are emitted AFTER the sender's markup")
+  func appStylesheetWinsTies() throws {
+    // A retained `<style>` block sits in the body, scoped to nothing. With the
+    // app's rules in `<head>` they came first in document order, so the app
+    // lost every specificity tie to a stranger's newsletter template — in a
+    // document that also contains that stranger's CSS.
+    let document = MessageDocument.build(
+      for: [try message(html: "<p>one</p>"), try message(html: "<p>two</p>")],
+      isDark: true
+    ).html
+
+    let chrome = try #require(document.range(of: ".alap-msg-head {"))
+    let bodyEnd = try #require(document.range(of: "</div>"))
+    #expect(chrome.lowerBound > bodyEnd.lowerBound,
+            "the app's rules must come after the bodies to win on document order")
+  }
+
+  @Test("Chrome class names are reserved rather than generic")
+  func chromeClassesArePrefixed() throws {
+    // `msg-head`, `from`, `addr`, `when` are exactly the names a marketing
+    // template also uses. A collision should require intent.
+    let document = MessageDocument.build(
+      for: [try message(html: "<p>one</p>"), try message(html: "<p>two</p>")],
+      isDark: true
+    ).html
+
+    #expect(document.contains(##"class="alap-msg-head""##))
+    #expect(document.contains(##"class="alap-from""##))
+    #expect(!document.contains(##"class="msg-head""##))
+    #expect(!document.contains(##"class="from""##))
+  }
+
+  // MARK: - The canvas decision leaves the building
+
+  @Test("The canvas decision is reported, not just applied")
+  func canvasDecisionIsExposed() throws {
+    // It used to be computed inside `build` and discarded, so the reading pane
+    // could not tell whether it was about to draw a sender's white page or the
+    // app's own surface — and framed neither.
+    let coloured = try message(html: ##"<table bgcolor="#ffffff"><tr><td>hi</td></tr></table>"##)
+    let plain = try message(html: "<p>hi</p><p>see you then</p>")
+
+    #expect(MessageDocument.build(for: [coloured], isDark: true).usesLightCanvas)
+    #expect(MessageDocument.build(for: [plain], isDark: true).usesLightCanvas == false)
+  }
+
+  @Test("A bare `background` shorthand no longer forces the light page")
+  func backgroundImageIsNotAColour() throws {
+    // `background` matched `background-image`, `background-position` and any
+    // `class="background-cell"` in retained markup — and the justification for
+    // it ("`<style>` blocks are dropped on ingest") stopped being true when
+    // the sanitiser started keeping them. The markers now name a colour.
+    let positioned = try message(
+      html: ##"<div class="background-cell" style="background-position: center">hi</div>"##)
+
+    #expect(MessageDocument.build(for: [positioned], isDark: true).usesLightCanvas == false)
+  }
+
+  // MARK: - The CSS half of the images preference
+
+  @Test("Remote images blocked in a stylesheet are counted")
+  func cssBlockedImagesAreCounted() throws {
+    // The engine defuses a remote `background-image` by rewriting its URL to a
+    // scheme nothing can resolve, NOT by writing `data-blocked` — a rule in a
+    // stylesheet belongs to no element until it matches one, so there is
+    // nothing to hang an attribute on. Counting only the attribute meant a
+    // message built entirely from CSS backgrounds showed no banner at all.
+    let css = try message(html: """
+      <style>.hero { background-image: url("blocked-remote:https://t.example/a.png"); }</style>
+      <div class="hero">hi</div>
+      """)
+
+    #expect(MessageDocument.blockedImageCount(in: [css]) == 1)
+  }
+
+  @Test("Remote images blocked in a stylesheet can be loaded")
+  func cssBlockedImagesCanBeRestored() throws {
+    // The matching hole: with no route back, such a message had no way to load
+    // its images in EITHER preference state, because ingest sanitises with
+    // images off and stores the result.
+    let css = try message(html: """
+      <style>.hero { background-image: url("blocked-remote:https://t.example/a.png"); }</style>
+      <div class="hero">hi</div>
+      """)
+
+    let withheld = MessageDocument.build(for: [css], isDark: true,
+                                         showRemoteImages: false).html
+    let loaded = MessageDocument.build(for: [css], isDark: true,
+                                       showRemoteImages: true).html
+
+    #expect(withheld.contains("blocked-remote:"))
+    #expect(!loaded.contains("blocked-remote:"))
+    #expect(loaded.contains(##"url("https://t.example/a.png")"##))
+  }
+}
+
+/// Blocked CSS backgrounds, in both the places the engine parks them.
+@MainActor
+struct BlockedCSSBackgroundTests {
+  private func message(html: String) throws -> MessageRow {
+    let escaped = String(
+      data: try JSONSerialization.data(withJSONObject: [html]), encoding: .utf8)!
+      .dropFirst().dropLast()
+    let json = """
+      {"id":"m1","threadId":"th1","fromName":"Ada","fromEmail":"ada@example.com",
+       "toRecipients":[],"ccRecipients":[],"subject":"S","snippet":"s",
+       "sentAt":1700000000000,"isRead":true,"isStarred":false,
+       "hasAttachments":false,"rfc822MessageId":null,
+       "body":{"messageId":"m1","htmlBody":\(escaped),"textBody":null},
+       "attachments":[]}
+      """
+    return try JSONDecoder().decode(MessageRow.self, from: Data(json.utf8))
+  }
+
+  /// A `style` attribute value is entity-escaped, so the marker reads
+  /// `&quot;blocked-remote:` there and `"blocked-remote:` in a `<style>` block.
+  private static let inAttribute =
+    #"<td style="background-image:url(&quot;blocked-remote:https://cdn.test/a.png&quot;)">x</td>"#
+  private static let inBlock =
+    #"<style>.a{background-image:url("blocked-remote:https://cdn.test/a.png")}</style>"#
+
+  @Test("Both spellings are restored when images are on")
+  func restoresBothSpellings() throws {
+    for html in [Self.inAttribute, Self.inBlock] {
+      let out = MessageDocument.build(for: [try message(html: html)],
+                                      isDark: false, showRemoteImages: true).html
+      #expect(!out.contains("blocked-remote:"), "left parked: \(html.prefix(40))")
+      #expect(out.contains("cdn.test/a.png"))
+    }
+  }
+
+  @Test("Both spellings stay parked when images are off")
+  func keepsBothParked() throws {
+    for html in [Self.inAttribute, Self.inBlock] {
+      let out = MessageDocument.build(for: [try message(html: html)],
+                                      isDark: false, showRemoteImages: false).html
+      #expect(out.contains("blocked-remote:"))
+    }
+  }
+
+  @Test("Both spellings are counted, so the offer to load them appears")
+  func countsBothSpellings() throws {
+    // Counting only one meant a message whose remote images are all CSS
+    // backgrounds showed no banner, and so had no route to loading them.
+    for html in [Self.inAttribute, Self.inBlock] {
+      #expect(MessageDocument.blockedImageCount(in: [try message(html: html)]) == 1)
+    }
+  }
+
+  @Test("The app imposes no cell padding of its own")
+  func noBlanketCellPadding() throws {
+    // `td, th { padding: 4px 8px }` shipped in this stylesheet and corrupted
+    // the layout of exactly the mail the renderer exists for. Marketing and
+    // transactional mail is built from deeply nested tables whose cells are
+    // layout scaffolding, so the padding applied at every level and
+    // accumulated: measured over a 20-message corpus at a 664px pane, removing
+    // it made 19 of 20 documents shorter and the corpus 13% shorter overall,
+    // with the worst two cut by 49% — that much of the document was padding.
+    //
+    // Senders that want cell padding still set `cellpadding` or an inline
+    // style, and both still work. What a mail client does not get to do is
+    // choose the sender's cell metrics for them.
+    let document = MessageDocument.build(
+      for: [try message(html: "<table><tr><td>hi</td></tr></table>")], isDark: true).html
+
+    // Comments stripped first: a comment explaining why the rule is gone is
+    // not the rule coming back, and asserting on the raw string would make
+    // this test fail on its own explanation.
+    let rules = document.replacing(/\/\*.*?\*\//.dotMatchesNewlines(), with: "")
+
+    #expect(!rules.contains("td, th"))
+    #expect(!rules.contains("padding: 4px 8px"))
   }
 }

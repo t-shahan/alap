@@ -28,6 +28,8 @@ struct ComposerPanel: View {
         fields
         Divider().overlay(Theme.Surface.border.opacity(0.6))
         footer
+        // Fields fade rather than clipping in as the height springs open.
+        .transition(.opacity)
       }
     }
     .frame(width: 520)
@@ -38,10 +40,16 @@ struct ComposerPanel: View {
     }
     // Depth, not decoration: this floats above scrolling content, and without
     // a shadow the boundary between panel and list disappears wherever their
-    // surfaces happen to match.
-    .shadow(color: .black.opacity(0.34), radius: 22, y: 10)
-    .padding(Theme.Space.section)
-    .transition(.move(edge: .bottom).combined(with: .opacity))
+    // surfaces happen to match. Palette-aware, because pure black at 34% is
+    // right on a near-black ground and reads as grey smudge on white.
+    .elevation(Theme.Elevation.float)
+    .padding(Theme.Space.pane)
+    // ONE owner for the minimise/expand spring. It used to be `withAnimation`
+    // at each of the three toggles, which is the shape that leaves the fourth
+    // one popping. The panel's ENTRANCE is owned further out still, by the
+    // overlay in `ContentView` that inserts it — so every path that opens the
+    // composer animates, not just the ones somebody remembered to wrap.
+    .animation(Theme.Motion.panel, value: composer.isOpen)
   }
 
   // MARK: - Header
@@ -59,56 +67,56 @@ struct ComposerPanel: View {
 
       headerButton(composer.isOpen ? "minus" : "chevron.up",
                    help: composer.isOpen ? "Minimise" : "Expand") {
-        withAnimation(Theme.Motion.standard) {
-          composer.isOpen ? composer.minimize() : composer.expand()
-        }
+        composer.isOpen ? composer.minimize() : composer.expand()
       }
-      headerButton("xmark", help: "Discard") {
-        withAnimation(Theme.Motion.standard) { composer.close() }
-      }
+      headerButton("xmark", help: "Discard") { composer.close() }
     }
     .padding(.horizontal, Theme.Space.loose)
     .frame(height: 40)
     .background(Theme.Surface.sunken)
     .contentShape(.rect)
     // The whole bar toggles, as it does in every mail client that has one.
-    .onTapGesture {
-      withAnimation(Theme.Motion.standard) {
-        composer.isOpen ? composer.minimize() : composer.expand()
-      }
-    }
+    .onTapGesture { composer.isOpen ? composer.minimize() : composer.expand() }
   }
 
+  /// editing → sending → queued reads as a sequence rather than three
+  /// unrelated flickers, so `.transition` plus one animated owner keyed on the
+  /// case.
   @ViewBuilder
   private var statusLabel: some View {
-    switch composer.status {
-    case .editing:
-      EmptyView()
-    case .sending:
-      ProgressView().controlSize(.small)
-    case .queued:
-      Label("Queued", systemImage: "checkmark.circle.fill")
-        .font(Theme.Font.micro)
-        .foregroundStyle(Theme.Accent.blue)
-    case .failed(let message):
-      Label("Failed", systemImage: "exclamationmark.triangle.fill")
-        .font(Theme.Font.micro)
-        .foregroundStyle(Theme.Accent.red)
-        .help(message)
+    Group {
+      switch composer.status {
+      case .editing:
+        EmptyView()
+      case .sending:
+        ProgressView().controlSize(.small)
+      case .queued:
+        // Green, not blue. Queued IS "safely on its way", and green already
+        // means that here — blue was one of the six meanings §7.4 cut.
+        Label("Queued", systemImage: "checkmark.circle.fill")
+          .font(Theme.Font.micro)
+          .foregroundStyle(Theme.Accent.ok)
+      case .failed(let message):
+        Label("Failed", systemImage: "exclamationmark.triangle.fill")
+          .font(Theme.Font.micro)
+          .foregroundStyle(Theme.Accent.red)
+          .help(message)
+      }
     }
+    .transition(.opacity)
+    .animation(Theme.Motion.fade, value: composer.status)
   }
 
   private func headerButton(_ symbol: String, help: String,
                             action: @escaping () -> Void) -> some View {
     Button(action: action) {
       Image(systemName: symbol)
-        .font(.system(size: Theme.Size.smallIcon - 3, weight: .medium))
-        .foregroundStyle(Theme.Ink.secondary)
+        .font(Theme.Icon.small)
         .frame(width: 20, height: 20)
-        .contentShape(.rect)
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.alap())
     .help(help)
+    .accessibilityLabel(help)
   }
 
   // MARK: - Fields
@@ -133,6 +141,7 @@ struct ComposerPanel: View {
           label: "Cc", text: $composer.cc, field: .cc, focus: $focus,
           suggestions: { store.addressSuggestions(matching: $0) }
         )
+        .transition(.opacity)
       }
 
       Divider().overlay(Theme.Surface.border.opacity(0.4))
@@ -157,14 +166,16 @@ struct ComposerPanel: View {
         .focused($focus, equals: .body)
         .frame(height: 220)
         .padding(.horizontal, Theme.Space.base)
-        .padding(.vertical, Theme.Space.snug)
+        .padding(.vertical, Theme.Space.tight)
         .overlay(alignment: .topLeading) {
           if composer.body.isEmpty {
             Text("Write your message…")
               .font(Theme.Font.reading)
               .foregroundStyle(Theme.Ink.tertiary)
+              // Offset from the editor's own inset by exactly one step, which
+              // is what puts the placeholder on the caret rather than near it.
               .padding(.horizontal, Theme.Space.loose)
-              .padding(.vertical, Theme.Space.cosy)
+              .padding(.vertical, Theme.Space.base)
               .allowsHitTesting(false)
           }
         }
@@ -179,26 +190,28 @@ struct ComposerPanel: View {
       }
     }
     .background(Theme.Surface.raised)
+    .animation(Theme.Motion.standard, value: composer.showsCc)
   }
 
   private var quote: some View {
     VStack(alignment: .leading, spacing: 0) {
       Button {
-        withAnimation(Theme.Motion.quick) { composer.showsQuote.toggle() }
+        // `standard`, not `quick`: this moves layout — the panel grows by up
+        // to 120pt — and a reveal that changes height wants the same spring as
+        // a row insertion.
+        composer.showsQuote.toggle()
       } label: {
-        HStack(spacing: Theme.Space.snug) {
+        HStack(spacing: Theme.Space.base) {
           Image(systemName: composer.showsQuote ? "chevron.down" : "chevron.right")
-            .font(.system(size: 9, weight: .semibold))
+            .font(Theme.Icon.micro)
           Text(composer.showsQuote ? "Hide quoted text" : "Show quoted text")
             .font(Theme.Font.small)
           Spacer()
         }
-        .foregroundStyle(Theme.Ink.tertiary)
         .padding(.horizontal, Theme.Space.loose)
         .frame(height: 28)
-        .contentShape(.rect)
       }
-      .buttonStyle(.plain)
+      .buttonStyle(.alap())
 
       if composer.showsQuote {
         ScrollView {
@@ -212,9 +225,11 @@ struct ComposerPanel: View {
             .padding(.bottom, Theme.Space.base)
         }
         .frame(maxHeight: 120)
+        .transition(.opacity)
       }
     }
     .background(Theme.Surface.sunken.opacity(0.5))
+    .animation(Theme.Motion.standard, value: composer.showsQuote)
   }
 
   // MARK: - Footer
@@ -224,16 +239,13 @@ struct ComposerPanel: View {
       Button(action: sendNow) {
         Text("Send")
           .font(Theme.Font.bodyEmphasis)
-          .foregroundStyle(.white)
-          .padding(.horizontal, Theme.Space.section)
-          .padding(.vertical, Theme.Space.snug)
-          .background(
-            composer.canSend ? Theme.Accent.blue : Theme.Accent.muted,
-            in: .rect(cornerRadius: Theme.Radius.control)
-          )
-          .opacity(composer.canSend ? 1 : 0.45)
+          .padding(.horizontal, Theme.Space.pane)
+          .padding(.vertical, Theme.Space.base)
       }
-      .buttonStyle(.plain)
+      // Disabled used to be a muted fill at 45% opacity, which put the label at
+      // well under 2:1. The style's disabled treatment keeps the control's box
+      // and drops it to `Ink.disabled`, which is inert but still legible.
+      .buttonStyle(.alap(.primary))
       .disabled(!composer.canSend)
       .help("Send (⌘↩)")
 
@@ -242,9 +254,8 @@ struct ComposerPanel: View {
           composer.showsCc = true
           focus = .cc
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.alap())
         .font(Theme.Font.small)
-        .foregroundStyle(Theme.Ink.secondary)
       }
 
       Spacer()
@@ -287,6 +298,12 @@ private struct RecipientField: View {
 
   @State private var showsSuggestions = false
 
+  /// Suggestions come from threads already in memory, so this list costs a
+  /// filter rather than a query — and appears without a perceptible delay.
+  private var matches: [Participant] {
+    showsSuggestions ? suggestions(currentFragment) : []
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: Theme.Space.base) {
@@ -304,38 +321,17 @@ private struct RecipientField: View {
       .padding(.horizontal, Theme.Space.loose)
       .frame(height: 34)
 
-      // Suggestions come from threads already in memory, so this list costs a
-      // filter rather than a query — and appears without a perceptible delay.
-      let matches = showsSuggestions ? suggestions(currentFragment) : []
       if !matches.isEmpty {
-        VStack(spacing: 0) {
-          ForEach(matches, id: \.email) { participant in
-            Button {
-              complete(with: participant.email)
-            } label: {
-              HStack(spacing: Theme.Space.base) {
-                Text(participant.name.isEmpty ? participant.email : participant.name)
-                  .font(Theme.Font.small)
-                  .foregroundStyle(Theme.Ink.primary)
-                if !participant.name.isEmpty {
-                  Text(participant.email)
-                    .font(Theme.Font.micro)
-                    .fontWeight(.regular)
-                    .foregroundStyle(Theme.Ink.tertiary)
-                }
-                Spacer()
-              }
-              .padding(.horizontal, Theme.Space.loose)
-              .frame(height: 26)
-              .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-          }
-        }
-        .padding(.bottom, Theme.Space.tight)
-        .background(Theme.Surface.control)
+        SuggestionList(matches: matches, complete: complete)
+          .transition(.opacity)
       }
     }
+    // The list used to appear and vanish abruptly *while changing the panel's
+    // height*. `quick`, and only on the container: suggestions chase
+    // keystrokes, so the CONTENT still updates instantly and only the reveal
+    // softens. Anything slower here would put motion between typing and
+    // seeing, which is lag rather than polish.
+    .animation(Theme.Motion.quick, value: matches.count)
   }
 
   /// The address currently being typed — everything after the last separator.
@@ -354,6 +350,39 @@ private struct RecipientField: View {
   }
 }
 
+private struct SuggestionList: View {
+  let matches: [Participant]
+  let complete: (String) -> Void
+
+  var body: some View {
+    VStack(spacing: 0) {
+      ForEach(matches, id: \.email) { participant in
+        Button {
+          complete(participant.email)
+        } label: {
+          HStack(spacing: Theme.Space.base) {
+            Text(participant.name.isEmpty ? participant.email : participant.name)
+              .font(Theme.Font.small)
+              .foregroundStyle(Theme.Ink.primary)
+            if !participant.name.isEmpty {
+              Text(participant.email)
+                .font(Theme.Font.micro)
+                .fontWeight(.regular)
+                .foregroundStyle(Theme.Ink.tertiary)
+            }
+            Spacer()
+          }
+          .padding(.horizontal, Theme.Space.loose)
+          .frame(height: 26)
+        }
+        .buttonStyle(.alap(radius: Theme.Radius.tight))
+      }
+    }
+    .padding(.bottom, Theme.Space.tight)
+    .background(Theme.Surface.control)
+  }
+}
+
 /// Focus targets, lifted out so `RecipientField` can name the type.
 enum ComposerPanelField: Hashable { case to, cc, subject, body }
 
@@ -362,7 +391,10 @@ enum ComposerPanelField: Hashable { case to, cc, subject, body }
 ///
 /// Occupying the same spot the panel expands from is what makes the panel feel
 /// like it came from somewhere rather than appearing over everything — the same
-/// reason Gmail puts it there.
+/// reason Gmail puts it there. That claim used to be true only in this comment:
+/// nothing animated the swap, so the button vanished and a panel appeared. The
+/// overlay in `ContentView` now owns both halves of the transition, and this is
+/// genuinely the collapsed endpoint of it.
 struct ComposeLaunchButton: View {
   let action: () -> Void
   @State private var isHovering = false
@@ -371,24 +403,32 @@ struct ComposeLaunchButton: View {
     Button(action: action) {
       HStack(spacing: Theme.Space.base) {
         Image(systemName: "square.and.pencil")
-          .font(.system(size: Theme.Size.smallIcon, weight: .medium))
+          .font(Theme.Icon.medium)
         if isHovering {
-          Text("Compose").font(Theme.Font.bodyEmphasis)
+          // Fades in as the capsule stretches. Inserting the label without a
+          // transition made it pop in and clip mid-word during the width
+          // change, because the text arrived at full strength inside a box
+          // still growing to hold it.
+          Text("Compose")
+            .font(Theme.Font.bodyEmphasis)
+            .fixedSize()
+            .transition(.opacity)
         }
       }
       .foregroundStyle(.white)
       .padding(.horizontal, isHovering ? Theme.Space.wide : Theme.Space.loose)
       .frame(height: 44)
       .background(Theme.Accent.blue, in: .capsule)
-      .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
+      .elevation(Theme.Elevation.lifted)
       .contentShape(.capsule)
     }
     .buttonStyle(.plain)
     .onHover { hovering in
       withAnimation(Theme.Motion.quick) { isHovering = hovering }
     }
-    .padding(Theme.Space.section)
+    .padding(Theme.Space.pane)
     .help("New message (⌘N)")
+    .accessibilityLabel("New message")
   }
 }
 
@@ -399,12 +439,27 @@ struct ComposeLaunchButton: View {
 /// the message has gone — so with several mailboxes this is worth a row, and
 /// with one it is worth nothing.
 ///
-/// The dot carries the same colour as the account's sidebar entry and the
+/// The marker carries the same colour as the account's sidebar entry and the
 /// stripe on its threads. That is the whole point of having chosen those
 /// colours: the identity is recognisable here without reading the address.
+///
+/// ## Why this is a Button and a popover rather than a Menu
+///
+/// It was a `Menu` with `.menuStyle(.borderlessButton)` and a custom `label:`
+/// closure, and macOS does not honour one: the style extracts the label,
+/// applies its own alignment and draws its own indicator. So the `Circle()`,
+/// the `Spacer` and the custom chevron were all discarded or reflowed — the
+/// row's label sat ~240pt right of where `To` and `Subject` sit, the chevron
+/// rendered *before* the address instead of after it, and **the account colour
+/// did not render at all**, which defeated the entire documented purpose of the
+/// control.
+///
+/// Driving the popup by hand is the only way the label is really ours.
 private struct FromField: View {
   let accounts: [AccountRow]
   @Binding var selected: String?
+
+  @State private var isPicking = false
 
   private var current: AccountRow? {
     accounts.first { $0.id == selected } ?? accounts.first
@@ -417,40 +472,65 @@ private struct FromField: View {
         .foregroundStyle(Theme.Ink.tertiary)
         .frame(width: 52, alignment: .leading)
 
-      Menu {
-        ForEach(accounts) { account in
-          Button {
-            selected = account.id
-          } label: {
-            // The checkmark is drawn rather than relying on a Picker's
-            // selection styling, which a plain menu label does not get.
-            Label(
-              account.emailAddress,
-              systemImage: account.id == current?.id ? "checkmark.circle.fill" : "circle"
-            )
-          }
-        }
-      } label: {
-        HStack(spacing: Theme.Space.snug) {
-          Circle()
-            .fill(current.flatMap { Color(hex: $0.color) } ?? Theme.Accent.muted)
-            .frame(width: 8, height: 8)
+      Button { isPicking = true } label: {
+        HStack(spacing: Theme.Space.base) {
+          marker(for: current)
           Text(current?.emailAddress ?? "No account")
             .font(Theme.Font.body)
             .foregroundStyle(Theme.Ink.primary)
             .lineLimit(1)
           Image(systemName: "chevron.down")
-            .font(.system(size: 9, weight: .semibold))
+            .font(Theme.Icon.micro)
             .foregroundStyle(Theme.Ink.tertiary)
           Spacer(minLength: 0)
         }
-        .contentShape(.rect)
       }
-      .menuStyle(.borderlessButton)
-      .menuIndicator(.hidden)
-      .fixedSize(horizontal: false, vertical: true)
+      .buttonStyle(.alap())
+      .accessibilityLabel("From: \(current?.emailAddress ?? "no account")")
+      .popover(isPresented: $isPicking, arrowEdge: .bottom) { accountList }
     }
     .padding(.horizontal, Theme.Space.loose)
     .frame(height: 34)
+  }
+
+  private var accountList: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      ForEach(accounts) { account in
+        Button {
+          selected = account.id
+          isPicking = false
+        } label: {
+          HStack(spacing: Theme.Space.base) {
+            marker(for: account)
+            Text(account.emailAddress)
+              .font(Theme.Font.body)
+              .foregroundStyle(Theme.Ink.primary)
+            Spacer(minLength: Theme.Space.wide)
+            Image(systemName: "checkmark")
+              .font(Theme.Icon.micro)
+              .foregroundStyle(Theme.Accent.blueText)
+              .opacity(account.id == current?.id ? 1 : 0)
+          }
+          .padding(.horizontal, Theme.Space.loose)
+          .frame(height: 30)
+        }
+        .buttonStyle(.alap(radius: Theme.Radius.tight))
+      }
+    }
+    .padding(.vertical, Theme.Space.base)
+    .frame(minWidth: 260)
+  }
+
+  @ViewBuilder
+  private func marker(for account: AccountRow?) -> some View {
+    if let account {
+      AccountMarker(
+        color: Color(hex: account.color) ?? Theme.Accent.muted,
+        initial: account.shortName.first.map { String($0).uppercased() } ?? "?",
+        diameter: 12
+      )
+    } else {
+      Circle().fill(Theme.Accent.muted).frame(width: 12, height: 12)
+    }
   }
 }

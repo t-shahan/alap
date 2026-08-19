@@ -43,15 +43,22 @@ struct BulkActionPanel: View {
   }
 
   private var header: some View {
-    VStack(alignment: .leading, spacing: Theme.Space.snug) {
+    VStack(alignment: .leading, spacing: Theme.Space.base) {
+      // Stays SF, deliberately. This is a *reading*, not the app presenting
+      // someone's words — and serif digits would lose tabular figures, which
+      // is the one thing a count in this app must keep.
       Text("\(store.selectionCount) conversations selected")
         .font(Theme.Font.title)
         .foregroundStyle(Theme.Ink.primary)
+        .monospacedDigit()
+        .contentTransition(.numericText(value: Double(store.selectionCount)))
+        .animation(Theme.Motion.fade, value: store.selectionCount)
 
       Text(unreadSummary)
         .font(Theme.Font.body)
         .fontWeight(.regular)
         .foregroundStyle(Theme.Ink.secondary)
+        .monospacedDigit()
     }
   }
 
@@ -95,7 +102,7 @@ struct BulkActionPanel: View {
             .foregroundStyle(Theme.Ink.tertiary)
             .monospacedDigit()
         }
-        .padding(.vertical, Theme.Space.snug)
+        .padding(.vertical, Theme.Space.tight)
         .padding(.horizontal, Theme.Space.loose)
       }
 
@@ -103,7 +110,7 @@ struct BulkActionPanel: View {
         Text("and \(selected.count - Self.previewLimit) more")
           .font(Theme.Font.small)
           .foregroundStyle(Theme.Ink.tertiary)
-          .padding(.vertical, Theme.Space.snug)
+          .padding(.vertical, Theme.Space.tight)
           .padding(.horizontal, Theme.Space.loose)
       }
     }
@@ -171,28 +178,23 @@ private struct BulkButton: View {
   var isProminent: Bool = false
   let action: () -> Void
 
-  @State private var isHovering = false
-
   var body: some View {
     Button(action: action) {
       HStack(spacing: Theme.Space.base) {
-        Image(systemName: symbol).font(.system(size: Theme.Size.smallIcon))
+        Image(systemName: symbol).font(Theme.Icon.medium)
         // Never wraps. The previous version wrapped mid-word because it was
         // laid out in a column too narrow to hold it.
         Text(title).font(Theme.Font.bodyEmphasis).fixedSize()
       }
-      .foregroundStyle(isProminent ? .white : tint)
+      // A tint only where the role does not already decide one: prominent gets
+      // white from the style, and the two neutral buttons keep their ink.
+      .foregroundStyle(isProminent ? AnyShapeStyle(Color.white) : AnyShapeStyle(tint))
       .padding(.horizontal, Theme.Space.wide)
       .frame(height: 34)
-      .background(background, in: .rect(cornerRadius: Theme.Radius.control))
-      .contentShape(.rect)
     }
-    .buttonStyle(.plain)
-    .onHover { isHovering = $0 }
-  }
-
-  private var background: Color {
-    if isProminent { return Theme.Accent.blue.opacity(isHovering ? 0.85 : 1) }
-    return isHovering ? Theme.Surface.control : Theme.Surface.control.opacity(0.6)
+    // Hover used to be `blue.opacity(0.85)` here and `control.opacity(0.6)`
+    // there — two more of the nine different answers the app had for the same
+    // question. Both are the shared overlay tints now.
+    .buttonStyle(.alap(isProminent ? .primary : .secondary))
   }
 }

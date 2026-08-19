@@ -37,12 +37,19 @@ struct ReadingPane: View {
         Divider().overlay(Theme.Surface.border.opacity(0.5))
         content(for: thread)
       } else {
+        // This is the state a reader sees on every launch and after every
+        // archive-to-empty, in by far the largest region of the window. It
+        // used to be a 28pt glyph and two lines of text in a 1150×1500pt void.
+        // The keyboard model is what is genuinely useful in the exact moment
+        // there is nothing else to do — and it is otherwise discoverable only
+        // through the menu bar.
         EmptyState(
-          title: "No message selected",
+          title: "Nothing open",
           message: store.threads.isEmpty
             ? "Nothing to read in this mailbox."
             : "Choose a conversation, or press ↓ to start reading.",
-          symbol: "envelope"
+          symbol: "envelope",
+          shortcuts: store.threads.isEmpty ? [] : KeyboardHint.triage
         )
       }
     }
@@ -53,39 +60,61 @@ struct ReadingPane: View {
 
   /// Snooze is deliberately absent. Gmail exposes no snooze API — other clients
   /// fake it with their own scheduling — so a button here would do nothing.
+  ///
+  /// ## Why the weights are what they are
+  ///
+  /// There used to be four buttons and three visual treatments: Reply outlined
+  /// in blue, Trash bare in red **second from the left**, Archive bare in
+  /// primary ink, Flag outlined and right-aligned. So the only irreversible
+  /// action in the row sat in the primary hit zone next to Reply, and red on a
+  /// bare ground gave it MORE salience than Archive — which is the action a
+  /// triage client actually wants people to reach for.
+  ///
+  /// Now: Archive is the one filled action, Reply is secondary, and Trash moves
+  /// to the far right beside Flag, across the spacer, as bare ink that only
+  /// turns red on hover. Distance as well as colour — the same reasoning
+  /// `BulkActionPanel` already applied correctly, which the toolbar should
+  /// match rather than contradict.
   private var toolbar: some View {
     HStack(spacing: Theme.Space.loose) {
+      ToolbarPill(symbol: "archivebox", title: "Archive",
+                  role: .primary, showsTitle: layout.showsToolbarLabels) {
+        Task { await store.archiveSelectedAndAdvance() }
+      }
+      .help("Archive (E)")
+
       // Opens the composer pre-filled. It used to focus a pane pinned to the
       // bottom of this view, which cost ~194pt of reading space on every
       // message whether or not anyone was replying.
+      //
+      // Ink, not blue: this is the SECOND action in a context whose primary is
+      // now Archive, and blue means the primary one.
       ToolbarPill(symbol: "arrowshape.turn.up.left", title: "Reply",
-                  tint: Theme.Accent.blue, outlined: true,
-                  showsTitle: layout.showsToolbarLabels) {
+                  role: .secondary, showsTitle: layout.showsToolbarLabels) {
         store.startReply()
       }
       .help("Reply (⌘R)")
-
-      ToolbarPill(symbol: "trash", title: "Trash", tint: Theme.Accent.red,
-                  showsTitle: layout.showsToolbarLabels) {
-        Task { await store.trashSelected() }
-      }
-      ToolbarPill(symbol: "archivebox", title: "Archive", tint: Theme.Ink.primary,
-                  showsTitle: layout.showsToolbarLabels) {
-        Task { await store.archiveSelectedAndAdvance() }
-      }
 
       Spacer()
 
       ToolbarPill(
         symbol: store.selectedThread?.isStarred == true ? "flag.fill" : "flag",
         title: "Flag",
-        tint: store.selectedThread?.isStarred == true
-          ? Theme.Accent.flag : Theme.Accent.muted,
-        outlined: true,
+        role: .flag(isOn: store.selectedThread?.isStarred == true),
         showsTitle: layout.showsToolbarLabels
       ) {
         Task { await store.toggleStarOnSelection() }
       }
+      // One bounce when the state changes, in either direction. The flag is the
+      // only thing in this toolbar that has a state to report.
+      .symbolEffect(.bounce, value: store.selectedThread?.isStarred)
+      .help("Flag (S)")
+
+      ToolbarPill(symbol: "trash", title: "Trash", role: .destructive,
+                  showsTitle: layout.showsToolbarLabels) {
+        Task { await store.trashSelected() }
+      }
+      .help("Move to Trash")
     }
     .padding(.horizontal, Theme.Space.wide)
     .frame(height: Theme.Size.toolbar)
@@ -157,8 +186,11 @@ struct ReadingPane: View {
   }
 
   private func subject(for thread: ThreadRow) -> some View {
+    // The one place the app hands you someone else's words at headline size,
+    // and therefore the one place the serif belongs. Everything operational
+    // around it — the toolbar, the sender bar, the rail — stays on SF.
     Text(store.detail?.subject ?? thread.subject)
-      .font(Theme.Font.title)
+      .font(Theme.Font.display)
       .foregroundStyle(Theme.Ink.primary)
       .textSelection(.enabled)
       .fixedSize(horizontal: false, vertical: true)
@@ -177,16 +209,23 @@ struct ReadingPane: View {
     VStack(alignment: .leading, spacing: Theme.Space.pane) {
       if let detail = store.detail, !detail.messages.isEmpty {
         if !showsRemoteImages, blockedImages > 0 {
+          // `standard`, not `quick`: loading images changes the document's
+          // height by an arbitrary amount, and a reveal that moves layout
+          // wants the same spring a row insertion gets.
           RemoteImageBanner(count: blockedImages) {
-            withAnimation(Theme.Motion.quick) { loadsImagesForThisThread = true }
+            withAnimation(Theme.Motion.standard) { loadsImagesForThisThread = true }
           }
           .padding(.horizontal, Theme.Space.pane)
         }
 
+        let rendered = MessageDocument.build(
+          for: detail.messages,
+          isDark: colorScheme == .dark,
+          showRemoteImages: showsRemoteImages
+        )
+
         MessageWebView(
-          html: MessageDocument.build(for: detail.messages,
-                                      isDark: colorScheme == .dark,
-                                      showRemoteImages: showsRemoteImages),
+          html: rendered.html,
           inlineImages: store.inlineImages,
           onHeightChange: { height in
             bodyHeight = height
@@ -202,6 +241,20 @@ struct ReadingPane: View {
         // the scrolling. A fixed minHeight gave short messages dead space
         // below them and long ones a second scrollbar inside the first.
         .frame(height: max(bodyHeight, 200))
+        // ## Why a white message gets a frame
+        //
+        // The decision to render on a light canvas is right and well argued —
+        // 11 of 30 sampled messages had sub-2:1 text otherwise. The
+        // PRESENTATION was what was wrong: the body ran edge to edge on
+        // `#ffffff`, butting straight into the dark sender bar with no
+        // transition, so a ~1150×1000pt white rectangle sat in a navy window
+        // as the single loudest thing in the interface.
+        //
+        // And it is not content. It is the CANVAS for content, which the
+        // sender chose and the app is honouring. Inset, rounded, hairlined and
+        // lifted, it reads as *a page the app is showing you* — which is what
+        // it is, and what Mail, Superhuman and Missive all do.
+        .documentFrame(rendered.usesLightCanvas)
 
         let attachments = detail.messages.flatMap { $0.attachments }
           .filter { !$0.isInline }
@@ -248,9 +301,14 @@ private struct AvatarBubble: View {
     Text(initials)
       .font(Theme.Font.reading)
       .fontWeight(.semibold)
-      .foregroundStyle(Theme.Accent.muted)
+      // `mutedInk`, not `muted`. The fill token measured 2.93:1 here — the
+      // worst text contrast anywhere in the app, on one of the largest and
+      // most persistent elements in the reading pane. A neutral fill and a
+      // neutral foreground are two jobs, and one value cannot hold both.
+      .foregroundStyle(Theme.Accent.mutedInk)
       .frame(width: Theme.Size.avatar, height: Theme.Size.avatar)
       .background(Theme.Accent.mutedFill, in: .circle)
+      .accessibilityHidden(true)
   }
 
   /// First letters of the first two words, falling back to the leading
@@ -264,21 +322,38 @@ private struct AvatarBubble: View {
 }
 
 private struct ToolbarPill: View {
+  /// What this action IS, rather than how it is painted. The three visual
+  /// treatments the toolbar used to carry were assigned per-button by hand,
+  /// which is how the destructive action ended up more prominent than the
+  /// triage one.
+  enum Role: Equatable {
+    /// The one action this context wants you to take. Filled.
+    case primary
+    /// Everything else you would ordinarily do. Ink on a quiet ground.
+    case secondary
+    /// Irreversible. Ink until hover, then red — isolated by distance too.
+    case destructive
+    /// Carries state rather than being a plain action.
+    case flag(isOn: Bool)
+  }
+
   let symbol: String
   let title: String
-  let tint: Color
-  var outlined: Bool = false
+  let role: Role
   /// Dropped on narrow windows. Four labelled pills want about 400pt; four
   /// icons want about 150pt and lose only a word that the tooltip still
-  /// carries. Previously the labels stayed and wrapped mid-word — "Re/ply",
-  /// "Tra/sh" — which is worse than not showing them.
+  /// carries. Previously the labels dropped but the OUTLINED BOXES stayed, so
+  /// Reply and Flag read as *selected* rather than as buttons — which is why
+  /// the outline is gone entirely and weight is carried by fill.
   var showsTitle: Bool = true
   let action: (() -> Void)?
+
+  @State private var isHovering = false
 
   var body: some View {
     Button(action: { action?() }) {
       HStack(spacing: Theme.Space.tight) {
-        Image(systemName: symbol).font(.system(size: Theme.Size.icon - 3))
+        Image(systemName: symbol).font(Theme.Icon.medium)
         if showsTitle {
           // fixedSize so it can never wrap: if it does not fit, the layout step
           // above should have dropped it, and a torn word is not a fallback.
@@ -286,21 +361,22 @@ private struct ToolbarPill: View {
         }
       }
       .foregroundStyle(tint)
-      .padding(.horizontal, Theme.Space.base)
-      .padding(.vertical, Theme.Space.snug)
-      .background(
-        outlined ? Theme.Accent.mutedFill : .clear,
-        in: .rect(cornerRadius: Theme.Radius.control)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: Theme.Radius.control)
-          .stroke(outlined ? tint.opacity(0.7) : .clear, lineWidth: 1)
-      )
-      .contentShape(.rect)
+      .padding(.horizontal, Theme.Space.loose)
+      .padding(.vertical, Theme.Space.tight)
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.alap(role == .primary ? .primary : .quiet))
+    .onHover { isHovering = $0 }
     .disabled(action == nil)
-    .opacity(action == nil ? 0.45 : 1)
+    .accessibilityLabel(title)
+  }
+
+  private var tint: Color {
+    switch role {
+    case .primary: return .white
+    case .secondary: return Theme.Ink.primary
+    case .destructive: return isHovering ? Theme.Accent.red : Theme.Ink.secondary
+    case .flag(let isOn): return isOn ? Theme.Accent.flag : Theme.Ink.secondary
+    }
   }
 }
 
@@ -373,26 +449,33 @@ private struct AttachmentChip: View {
             .font(Theme.Font.micro)
             .fontWeight(.regular)
             .foregroundStyle(subtitleTint)
+            .monospacedDigit()
             .lineLimit(1)
         }
       }
-      .padding(.horizontal, Theme.Space.cosy)
+      .padding(.horizontal, Theme.Space.loose)
       .padding(.vertical, Theme.Space.base)
-      .background(
-        isHovering && isInteractive ? Theme.Surface.selection : Theme.Surface.control,
-        in: .rect(cornerRadius: Theme.Radius.control)
-      )
       .overlay {
+        // `borderStrong`, not blue at 50%. A hover outline is a MEANINGFUL
+        // state, which is the one thing the decorative hairline is explicitly
+        // not for — and blue here was one of the six diluted meanings, since
+        // hovering a chip is not the primary action in any context.
         RoundedRectangle(cornerRadius: Theme.Radius.control)
-          .strokeBorder(
-            isHovering && isInteractive ? Theme.Accent.blue.opacity(0.5) : .clear
-          )
+          .strokeBorder(isHovering && isInteractive ? Theme.Surface.borderStrong : .clear)
       }
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.alap(.secondary))
     .disabled(!isInteractive)
     .onHover { isHovering = $0 }
     .help(helpText)
+    // A11y: the chip was reachable only by pointer, and its context menu
+    // (Open / Reveal / Save a Copy) had no keyboard path at all. Focusable
+    // plus a named default action gives it one; the Message menu mirrors the
+    // rest.
+    .focusable(isInteractive)
+    .focusEffectDisabled(false)
+    .accessibilityLabel("\(attachment.filename), \(subtitle)")
+    .accessibilityHint(helpText)
     .contextMenu {
       if case .ready(let file) = state {
         Button("Open") { NSWorkspace.shared.open(file) }
@@ -416,22 +499,26 @@ private struct AttachmentChip: View {
       ProgressView().controlSize(.small)
     case .failed:
       Image(systemName: "exclamationmark.triangle.fill")
-        .font(.system(size: 16))
+        .font(Theme.Icon.large)
         .foregroundStyle(Theme.Accent.red)
     case .ready:
+      // Ink, not blue. A file-type glyph rendered in the action colour is a
+      // button that isn't — it decorates rather than offering anything.
       Image(systemName: symbol)
-        .font(.system(size: 18))
-        .foregroundStyle(Theme.Accent.blue)
+        .font(Theme.Icon.large)
+        .foregroundStyle(Theme.Ink.secondary)
     case .idle:
       // The arrow says the chip does something. Without it the design's chips
       // read as labels, which is exactly how they behaved before.
+      // The ink SHIFTS on hover rather than changing hue — the glyph already
+      // changes, which is the part that says "this does something".
       Image(systemName: isHovering ? "arrow.down.circle.fill" : symbol)
-        .font(.system(size: 18))
-        .foregroundStyle(isHovering ? Theme.Accent.blue : Theme.Ink.secondary)
+        .font(Theme.Icon.large)
+        .foregroundStyle(isHovering ? Theme.Ink.primary : Theme.Ink.secondary)
     case .unavailable:
       Image(systemName: symbol)
-        .font(.system(size: 18))
-        .foregroundStyle(Theme.Ink.tertiary)
+        .font(Theme.Icon.large)
+        .foregroundStyle(Theme.Ink.disabled)
     }
   }
 
@@ -618,7 +705,7 @@ private struct RemoteImageBanner: View {
   var body: some View {
     HStack(spacing: Theme.Space.loose) {
       Image(systemName: "eye.slash")
-        .font(.system(size: Theme.Size.smallIcon))
+        .font(Theme.Icon.medium)
         .foregroundStyle(Theme.Ink.secondary)
 
       VStack(alignment: .leading, spacing: Theme.Space.hair) {
@@ -637,16 +724,47 @@ private struct RemoteImageBanner: View {
       Button(action: load) {
         Text("Load images")
           .font(Theme.Font.small)
-          .foregroundStyle(Theme.Accent.blue)
+          // `blueText`: this is blue drawn AS A LABEL on a surface, which
+          // measured 3.82:1 in the fill blue. It is the one action this banner
+          // offers, so it keeps the colour — in the token tuned for the job.
+          .foregroundStyle(Theme.Accent.blueText)
           .padding(.horizontal, Theme.Space.loose)
-          .padding(.vertical, Theme.Space.snug)
-          .background(Theme.Accent.blue.opacity(0.12),
+          .padding(.vertical, Theme.Space.tight)
+          .background(Theme.Accent.blueText.opacity(0.12),
                       in: .rect(cornerRadius: Theme.Radius.control))
       }
-      .buttonStyle(.plain)
+      .buttonStyle(.alap())
     }
     .padding(.horizontal, Theme.Space.loose)
-    .padding(.vertical, Theme.Space.cosy)
+    .padding(.vertical, Theme.Space.base)
     .background(Theme.Surface.control, in: .rect(cornerRadius: Theme.Radius.control))
+    .transition(.opacity)
+  }
+}
+
+// MARK: - The document frame
+
+extension View {
+  /// Frames a sender's white page as a document rather than adopting it as an
+  /// app surface.
+  ///
+  /// Only when the message actually brought its own colours. A message
+  /// rendering on the app's own theme is already on an app surface and framing
+  /// it would be inventing a boundary that is not there.
+  @MainActor
+  @ViewBuilder
+  func documentFrame(_ isLightCanvas: Bool) -> some View {
+    if isLightCanvas {
+      background(Color.white)
+        .clipShape(.rect(cornerRadius: Theme.Radius.panel))
+        .overlay {
+          RoundedRectangle(cornerRadius: Theme.Radius.panel)
+            .strokeBorder(Theme.Surface.border.opacity(0.6), lineWidth: 1)
+        }
+        .elevation(Theme.Elevation.raised)
+        .padding(.horizontal, Theme.Space.wide)
+    } else {
+      self
+    }
   }
 }
