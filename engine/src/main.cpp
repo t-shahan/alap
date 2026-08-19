@@ -74,7 +74,6 @@ int usage() {
                "  search <account-id> <query>    full-text search the local index\n"
                "  reindex <account-id>  rebuild the search index from Postgres\n"
                "  normalize <account-id>   collapse marketing preheader padding in stored bodies\n"
-               "  resanitize <account-id>  sanitize HTML bodies stored before sanitising existed\n"
                "  bench-search [counts...]  measure search latency at scale\n"
                "  version\n";
   return 64;  // EX_USAGE
@@ -668,56 +667,18 @@ int cmd_bench_search(const std::vector<int64_t>& sizes) {
   return 0;
 }
 
-/// Sanitises HTML bodies already in Postgres.
-///
-/// Everything ingested before the sanitiser existed is stored raw. The schema
-/// says otherwise, so this brings existing rows in line with the guarantee.
-int cmd_resanitize(const std::string& account_id) {
-  mailengine::PostgresStore store;
-  if (!connect_store(store)) return 1;
-
-  auto rows = store.query(
-      R"(SELECT b.message_id, b.html_body
-         FROM message_body b
-         WHERE b.account_id = $1 AND b.html_body IS NOT NULL AND b.html_body <> '')",
-      {account_id});
-  if (!rows) {
-    std::cerr << "error: " << rows.error().message << "\n";
-    return 1;
-  }
-
-  int64_t changed = 0;
-  int64_t blocked_images = 0;
-  int64_t with_active_content = 0;
-
-  for (const auto& row : *rows) {
-    if (row.size() < 2) continue;
-    const auto sanitised = mailengine::html::sanitize(row[1]);
-    blocked_images += sanitised.blocked_remote_images;
-    if (sanitised.removed_active_content) ++with_active_content;
-    if (sanitised.html == row[1]) continue;
-
-    if (store.exec("UPDATE message_body SET html_body = $2 WHERE message_id = $1",
-                   {row[0], sanitised.html})
-            .has_value()) {
-      ++changed;
-    }
-  }
-
-  std::cout << "  examined  " << rows->size() << "\n"
-            << "  rewritten " << changed << "\n"
-            << "  messages carrying active content " << with_active_content << "\n"
-            << "  remote images blocked " << blocked_images << "\n";
-  return 0;
-}
 
 /// Collapses preheader padding in HTML bodies already in Postgres.
 ///
-/// Separate from `resanitize` on purpose. That command re-runs the full
-/// sanitiser, which would drop `data-blocked-src` — the attribute is written by
-/// the sanitiser but is not in its own allowlist, so a second pass discards the
-/// only surviving copy of every blocked image URL. This pass rewrites text
-/// nodes and leaves every tag byte-identical.
+/// Deliberately NOT a second sanitising pass. Re-running the sanitiser over
+/// stored bodies drops `data-blocked-src`: the attribute is written by the
+/// sanitiser but is absent from its own attribute allowlist, so the pass
+/// discards the only surviving copy of every blocked image URL — 97,625 of
+/// them in a real mailbox. A `resanitize` command that did exactly that used
+/// to live here and was removed rather than repaired, because a policy change
+/// needs the ORIGINAL bytes and those only come from Gmail.
+///
+/// This pass rewrites text nodes and leaves every tag byte-identical.
 int cmd_normalize(const std::string& account_id) {
   mailengine::PostgresStore store;
   if (!connect_store(store)) return 1;
@@ -1209,10 +1170,6 @@ int main(int argc, char** argv) {
   if (command == "normalize") {
     if (argc < 3) { usage(); return 2; }
     return cmd_normalize(argv[2]);
-  }
-  if (command == "resanitize") {
-    if (argc < 3) return usage();
-    return cmd_resanitize(argv[2]);
   }
   if (command == "reindex") {
     if (argc < 3) return usage();

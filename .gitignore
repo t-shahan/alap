@@ -46,6 +46,7 @@ app/Sources/Mail/Web/
 # Design review working docs — local only
 DESIGN-REVIEW.md
 DESIGN-REVIEW-MOTION.md
+DESIGN-REVIEW-INSTRUMENT.md
 
 # Local planning doc, not part of the project history.
 SANITIZATION_PLAN.md
