@@ -1,0 +1,78 @@
+name: CI
+
+# Runs the two suites the project actually has: 304 GoogleTest cases in the C++
+# engine and 283 Swift Testing cases in the app. Neither needs a database, a
+# network or a Gmail account — that is a deliberate property of both suites, and
+# it is what makes them runnable here at all.
+#
+# What is NOT covered, so nobody mistakes a green tick for more than it is:
+#   * tools/render-audit, which measures real stored messages out of a local
+#     Postgres and cannot run without one.
+#   * app/Tests/VOICEOVER-SCRIPT.md, which needs a person and a screen reader.
+#   * anything visual. Layout regressions do not show up here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A second push to the same branch makes the first run irrelevant.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    name: Engine (C++)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        # curl and sqlite3 come with the runner; libpq does not, and pkgconf is
+        # how CMakeLists finds it. Matches the README's brew line minus the
+        # server itself, which the tests do not need.
+        run: brew install cmake pkgconf libpq
+
+      - name: Configure
+        run: cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build engine/build -j3
+
+      - name: Test
+        run: ctest --test-dir engine/build --output-on-failure
+
+  app:
+    name: App (Swift)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Build the Zero client bundle
+        # NOT optional, and this is the step most likely to be skipped by
+        # someone building by hand. `app/Package.swift` declares `Web` as a
+        # `.copy` resource, so SwiftPM refuses to build at all without it:
+        #   error: couldn't build ... because of missing inputs: Sources/Alap/Web
+        # It is generated rather than committed, so CI has to produce it the
+        # same way `scripts/build-app.sh` does — which also means this job
+        # verifies the README's setup order rather than a shortcut around it.
+        run: |
+          npm run build --workspace=@mailapp/client
+          mkdir -p app/Sources/Alap/Web
+          cp packages/client/dist/index.html packages/client/dist/bridge.js \
+             app/Sources/Alap/Web/
+
+      - name: Build
+        run: swift build --package-path app
+
+      - name: Test
+        run: swift test --package-path app

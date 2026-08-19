@@ -139,6 +139,23 @@ npm run dev                             # postgres + sidecar + zero-cache
 npm run app                             # build and launch Alap.app
 ```
 
+`npm run app` builds the Zero client bundle before it compiles Swift, which
+matters if you ever reach for `swift build` directly: `app/Package.swift`
+declares `Sources/Alap/Web` as a resource and that directory is **generated,
+not committed**, so SwiftPM refuses to build without it. Run
+`npm run client:build` first, or just use `npm run app`.
+
+### Tests
+
+```bash
+ctest --test-dir engine/build      # 304 cases
+swift test --package-path app      # 283 cases
+```
+
+Both suites are hermetic — no database, no network, no Gmail account — which is
+why CI can run them. What CI does *not* cover: `tools/render-audit`, which
+measures real stored messages and needs a local Postgres, and anything visual.
+
 Click **Add Account** in the sidebar to authorise a mailbox. That is the whole
 setup — the app launches the sync engine itself and polls every 10 seconds for
 as long as it is open, starting with a poll as the window appears.
