@@ -410,7 +410,7 @@ enum MessageDocument {
     }
     let lightCanvas = hasHTML && bringsOwnColours
 
-    let bodies = messages.map { message -> String in
+    let bodies = messages.enumerated().map { index, message -> String in
       // Prefixed class names. These are the APP's chrome sitting in a document
       // full of the sender's CSS, and `msg-head` / `from` / `addr` / `when`
       // are exactly the kind of names a newsletter template also uses. A
@@ -430,7 +430,10 @@ enum MessageDocument {
       if showRemoteImages {
         content = restoringRemoteImages(in: content)
       }
-      return "<article class=\"alap-msg\">\(header)\(content)</article>"
+      // Each message gets an id, and its own stylesheet is scoped to it.
+      let scope = "alap-msg-\(index)"
+      return "<article id=\"\(scope)\" class=\"alap-msg\">"
+        + header + scoping(content, to: scope) + "</article>"
     }
 
     // ## Why the app's stylesheet is emitted AFTER the bodies
@@ -462,6 +465,55 @@ enum MessageDocument {
       </body></html>
       """
     return RenderedMessage(html: document, usesLightCanvas: lightCanvas)
+  }
+
+  /// Confines a message's own stylesheet to its own article.
+  ///
+  /// ## The problem
+  ///
+  /// `build` composes the whole thread into ONE document, and a retained
+  /// `<style>` block sits in the body scoped to nothing. So in a multi-message
+  /// thread one sender's stylesheet restyles every other message in it — a
+  /// `td { font-size: 18px }` written for a newsletter applies to the reply
+  /// above it. Emitting the app's own rules last protects the app's chrome, but
+  /// it does nothing for one sender against another.
+  ///
+  /// ## Why this is a text wrap and not a rewrite
+  ///
+  /// The alternative is prefixing every retained selector, which means a second
+  /// CSS parser — in Swift, beside the thorough one the engine already has —
+  /// and a re-fetch of every stored body, since `html_body` holds the
+  /// sanitiser's OUTPUT rather than the original. `@scope` needs neither: the
+  /// existing rules are wrapped, unmodified, in one at-rule.
+  ///
+  /// The sanitiser is what makes the wrap safe. It refuses `<` and `>` inside
+  /// selectors and declarations and rejects unbalanced braces, so a retained
+  /// block cannot close its own `<style>` early or unbalance the wrapper.
+  ///
+  /// ## What this deliberately breaks
+  ///
+  /// A scoped rule matches DESCENDANTS of the scope root, so a sender's
+  /// `body { … }` or `html { … }` stops applying. That is the point rather than
+  /// a side effect — those rules were reaching our document, not theirs — and
+  /// the app's own base stylesheet already sets the margin and padding they
+  /// almost always restate.
+  private static func scoping(_ html: String, to scope: String) -> String {
+    guard html.contains("<style") else { return html }
+
+    var out = ""
+    var rest = Substring(html)
+    while let open = rest.range(of: "<style", options: .caseInsensitive),
+          let openEnd = rest[open.upperBound...].firstIndex(of: ">"),
+          let close = rest.range(of: "</style", options: .caseInsensitive,
+                                 range: openEnd..<rest.endIndex) {
+      let afterOpen = rest.index(after: openEnd)
+      out += rest[..<afterOpen]
+      out += "@scope (#\(scope)) {"
+      out += rest[afterOpen..<close.lowerBound]
+      out += "}"
+      rest = rest[close.lowerBound...]
+    }
+    return out + rest
   }
 
   /// Puts withheld image URLs back into `src`.

@@ -65,14 +65,41 @@ def build(html, show_remote=True, is_dark=True, has_html=True):
     # `#fit` is the fit pass's transform target, and the chrome sheet comes
     # after the bodies so the app wins specificity ties against a retained
     # sender stylesheet on document order. Both mirror `MessageDocument.build`.
+    # Each message's own stylesheet is confined to its own article, mirroring
+    # `MessageDocument.scoping(_:to:)`. Without this the harness would measure a
+    # document the app no longer builds.
+    scoped = scope_stylesheets(html, "alap-msg-0")
     return f"""<!doctype html>
 <html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; {img_src}; style-src 'unsafe-inline'; font-src 'none'; form-action 'none'; base-uri 'none';{upgrade}">
 <style>{css(is_dark)}</style>
-</head><body><div id="fit"><article class="alap-msg">{html}</article></div>
+</head><body><div id="fit"><article id="alap-msg-0" class="alap-msg">{scoped}</article></div>
 <style>{chrome_css(is_dark)}</style>
 </body></html>"""
+
+
+def scope_stylesheets(html: str, scope: str) -> str:
+    """Wrap every retained <style> block in `@scope (#scope) { ... }`.
+
+    Mirrors `MessageDocument.scoping(_:to:)`. A text wrap rather than a selector
+    rewrite: the sanitiser already refuses `<`, `>` and unbalanced braces inside
+    a stylesheet, so a retained block cannot close its own `<style>` early or
+    unbalance the wrapper.
+    """
+    import re
+    out, pos = [], 0
+    for m in re.finditer(r"<style[^>]*>", html, re.I):
+        close = html.lower().find("</style", m.end())
+        if close < 0:
+            break
+        out.append(html[pos:m.end()])
+        out.append("@scope (#%s) {" % scope)
+        out.append(html[m.end():close])
+        out.append("}")
+        pos = close
+    out.append(html[pos:])
+    return "".join(out)
 
 if __name__ == "__main__":
     print(css()[:400])

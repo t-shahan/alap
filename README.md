@@ -91,7 +91,7 @@ guess if it differs.
 
 ## Running it
 
-Requires macOS 14+, Xcode command-line tools, Node 20+, PostgreSQL 18, CMake,
+Requires macOS 14.4+, Xcode command-line tools, Node 20+, PostgreSQL 18, CMake,
 and a Google Cloud project with the Gmail API enabled.
 
 ```bash

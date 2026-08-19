@@ -549,4 +549,63 @@ struct BlockedCSSBackgroundTests {
     #expect(!rules.contains("td, th"))
     #expect(!rules.contains("padding: 4px 8px"))
   }
+
+  // MARK: - One sender's stylesheet stays in one sender's message
+
+  @Test("A retained stylesheet is scoped to the article it came from")
+  func stylesheetsAreScoped() throws {
+    // The thread is composed into ONE document, so a `<style>` block retained
+    // from a message is otherwise global to it — a rule written for a
+    // newsletter restyles the reply above it. Emitting the app's rules last
+    // protects the app's chrome and does nothing for one sender against
+    // another.
+    let styled = try message(html: """
+      <style>td { font-size: 18px }</style><table><tr><td>hi</td></tr></table>
+      """)
+    let plain = try message(html: "<p>a reply</p>")
+
+    let document = MessageDocument.build(for: [styled, plain], isDark: true).html
+
+    #expect(document.contains(##"<article id="alap-msg-0""##))
+    #expect(document.contains(##"<article id="alap-msg-1""##))
+    #expect(document.contains("@scope (#alap-msg-0) {td { font-size: 18px }}"))
+  }
+
+  @Test("Each message gets its OWN scope, not a shared one")
+  func scopesAreDistinctPerMessage() throws {
+    // A single shared scope class would protect the app's chrome and still let
+    // the two senders reach each other, which is the half already solved.
+    let first = try message(html: "<style>p { color: red }</style><p>one</p>")
+    let second = try message(html: "<style>p { color: blue }</style><p>two</p>")
+
+    let document = MessageDocument.build(for: [first, second], isDark: true).html
+
+    #expect(document.contains("@scope (#alap-msg-0) {p { color: red }}"))
+    #expect(document.contains("@scope (#alap-msg-1) {p { color: blue }}"))
+  }
+
+  @Test("A message with no stylesheet is passed through untouched")
+  func unstyledMessagesAreNotWrapped() throws {
+    // The wrap is a string operation, so the case it must not touch is the
+    // common one.
+    let document = MessageDocument.build(
+      for: [try message(html: "<p>hi</p>")], isDark: true).html
+
+    #expect(!document.contains("@scope"))
+    #expect(document.contains("<p>hi</p>"))
+  }
+
+  @Test("Several stylesheets in one message are each wrapped")
+  func multipleStyleBlocksAreAllScoped() throws {
+    // Real mail routinely ships more than one, and a loop that handled only
+    // the first would leave the rest global — the exact bug, half-fixed.
+    let two = try message(html: """
+      <style>p { color: red }</style><p>a</p><style>b { color: blue }</style><b>c</b>
+      """)
+
+    let document = MessageDocument.build(for: [two], isDark: true).html
+
+    #expect(document.contains("@scope (#alap-msg-0) {p { color: red }}"))
+    #expect(document.contains("@scope (#alap-msg-0) {b { color: blue }}"))
+  }
 }
