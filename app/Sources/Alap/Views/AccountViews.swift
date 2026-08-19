@@ -46,7 +46,7 @@ struct AccountRowView: View {
         // Colour AND an initial. Colour was the only channel separating one
         // account from another, here and on the thread stripe; a marker that
         // also carries a letter still works when the hue does not.
-        AccountMarker(color: Color(hex: account.color) ?? Theme.Accent.muted,
+        AccountMarker(color: AccountPalette.tint(for: account.color) ?? Theme.Accent.muted,
                       initial: account.shortName.first.map { String($0).uppercased() } ?? "?")
 
         VStack(alignment: .leading, spacing: 0) {
@@ -238,39 +238,114 @@ extension Color {
   }
 }
 
-/// Cycles the appearance from the sidebar footer.
+/// Chooses the appearance from the sidebar footer.
 ///
 /// The menu command is the canonical control, but a setting nobody finds is a
 /// setting nobody has. This sits beside the connection indicator — the corner
-/// already reserved for status rather than content — and shows the icon of the
-/// theme it will switch TO, so the affordance says what it does rather than
-/// what is currently true.
+/// already reserved for status rather than content.
+///
+/// ## Why this is a chooser rather than a cycle
+///
+/// It used to advance one step through `allCases` per press, and showed the
+/// icon of the theme it would switch TO so the affordance said what it did
+/// rather than what was currently true. That reasoning was right for three
+/// themes and stops being right as soon as there are more: reaching the one
+/// you want costs up to `allCases.count - 1` presses, each of which repaints
+/// the entire window, and a control whose icon changes on every press never
+/// settles into something you can aim at. Cycling is a fine gesture for a
+/// binary and a poor one for a list.
+///
+/// So the button now OPENS the list, which inverts the icon rule with it: an
+/// affordance that reveals a chooser is not claiming to perform a switch, so
+/// showing the current theme is the honest label rather than the contradictory
+/// one. The old comment's warning still applies in its new form — the button
+/// says what it does, it is just doing something else now.
+///
+/// A `Button` and a popover rather than a `Menu`, for the reason `FromField`
+/// documents at length: macOS does not honour a custom `label:` on a menu
+/// style, and this label is ours.
 struct ThemeSwitcher: View {
   @State private var themes = ThemeController.shared
+  @State private var isPicking = false
 
   var body: some View {
-    Button {
-      // `fade`, permanently. A palette swap is a colour interpolation, and a
-      // spring's overshoot would visibly sail past the destination palette and
-      // come back. This must never acquire a spring by riding a
-      // general-purpose token.
-      withAnimation(Theme.Motion.fade) { themes.theme = next }
-    } label: {
-      Image(systemName: next.symbol)
+    Button { isPicking = true } label: {
+      Image(systemName: themes.theme.symbol)
         .font(Theme.Icon.small)
         .frame(width: Theme.Size.hitTarget, height: Theme.Size.hitTarget)
     }
     .buttonStyle(.alap())
-    .help("Switch to the \(next.title) appearance")
-    // Names the ACTION. It used to report the CURRENT theme while the button
-    // switched to the next one, so the label contradicted the press.
-    .accessibilityLabel("Switch to \(next.title) appearance")
+    .help("Change the appearance")
+    // Reports the state AND names the action, because the button now does the
+    // second while displaying the first — "Appearance: Signature" alone would
+    // read as a label rather than as something pressable.
+    .accessibilityLabel("Appearance: \(themes.theme.title)")
+    .accessibilityHint("Choose an appearance")
+    // `.trailing`, not `.top`: this sits at the bottom of a 220pt sidebar, and
+    // a list wider than the sidebar opening upward would hang off the window.
+    .popover(isPresented: $isPicking, arrowEdge: .trailing) { themeList }
   }
 
-  private var next: AppTheme {
-    let all = AppTheme.allCases
-    let index = all.firstIndex(of: themes.theme) ?? 0
-    return all[(index + 1) % all.count]
+  private var themeList: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      ForEach(AppTheme.allCases) { theme in
+        Button {
+          // `fade`, permanently. A palette swap is a colour interpolation, and
+          // a spring's overshoot would visibly sail past the destination
+          // palette and come back. This must never acquire a spring by riding
+          // a general-purpose token.
+          withAnimation(Theme.Motion.fade) { themes.theme = theme }
+          isPicking = false
+        } label: {
+          row(for: theme)
+        }
+        .buttonStyle(.alap())
+        // The checkmark is decorative here — this trait is what actually
+        // reaches VoiceOver, and `.opacity(0)` does not remove a view from the
+        // accessibility tree, so an unmarked row would still announce one.
+        .accessibilityAddTraits(theme == themes.theme ? [.isSelected] : [])
+      }
+    }
+    .padding(.vertical, Theme.Space.base)
+    .frame(width: 240)
+  }
+
+  /// Symbol, name and the one-line description of what the palette is.
+  ///
+  /// `subtitle` has existed on `AppTheme` since the themes did and had no
+  /// reader until now. It earns its place here: with more than a couple of
+  /// appearances the titles alone stop distinguishing them, and "Signature"
+  /// tells you nothing that "Cool navy, matched to the app icon" does.
+  private func row(for theme: AppTheme) -> some View {
+    HStack(spacing: Theme.Space.base) {
+      Image(systemName: theme.symbol)
+        .font(Theme.Icon.small)
+        .foregroundStyle(Theme.Ink.secondary)
+        .frame(width: 16)
+
+      VStack(alignment: .leading, spacing: 0) {
+        Text(theme.title)
+          .font(Theme.Font.body)
+          .foregroundStyle(Theme.Ink.primary)
+        Text(theme.subtitle)
+          .font(Theme.Font.micro)
+          .fontWeight(.regular)
+          .foregroundStyle(Theme.Ink.tertiary)
+          .lineLimit(1)
+      }
+
+      Spacer(minLength: Theme.Space.wide)
+
+      // Held in the layout at zero opacity rather than removed, so selecting a
+      // different theme does not reflow every row beside it.
+      Image(systemName: "checkmark")
+        .font(Theme.Icon.micro)
+        .foregroundStyle(Theme.Accent.blueText)
+        .opacity(theme == themes.theme ? 1 : 0)
+        .accessibilityHidden(true)
+    }
+    .padding(.horizontal, Theme.Space.loose)
+    .frame(height: 40)
   }
 }
 
@@ -280,13 +355,51 @@ struct ThemeSwitcher: View {
 /// system palette, which was the previous default: those hues are tuned to sit
 /// on white at full saturation and read as loud, plasticky dots against a navy
 /// sidebar. These are desaturated and mid-lightness, so they stay legible on
-/// all three themes without shouting on any of them.
+/// the dark themes without shouting on any of them.
 ///
 /// Order matters — it is the assignment order for new accounts, so the first
 /// two must be maximally distinguishable, including for the most common forms
 /// of colour blindness. Teal and clay differ in both hue and warmth, so they
 /// separate on lightness alone if hue perception fails.
+///
+/// ## One stored vocabulary, two render sets
+///
+/// "Mid-lightness so they work everywhere" was true of the dark palettes and
+/// false of the light one, and nothing measured it. Against `light`'s surfaces
+/// six of these eight fell below the 3:1 graphical floor — Amber at **1.83:1**
+/// on `control`, Teal at 2.09 — because a mid-lightness dot on a near-white
+/// ground has nowhere to get contrast from. `accountMarkersAreLegible` could
+/// not catch it by construction: it checks the INITIAL against its own fill,
+/// which is a closed system that never asks whether the fill can be seen.
+///
+/// The marker survives that failure — its letter stays readable, so the account
+/// is still identifiable. **The thread-list rail does not.** It is two points
+/// of pure colour at 0.35 opacity with no letter and no shape to fall back on,
+/// and it is the app's only answer to "whose mailbox did this arrive in". A
+/// rail below 3:1 is not a quiet ownership cue; it is an absent one.
+///
+/// So `choices` is now the STORED vocabulary and nothing else: it is what the
+/// picker saves, what Postgres holds, and the identity a name attaches to.
+/// `darkChoices` and `lightChoices` are what actually get drawn, chosen per
+/// polarity and index-aligned with it. Keeping storage separate from rendering
+/// is what lets a contrast fix be a lookup instead of a migration — and the
+/// dark set needed one too: the deeper `signature` and the new `umber` put
+/// Slate at 2.96:1 and Plum at 2.84:1, which the new sweep caught immediately.
+///
+/// ## Why they are not simply "the same colours, darker"
+///
+/// The first attempt at the light set normalised all eight to one luminance. It
+/// cleared the floor and destroyed the property the ORDER exists to guarantee:
+/// at equal lightness they separate on hue ALONE, which is precisely the
+/// channel that fails for the reader that ordering is written for. Both sets
+/// preserve real lightness spacing, and Teal against Clay — the pair the order
+/// promises — is 1.22 on dark and 1.27 on light.
+///
+/// Slate and Steel sit closer than any other pair and always have, in every
+/// set. That is not what this palette promises and it is not worth distorting
+/// three other colours to chase; the guarantee is about the first two assigned.
 enum AccountPalette {
+  /// The stored vocabulary. Never rendered directly — see `resolve`.
   static let choices: [(name: String, hex: String)] = [
     ("Teal", "#4aa3a2"),
     ("Clay", "#c2705a"),
@@ -298,8 +411,63 @@ enum AccountPalette {
     ("Steel", "#6f7d8c"),
   ]
 
+  /// Rendered on dark appearances. Worst case 3.16:1 (Plum), swept across every
+  /// surface of `signature`, `dark` and `umber`.
+  ///
+  /// Five are the stored values unchanged. Slate, Plum and Steel are lifted by
+  /// 2-7% — the least that clears the floor, because these are colours people
+  /// have already assigned to mailboxes and recognise.
+  static let darkChoices: [(name: String, hex: String)] = [
+    ("Teal", "#4aa3a2"),
+    ("Clay", "#c2705a"),
+    ("Slate", "#5f80af"),
+    ("Sage", "#7d9a6d"),
+    ("Plum", "#9371a8"),
+    ("Amber", "#c39a4e"),
+    ("Rose", "#b5697f"),
+    ("Steel", "#72808f"),
+  ]
+
+  /// Rendered on light appearances. Worst case 3.37:1 (Amber).
+  ///
+  /// The darkest light surface any of these must clear is `noon`'s `selection`,
+  /// which is what sets the ceiling on how light they may be.
+  static let lightChoices: [(name: String, hex: String)] = [
+    ("Teal", "#285858"),
+    ("Clay", "#5f372c"),
+    ("Slate", "#263446"),
+    ("Sage", "#42523a"),
+    ("Plum", "#362a3e"),
+    ("Amber", "#6f572c"),
+    ("Rose", "#54303b"),
+    ("Steel", "#30363c"),
+  ]
+
   static func hex(at index: Int) -> String {
     choices[index % choices.count].hex
+  }
+
+  /// The stored colour, mapped to the set the appearance can actually carry.
+  ///
+  /// Falls through unchanged for anything not in `choices` — an account
+  /// recoloured by hand, or by some future picker — because a value this cannot
+  /// recognise is one it has no business rewriting.
+  static func resolve(_ hex: String, isDark: Bool) -> String {
+    guard let index = choices.firstIndex(where: {
+      $0.hex.caseInsensitiveCompare(hex) == .orderedSame
+    }) else { return hex }
+    return (isDark ? darkChoices : lightChoices)[index].hex
+  }
+
+  /// `resolve` against the appearance currently selected.
+  ///
+  /// Reading `ThemeController.shared.theme` here is what makes account colour
+  /// track a theme switch: `@Observable` registers the access inside whichever
+  /// view body is evaluating, so the dot and the rail repaint with everything
+  /// else. A cached `Color` computed once at load would not.
+  @MainActor
+  static func tint(for hex: String) -> Color? {
+    Color(hex: resolve(hex, isDark: ThemeController.shared.theme.isDark))
   }
 }
 
@@ -448,7 +616,11 @@ struct AccountSettingsPopover: View {
       Task { await save(nil, hex) }
     } label: {
       Circle()
-        .fill(Color(hex: hex) ?? Theme.Accent.muted)
+        // Previews what the appearance will actually draw, not the stored
+        // value. `color` above keeps the canonical hex either way — the swatch
+        // grid is `choices`, so what is saved is theme-independent and only the
+        // rendering follows the palette.
+        .fill(AccountPalette.tint(for: hex) ?? Theme.Accent.muted)
         .frame(width: 24, height: 24)
         .overlay {
           Circle().strokeBorder(Theme.Ink.primary.opacity(isSelected ? 0.9 : 0),

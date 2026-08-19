@@ -14,15 +14,32 @@ struct SettingsView: View {
 
   var body: some View {
     Form {
+      // Named and described, in two groups.
+      //
+      // This was one inline `Picker` of bare titles, which worked while there
+      // were three appearances and two of them were called Dark and Light.
+      // With six — three of them dark — a column of names is a column of names:
+      // nothing in "Signature / Dark / Umber" says which is which, and Settings
+      // is precisely where someone is deliberately shopping rather than
+      // flipping between two they already know.
+      //
+      // Grouped by polarity for the same reason `allCases` is ordered that way:
+      // the first question anyone actually has is light or dark, and answering
+      // it once halves the list instead of asking it six times.
       Section {
-        Picker("Theme", selection: $themes.theme) {
-          ForEach(AppTheme.allCases, id: \.self) { theme in
-            Text(theme.title).tag(theme)
-          }
+        ForEach(AppTheme.allCases.filter(\.isDark)) { theme in
+          themeRow(theme)
         }
-        .pickerStyle(.inline)
       } header: {
-        Text("Appearance").font(Theme.Font.bodyEmphasis)
+        Text("Appearance — dark").font(Theme.Font.bodyEmphasis)
+      }
+
+      Section {
+        ForEach(AppTheme.allCases.filter { !$0.isDark }) { theme in
+          themeRow(theme)
+        }
+      } header: {
+        Text("Appearance — light").font(Theme.Font.bodyEmphasis)
       }
 
       Section {
@@ -65,5 +82,44 @@ struct SettingsView: View {
     .formStyle(.grouped)
     .frame(width: 420)
     .fixedSize(horizontal: false, vertical: true)
+  }
+
+  /// One appearance, as a row rather than a `Picker` entry.
+  ///
+  /// Hand-built for the same reason `FromField` and the sidebar switcher are:
+  /// a `Picker` renders its items as bare labels and gives no place to put the
+  /// subtitle, which is the whole reason this section changed. The radio mark
+  /// is drawn rather than inherited, so it stays on the palette's own tokens.
+  private func themeRow(_ theme: AppTheme) -> some View {
+    Button {
+      // A colour interpolation, so never a spring — the same rule the switcher
+      // and `Theme.Motion.fade` state.
+      withAnimation(Theme.Motion.fade) { themes.theme = theme }
+    } label: {
+      HStack(spacing: Theme.Space.loose) {
+        Image(systemName: themes.theme == theme ? "largecircle.fill.circle" : "circle")
+          .font(Theme.Icon.small)
+          .foregroundStyle(themes.theme == theme ? Theme.Accent.blueText : Theme.Ink.tertiary)
+          .accessibilityHidden(true)
+
+        VStack(alignment: .leading, spacing: 0) {
+          Text(theme.title)
+            .font(Theme.Font.body)
+            .foregroundStyle(Theme.Ink.primary)
+          Text(theme.subtitle)
+            .font(Theme.Font.micro)
+            .fontWeight(.regular)
+            .foregroundStyle(Theme.Ink.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+
+        Spacer(minLength: 0)
+      }
+      .padding(.vertical, Theme.Space.tight)
+      .contentShape(.rect)
+    }
+    .buttonStyle(.alap())
+    .accessibilityLabel("\(theme.title). \(theme.subtitle)")
+    .accessibilityAddTraits(themes.theme == theme ? [.isSelected] : [])
   }
 }

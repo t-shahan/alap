@@ -671,7 +671,7 @@ final class MailStore {
     guard accounts.count > 1,
           let account = accounts.first(where: { $0.id == accountId })
     else { return nil }
-    return Color(hex: account.color)
+    return AccountPalette.tint(for: account.color)
   }
 
   /// Renames or recolours an account.

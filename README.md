@@ -286,7 +286,8 @@ There is no release build: you build it yourself.
 Working: multi-account Gmail sync, unified inbox, full-text and fuzzy search,
 keyboard triage, bulk actions, composing and replying, undo, HTML rendering
 with inline images and a privacy-first remote-image policy, attachment download,
-list density, and three themes.
+list density, and six themes — three dark, three light, one of them a
+maximum-contrast palette for glare and low vision.
 
 Not yet: reply-all, attachments on send, attachment cache eviction, Dynamic
 Type, and anything to do with distribution — this is not notarised and will not
