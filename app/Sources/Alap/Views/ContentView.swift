@@ -205,15 +205,4 @@ extension View {
         .frame(width: 1)
     }
   }
-
-  /// Clears the window's traffic lights.
-  ///
-  /// They sit over whichever pane is leftmost, because the title bar is
-  /// hidden. This reservation used to live inside `Sidebar` — a view that does
-  /// not exist below 920pt — and only failed to collide because the hidden
-  /// title bar's safe area happened to cover it. Reserving it at the window
-  /// level means it no longer depends on which pane is showing.
-  func reservingTrafficLights() -> some View {
-    safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: 28) }
-  }
 }
