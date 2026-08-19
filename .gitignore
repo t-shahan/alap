@@ -43,8 +43,9 @@ app/Sources/Mail/Web/
 # Local signing identity export (scripts/make-signing-cert.sh)
 *.p12
 
-# Design review working doc — local only
+# Design review working docs — local only
 DESIGN-REVIEW.md
+DESIGN-REVIEW-MOTION.md
 
 # Local planning doc, not part of the project history.
 SANITIZATION_PLAN.md

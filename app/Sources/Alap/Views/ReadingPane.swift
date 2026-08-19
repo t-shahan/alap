@@ -94,6 +94,12 @@ struct ReadingPane: View {
   // MARK: Body
 
   private func content(for thread: ThreadRow) -> some View {
+    ScrollViewReader { proxy in
+      scrollBody(for: thread, proxy: proxy)
+    }
+  }
+
+  private func scrollBody(for thread: ThreadRow, proxy: ScrollViewProxy) -> some View {
     ScrollView {
       // Lazy so the section header can pin. The subject scrolls away and the
       // sender row stays: on a long message you always know whose it is and
@@ -110,12 +116,44 @@ struct ReadingPane: View {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
+      // An anchor to scroll back to, INSTEAD of `.id(thread.id)` on the
+      // ScrollView. That was resetting scroll by giving SwiftUI a new
+      // identity, which tore the whole subtree down — including the
+      // `WKWebView` — and built a fresh one per message.
+      //
+      // Measured over 10 real messages: a reused web view reaches `didCommit`,
+      // the point where the new document can paint, in 4ms. A fresh one takes
+      // 69ms, and the pane is genuinely empty for all of them. That gap is the
+      // "beat" before a message appears while arrowing down the list.
+      .id(Self.topAnchor)
     }
-    .id(thread.id)  // reset scroll when switching threads
     .onChange(of: thread.id) { _, _ in
-      bodyHeight = 400
+      proxy.scrollTo(Self.topAnchor, anchor: .top)
+      // Height is NOT reset to a placeholder here. Doing that collapsed the
+      // pane to 400pt and then jumped it to the real height a frame later,
+      // which reads as a lurch even when the load itself is instant. Keeping
+      // the outgoing height holds the layout still for the few milliseconds
+      // until the new document is measured, and a height already seen for this
+      // conversation is reused outright.
+      bodyHeight = Self.heightCache[thread.id] ?? bodyHeight
       loadsImagesForThisThread = false
     }
+  }
+
+  /// Where `scrollTo` sends the pane when the conversation changes.
+  private static let topAnchor = "message-top"
+
+  /// Last measured height per conversation.
+  ///
+  /// Returning to a message you have already opened should not re-run the
+  /// collapse-and-grow, and while arrowing up and down a thread list that is
+  /// most of the navigation. Bounded because a mailbox is not.
+  nonisolated(unsafe) private static var heightCache: [String: CGFloat] = [:]
+  private static let heightCacheLimit = 200
+
+  private static func rememberHeight(_ height: CGFloat, for id: String) {
+    if heightCache.count >= heightCacheLimit { heightCache.removeAll(keepingCapacity: true) }
+    heightCache[id] = height
   }
 
   private func subject(for thread: ThreadRow) -> some View {
@@ -150,7 +188,15 @@ struct ReadingPane: View {
                                       isDark: colorScheme == .dark,
                                       showRemoteImages: showsRemoteImages),
           inlineImages: store.inlineImages,
-          onHeightChange: { bodyHeight = $0 }
+          onHeightChange: { height in
+            bodyHeight = height
+            // Keyed off the open conversation rather than a captured value:
+            // this closure outlives the render that made it, and a late
+            // measurement must not be filed under the message that replaced it.
+            if let id = store.selectedThreadID {
+              Self.rememberHeight(height, for: id)
+            }
+          }
         )
         // Exactly the document's height, so the OUTER scroll view does all
         // the scrolling. A fixed minHeight gave short messages dead space

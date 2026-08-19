@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import os
 
 /// Renders a thread's messages as real HTML.
 ///
@@ -46,6 +47,7 @@ private final class PassThroughWebView: WKWebView {
 }
 
 struct MessageWebView: NSViewRepresentable {
+
   let html: String
   /// Content-ID → downloaded file, for the thread being shown.
   var inlineImages: [String: URL] = [:]
