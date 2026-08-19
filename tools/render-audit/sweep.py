@@ -90,10 +90,18 @@ if ok:
         print(f"  worst shrink: message rendered at {100*min(sc):.0f}% of its intended size")
     ti=sum(d['images'] for d in ok); tl=sum(d['imagesLoaded'] for d in ok); tn=sum(d['imagesNoSrc'] for d in ok)
     print(f"  images {tl}/{ti} loaded, {tn} with no src")
-    # The app must be handed exactly the post-scale height. Anything less is
+    # The app must be handed at least the post-scale height. Anything LESS is
     # message content the reader never sees.
+    #
+    # Directional on purpose. The check used to be `abs(...) > 2`, which under
+    # `zoom` was equivalent — both sides read a viewport-floored
+    # `scrollHeight`, so they agreed or the app was clipping. Under `transform`
+    # both read a live bounding rect, and the app over-reporting by a few
+    # points as late images settle is harmless: the pane is a little taller
+    # than the document for one frame. Under-reporting is the failure, because
+    # that is content the reader never sees.
     mism=[d for d in ok if d.get('appHeight',-1) >= 0
-          and abs(d['appHeight']-d['post']['docScrollHeight']) > 2]
+          and d['post']['docScrollHeight'] - d['appHeight'] > 2]
     print(f"  height MISMATCH (content clipped): {len(mism)}/{len(ok)}")
     if mism:
         w=max(mism,key=lambda d:d['post']['docScrollHeight']-d['appHeight'])
@@ -145,7 +153,7 @@ if CHECK:
     elif ok:
         want("render errors", len(errs), base["max_render_errors"], lambda a, b: a <= b)
         mism = [d for d in ok if d.get("appHeight", -1) >= 0
-                and abs(d["appHeight"] - d["post"]["docScrollHeight"]) > 2]
+                and d["post"]["docScrollHeight"] - d["appHeight"] > 2]
         want("height mismatches", len(mism), base["max_height_mismatches"], lambda a, b: a <= b)
         want("overflow fraction", round(len(scaled)/len(ok), 3),
              base["max_overflow_fraction"], lambda a, b: a <= b)

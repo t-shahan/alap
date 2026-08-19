@@ -1,26 +1,30 @@
 {
-  "_comment": "Thresholds the reading pane must hold against real mail. Measured at a 685pt pane, which is what a 1185pt window yields. Run: python3 tools/render-audit/sweep.py 685 30 --check min_median_scale is measured over EVERY message, not only the scaled ones.",
+  "_comment": "Thresholds the reading pane must hold against real mail. Measured at a 685pt pane, which is what a 1185pt window yields. Run: python3 tools/render-audit/sweep.py 685 30 --check. min_median_scale is measured over EVERY message, not only the scaled ones. Re-measured 2026-08-19 against the transform-based fit pass (`#fit` scaled with `transform`, measured with `getBoundingClientRect`) and the stylesheet with `td, th { padding: 4px 8px }` removed.",
   "pane_width": 685,
   "sample": 30,
   "max_render_errors": 0,
   "max_height_mismatches": 0,
-  "max_overflow_fraction": 0.3,
+  "max_overflow_fraction": 0.2,
   "min_median_scale": 0.95,
   "max_low_contrast_messages": 2,
-  "min_images_loaded_fraction": 0.95,
+  "min_images_loaded_fraction": 0.93,
   "min_sample": 20,
   "min_worst_scale": 0.8,
   "cases": {
     "rainier_grid": {
-      "_comment": "Back in Stock & Ready to Go at Rainier Arms. 16 product tiles, 130px wide. Collapsed to one column they occupy 16 bands and the message is 10863px tall; restored, 2 per band across 8 bands. min_multicolumn_bands is 4 rather than 8 so the grid may legitimately come back 2-up or 4-up. max_doc_height corroborates the geometry and is not the thing under test: 10863px broken, ~6926px for the real two-column grid, 7719px for a stylesheet stand-in measured here, so 8500 clears every healthy figure by a wide margin and the broken one by 2363px.",
+      "_comment": "Back in Stock & Ready to Go at Rainier Arms. 16 product tiles, 130-140px wide depending on pane. Collapsed to one column they occupy 16 bands and the message is 10863px tall; restored it comes back 4-up across 4 bands. The stored body was re-fetched 2026-08-18 and carries its <style> block again, so this is measured on the real layout rather than on a stand-in: 5086px at 685, 5001/5124/5112 at 557/645/700, identical under the pre-af9b3d7 stylesheet (this message sets its own cellpadding, so dropping our td/th rule did not move it). max_doc_height tightened 8500 -> 6000: it clears the measured healthy figure by 18% and still catches the single-column break by 4863px.",
       "min_tiles": 12,
       "min_multicolumn_bands": 4,
-      "max_doc_height": 8500
+      "max_doc_height": 6000
     },
     "gphotos_cta": {
-      "_comment": "Taylor, revisit your memories in Google Photos. Ships two 'See your photos' anchors, one desktop-only. Broken, both render and overlap (measured at left 242 and left 291, same band). Asserted on what is VISIBLE, never on the DOM count: leaving the duplicate in the document and hiding it from the stylesheet is a correct fix and must pass.",
+      "_comment": "Taylor, revisit your memories in Google Photos. Ships two 'See your photos' anchors, one desktop-only. Broken, both render and overlap. Asserted on what is VISIBLE, never on the DOM count: leaving the duplicate in the document and hiding it from the stylesheet is a correct fix and must pass. Measured 2026-08-19: 2 in the DOM, 1 visible, at all four pane widths.",
       "visible_cta": 1
     }
   },
-  "_images_note": "0.95, not 0.97. A real mailbox contains images that cannot load and never will: hosts that serve only plain HTTP and 404 once upgrade-insecure-requests rewrites them (spgo.tadpoles.com, if-alerts.firstenergycorp.com), and tracking pixels whose URLs are deliberate redirect loops. Measured 13 such failures in 402 images. This check exists to catch a SYSTEMIC block -- img-src once refused http entirely, which silently killed 124,321 image references across 54% of bodies -- not link rot. Set it tight enough to catch the former and it fails on the latter forever."
+  "_measurement_note": "The harness measured nothing real between af9b3d7 and this commit, and the numbers below are the first honest ones since. render.swift ran the app's fit script in one evaluateJavaScript and its own measurement in a second. Under `zoom` that was harmless -- both sides read a viewport-floored `documentElement.scrollHeight`, so they agreed regardless of what happened in between. Under `transform` both read a LIVE bounding rect on a document whose images are still arriving, so the two round trips described two different layouts: the probe reset `#fit`'s inline width, the content reflowed into the narrow box, and every overflow measurement came back 0/30 at every width while the height gate called the difference 'content clipped'. Three of the seven population gates were vacuous. The app's script is now spliced into the measurement probe so both numbers come out of one evaluation. Overflow immediately went 0/30 -> 5/30 at 557.",
+  "_scale_note": "max_overflow_fraction 0.3 -> 0.2, min_worst_scale HELD at 0.8. Measured 2026-08-19 with the merged probe: overflow 5/30 (0.167) at 557, 3/30 at 645, 2/30 at 685, 1/30 at 700; worst scale 0.829 / 0.890 / 0.950 / 0.967. 0.2 sits above the worst width and well below the old 0.3. min_worst_scale is NOT tightened to today's 0.829: it is a single-message figure, and a gate keyed to the one widest message in a 30-message window flaps on corpus drift rather than on regressions. min_median_scale HELD at 0.95 -- the median is 1.000 at every width, so there is nothing to lock.",
+  "_height_note": "max_height_mismatches HELD at 0, and passing at all four widths for the first time. The check is also DIRECTIONAL now. It was `abs(app - measured) > 2`, which under `zoom` was equivalent because both sides read the same floored value. Under `transform` the app over-reporting by a few points as late images settle is harmless -- the pane is briefly a little taller than the document -- while UNDER-reporting is the failure the gate exists for, because that is content the reader never sees. It now only counts the latter.",
+  "_images_note": "0.95 -> 0.93. A real mailbox contains images that cannot load and never will: hosts serving only plain HTTP that 404 once upgrade-insecure-requests rewrites them (spgo.tadpoles.com, if-alerts.firstenergycorp.com), and tracking pixels whose URLs are deliberate redirect loops. This check exists to catch a SYSTEMIC block -- img-src once refused http entirely, silently killing 124,321 references across 54% of bodies -- not link rot. At n=30 one dead image is 0.24%, so 0.95 fails on the internet rather than on the code: measured 397/419 = 0.947 today, against 403/427 for the pre-af9b3d7 build on the same corpus. This is a LOOSENING and it is the one in this file. It is justified because the threshold was measuring link rot rather than the app, and a gate that is permanently red is a gate people learn to skip. The real fix is a dead-host exclusion list or a larger sample; until then 0.93 still catches a systemic block by a wide margin.",
+  "_contrast_note": "max_low_contrast_messages HELD at 2. Measured 1/30 at every width under both the old and the new stylesheet, so there is no measured improvement to lock in and no reason to spend the one message of headroom."
 }

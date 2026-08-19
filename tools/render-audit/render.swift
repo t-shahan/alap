@@ -74,21 +74,53 @@ final class Driver: NSObject, WKNavigationDelegate {
     }
   }
 
-  /// What the app itself would compute for this document at this width.
-  func runAppScript() {
-    guard let js = appJS else { diagnose(); return }
-    webView.evaluateJavaScript(js) { value, _ in
-      self.appHeight = (value as? NSNumber)?.doubleValue ?? -1
-      self.diagnose()
-    }
-  }
+  /// Deliberately empty.
+  ///
+  /// The app's fit script used to run here, in its own `evaluateJavaScript`,
+  /// with the harness's own measurement following in a second one. Under
+  /// `zoom` that was harmless, because both sides read
+  /// `documentElement.scrollHeight` — floored at the viewport — so they agreed
+  /// whatever happened in between.
+  ///
+  /// Under `transform` they read `#fit`'s bounding rect, which is a live
+  /// measurement of a document whose images are still arriving. Two round
+  /// trips meant two different layouts: the app measured 7,602 and the harness
+  /// 8,844 for the same message, and the height gate called the 14% difference
+  /// "content clipped" when nothing had been clipped at all. Rendered in
+  /// isolation, on a settled document, the two agree exactly.
+  ///
+  /// So the app's script is now spliced into the measurement probe and both
+  /// numbers come out of ONE evaluation, where no reflow can happen between
+  /// them. The gate goes back to measuring what it was written to measure —
+  /// whether the app is handed the post-scale height — rather than measuring
+  /// how fast images loaded.
+  func runAppScript() { diagnose() }
 
   func diagnose() {
+    // The app's own script, verbatim, evaluated first inside this same
+    // function so its result and ours describe one layout.
+    let app = appJS.map { "var appHeight = (\($0));" } ?? "var appHeight = -1;"
     let probe = """
       (function () {
+        \(app)
         var d = document.documentElement;
         var f = document.getElementById('fit') || document.body;
-        f.style.transform = ''; f.style.width = '';
+        // Restore the PRISTINE document before measuring — all four
+        // properties the app's fit script writes, not just two.
+        //
+        // Resetting `transform` and `width` while leaving `padding` at the
+        // zero the app set is not a reset: it hands the content MORE room than
+        // it ever really has, and dropping the preserved `width: (100/scale)%`
+        // lets it reflow into the narrower box. The measurement then finds
+        // nothing overflowing, at every width, and the three gates that exist
+        // to catch a fit regression go quietly vacuous.
+        //
+        // This is the same four lines the app's own script opens with, and it
+        // has to stay that way.
+        f.style.transform = '';
+        f.style.width = '';
+        f.style.paddingLeft = '';
+        f.style.paddingRight = '';
         var pre = { clientWidth: d.clientWidth, bodyScrollWidth: f.scrollWidth,
                     docScrollHeight: d.scrollHeight,
                     // Which side of the 600px threshold marketing mail almost
@@ -150,6 +182,7 @@ final class Driver: NSObject, WKNavigationDelegate {
           if (ratio < 2.0) lowContrast++;
         }
         return JSON.stringify({
+          appHeight: appHeight,
           pre: pre, scale: scale, post: post,
           images: imgs.length,
           imagesLoaded: imgs.filter(function (i) { return i.naturalWidth > 0; }).length,
@@ -160,12 +193,9 @@ final class Driver: NSObject, WKNavigationDelegate {
       """
     webView.evaluateJavaScript(probe) { value, error in
       if let json = value as? String {
-        // Splice the app-computed height in beside the measured truth.
         var merged = json
-        if merged.hasSuffix("}") {
-          merged = String(merged.dropLast()) + ",\"appHeight\":\(self.appHeight)"
-          if let c = self.caseJSON { merged += ",\"case\":\(c)" }
-          merged += "}"
+        if let c = self.caseJSON, merged.hasSuffix("}") {
+          merged = String(merged.dropLast()) + ",\"case\":\(c)}"
         }
         print(merged)
       }
