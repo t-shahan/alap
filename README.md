@@ -17,6 +17,17 @@ Triage a mailbox without waiting for anything.
 
 ## Why
 
+This began as an excuse to learn. I wanted real time with C++, Swift, and Zero,
+and a mail client turned out to be an honest way to use all three at once: a
+sync engine that has to stay correct under retry, an interface that has to feel
+immediate, and a replication model that decides what "immediate" can even mean.
+
+It stopped being an exercise somewhere around the point it became the client I
+read my own mail in. That is the whole of its endorsement — used daily, by one
+person, against a real mailbox.
+
+The technical argument came second, and it is this.
+
 Mail clients are slow in a specific, avoidable way: they treat the network as
 the source of truth and the interface as a view onto it. Every click waits for
 a round trip, and the mailbox you already downloaded is queried as if it were
@@ -91,19 +102,42 @@ guess if it differs.
 
 ## Running it
 
-Requires macOS 14.4+, Xcode command-line tools, Node 20+, PostgreSQL 18, CMake,
-and a Google Cloud project with the Gmail API enabled.
+Requires macOS 14.4+, Xcode command-line tools, and Homebrew. Everything else is
+installed for you.
 
 ```bash
-brew install postgresql@18 cmake pkgconf libpq
-createdb mailapp
-
 git clone <your-fork> && cd alap
-npm install
+make setup
 ```
 
-Create a `.env` in the repository root — `cp .env.example .env` gets you the
-skeleton, and the annotated version is here:
+`make setup` installs the Homebrew dependencies, starts PostgreSQL and switches
+it to `wal_level = logical`, creates the `mailapp` database and applies the
+migrations, writes a `.env`, installs the npm workspaces, creates the local
+signing identity, and builds the C++ engine. It is idempotent — re-running it on
+a working machine is the fastest way to find out what drifted.
+
+Two of those steps have no obvious failure mode if skipped, which is why they
+are automated rather than documented: PostgreSQL ships with `wal_level =
+replica`, and zero-cache cannot open a replication slot without `logical`; and
+the migrations under `packages/sidecar/migrations` have to be applied before
+anything replicates. Miss either and the build still succeeds, the app still
+launches, and the mailbox is simply empty forever.
+
+Then add a Google OAuth client to `.env` (see **Google Cloud setup** below) and:
+
+```bash
+make dev        # postgres + sidecar + zero-cache
+make connect    # authorise a mailbox
+make app        # build and launch Alap.app
+```
+
+`make` on its own lists every target.
+
+<details>
+<summary><b>What .env holds</b></summary>
+
+`make setup` writes this from `.env.example`, substituting your username. Only
+the two Google values need filling in by hand.
 
 ```ini
 # All three point at the same local database. Zero wants them separate so they
@@ -128,22 +162,17 @@ GOOGLE_CLIENT_ID="..."
 GOOGLE_CLIENT_SECRET="..."
 ```
 
-Then build and run:
+The engine reads these from the environment and does not parse `.env` itself, so
+a bare `./engine/build/mailengined ...` invocation needs `set -a; source .env;
+set +a` first. The `make` targets do it for you.
 
-```bash
-./scripts/make-signing-cert.sh          # stable local code signing (see below)
-cmake -S engine -B engine/build
-cmake --build engine/build -j8
+</details>
 
-npm run dev                             # postgres + sidecar + zero-cache
-npm run app                             # build and launch Alap.app
-```
-
-`npm run app` builds the Zero client bundle before it compiles Swift, which
+`make app` builds the Zero client bundle before it compiles Swift, which
 matters if you ever reach for `swift build` directly: `app/Package.swift`
 declares `Sources/Alap/Web` as a resource and that directory is **generated,
 not committed**, so SwiftPM refuses to build without it. Run
-`npm run client:build` first, or just use `npm run app`.
+`npm run client:build` first, or just use `make app`.
 
 ### Tests
 
@@ -183,10 +212,15 @@ An ad-hoc signature has no stable identity — its designated requirement is a
 code-directory hash that changes on **every build**, so macOS treats each build
 as a different application and re-prompts for Keychain access forever.
 
-`make-signing-cert.sh` creates a self-signed identity whose requirement is
+`make setup` creates a self-signed identity whose requirement is
 `identifier + certificate fingerprint`, which is constant. It asks for your
 login keychain password once, via macOS's own dialog, and never reads or stores
 it.
+
+There is no need to run `scripts/make-signing-cert.sh` by hand — `make setup`
+skips it when an identity already exists, and minting a second one changes the
+designated requirement, which re-prompts for every credential the Keychain
+already holds.
 
 This is *not* a substitute for a Developer ID: Gatekeeper does not trust it, so
 it does nothing for distribution.
