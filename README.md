@@ -15,6 +15,8 @@ Triage a mailbox without waiting for anything.
 
 ---
 
+<img width="2000" height="1627" alt="CleanShot2026-08-20at18 48 03-ezgif com-optimize" src="https://github.com/user-attachments/assets/6659de86-0749-427c-a26c-cffaeee21e92" />
+
 ## Why
 
 This began as an excuse to learn. I wanted real time with C++, Swift, and Zero,
@@ -25,6 +27,8 @@ immediate, and a replication model that decides what "immediate" can even mean.
 It stopped being an exercise somewhere around the point it became the client I
 read my own mail in. That is the whole of its endorsement — used daily, by one
 person, against a real mailbox.
+
+<img width="2000" height="1613" alt="CleanShot2026-08-20at18 50 26-ezgif com-optimize" src="https://github.com/user-attachments/assets/24c9c2d0-aa5d-47d4-b266-f561b95d6521" />
 
 The technical argument came second, and it is this.
 
