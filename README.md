@@ -123,13 +123,39 @@ the migrations under `packages/sidecar/migrations` have to be applied before
 anything replicates. Miss either and the build still succeeds, the app still
 launches, and the mailbox is simply empty forever.
 
-Then add a Google OAuth client to `.env` (see **Google Cloud setup** below) and:
+Then add a Google OAuth client to `.env` (see **Google Cloud setup** below) and
+run these three once:
 
 ```bash
-make dev        # postgres + sidecar + zero-cache
+make agent      # start the background services at login
 make connect    # authorise a mailbox
-make app        # build and launch Alap.app
+make install    # put Alap.app in /Applications
 ```
+
+After that there is nothing to run. Open Alap from Spotlight or the Dock like
+any other application; the services it needs are already up, and the app starts
+its own sync engine.
+
+`make agent-status` reports whether each service is running.
+`make agent-uninstall` stops them starting at login.
+
+<details>
+<summary><b>Working on the code instead</b></summary>
+
+The installed copy is a build artefact, not the source of truth. While changing
+things, run the stack in the foreground and launch straight from `build/`:
+
+```bash
+make dev        # postgres + sidecar + zero-cache, holds the terminal
+make app        # rebuild and launch build/Alap.app
+```
+
+`make dev` is unnecessary if the login agent is installed — it would only fight
+it for ports 3000 and 4848. Use one or the other.
+
+`make install` re-copies `.env`, so re-run it after changing credentials.
+
+</details>
 
 `make` on its own lists every target.
 

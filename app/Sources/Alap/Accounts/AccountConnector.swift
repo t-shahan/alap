@@ -213,17 +213,37 @@ final class AccountConnector {
     }
   }
 
-  /// Reads `.env` from the repository when running unpackaged.
+  /// Reads the engine's credentials from the first `.env` that exists.
   ///
-  /// A shipped app will carry its configuration properly; this exists so the
-  /// flow works from a development checkout, where the engine's credentials
-  /// live in a gitignored `.env` the app was not launched with.
+  /// The app is launched by Finder or `open`, so it inherits none of the shell
+  /// environment the engine needs — and the engine reads GOOGLE_CLIENT_ID and
+  /// ZERO_UPSTREAM_DB from its environment rather than parsing `.env` itself.
+  ///
+  /// Two locations, in order:
+  ///
+  ///   1. Two levels above the bundle. That is `<repo>/.env` for the
+  ///      `build/Alap.app` a development checkout produces.
+  ///   2. `~/Library/Application Support/Alap/env`, written by `make install`.
+  ///
+  /// The second exists because an installed copy has no repository above it:
+  /// `/Applications/Alap.app` resolves to `/.env`, which never exists. Without
+  /// it the interface still renders — the Zero client talks to zero-cache
+  /// directly — while every engine spawn fails for want of a client id, which
+  /// looks like broken sync rather than missing configuration.
   static func loadDotEnv() -> [String: String] {
-    let candidate = Bundle.main.bundleURL
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .appendingPathComponent(".env")
-    guard let contents = try? String(contentsOf: candidate, encoding: .utf8) else {
+    let candidates = [
+      Bundle.main.bundleURL
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent(".env"),
+      FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Alap/env"),
+    ]
+
+    guard let contents = candidates.lazy
+      .compactMap({ try? String(contentsOf: $0, encoding: .utf8) })
+      .first
+    else {
       return [:]
     }
 

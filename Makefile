@@ -10,7 +10,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help setup dev app engine connect daemon migrate test clean
+.PHONY: help setup install agent agent-uninstall agent-status dev app engine connect daemon migrate test clean
 
 help: ## Show this help
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -19,7 +19,19 @@ help: ## Show this help
 setup: ## Install dependencies, configure postgres, migrate, build the engine
 	@./scripts/setup.sh
 
-dev: ## Run postgres + sidecar + zero-cache (foreground)
+install: ## Build Alap.app into /Applications and configure it to run there
+	@./scripts/install-app.sh
+
+agent: ## Start the sidecar and zero-cache at login, so no terminal is needed
+	@./scripts/agent.sh install
+
+agent-uninstall: ## Stop starting them at login
+	@./scripts/agent.sh uninstall
+
+agent-status: ## Show whether the agent and each service are up
+	@./scripts/agent.sh status
+
+dev: ## Run postgres + sidecar + zero-cache (foreground; not needed with make agent)
 	@./scripts/dev.sh
 
 app: ## Build and launch Alap.app
