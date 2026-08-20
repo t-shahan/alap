@@ -10,7 +10,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help setup install agent agent-uninstall agent-status dev app engine connect daemon migrate test clean
+.PHONY: help setup install agent agent-uninstall agent-status stop dev app engine connect daemon migrate test clean
 
 help: ## Show this help
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -30,6 +30,9 @@ agent-uninstall: ## Stop starting them at login
 
 agent-status: ## Show whether the agent and each service are up
 	@./scripts/agent.sh status
+
+stop: ## Stop the app and every background service it runs
+	@./scripts/stop.sh
 
 dev: ## Run postgres + sidecar + zero-cache (foreground; not needed with make agent)
 	@./scripts/dev.sh

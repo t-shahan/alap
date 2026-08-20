@@ -52,16 +52,15 @@ pg_isready -q 2>/dev/null || warn "postgres is down          → make dev"
 lsof -ti:3000 >/dev/null 2>&1 || warn "sidecar (:3000) is down    → make dev"
 lsof -ti:4848 >/dev/null 2>&1 || warn "zero-cache (:4848) is down → make dev"
 
-# The engine is what actually talks to Gmail. Without it the app is fully
-# usable but entirely local: replies sit in the outbox marked "Queued" and new
-# mail never arrives. That is correct behaviour, and confusing without warning.
-#
-# The hint used to read `daemon acct_dev 30`, which predates the daemon
-# supervising every connected account: the argument is a poll interval in
-# seconds, so an account id landed where a number belongs.
-pgrep -f "mailengined daemon" >/dev/null 2>&1 ||
-  warn "engine daemon is down      → make daemon"
+# There is deliberately no warning about the sync engine here. The app starts it
+# itself when the window appears (AlapApp.swift), so a check that runs BEFORE
+# `open` is false on every cold start — and the hint it printed told you to run
+# `make daemon`, which would then leave a second daemon running alongside the
+# app's own.
 
 # ── 4. Launch ───────────────────────────────────────────────────────────────
 echo "▸ launching"
 open "$APP"
+
+echo
+echo "  To shut down the app and every background service:  make stop"
