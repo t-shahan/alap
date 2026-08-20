@@ -219,7 +219,7 @@ not committed**, so SwiftPM refuses to build without it. Run
 
 ```bash
 ctest --test-dir engine/build      # 304 cases
-swift test --package-path app      # 283 cases
+swift test --package-path app      # 301 cases
 ```
 
 Both suites are hermetic — no database, no network, no Gmail account — which is
@@ -349,12 +349,18 @@ make test       # all three suites
 Or individually:
 
 ```bash
-cmake --build engine/build && ctest --test-dir engine/build   # 197
-swift test --package-path app                                 # 101
+cmake --build engine/build && ctest --test-dir engine/build   # 304
+swift test --package-path app                                 # 301
 npm test --workspace=@mailapp/sidecar                          #  14
 ```
 
-**312 tests.** They lean deliberately toward the places where being wrong is
+The first two are hermetic. The sidecar suite is not — it connects to
+`ZERO_UPSTREAM_DB` and needs Postgres up, which is why CI runs only the other
+two. It creates `acct_test_*` accounts, works inside a transaction it rolls
+back, and deletes its own account afterwards, so it is safe against a real
+mailbox.
+
+**619 tests.** They lean deliberately toward the places where being wrong is
 invisible: RFC 5322 header folding, path traversal, colour contrast ratios,
 query arguments that silently match one account instead of all of them.
 
