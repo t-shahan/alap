@@ -133,11 +133,21 @@ make install    # put Alap.app in /Applications
 ```
 
 After that there is nothing to run. Open Alap from Spotlight or the Dock like
-any other application; the services it needs are already up, and the app starts
+any other application: the services it needs are already up, and the app starts
 its own sync engine.
 
-`make agent-status` reports whether each service is running.
-`make agent-uninstall` stops them starting at login.
+| | |
+|---|---|
+| `make stop` | Stop the app and every background service it runs |
+| `make agent-status` | Show what is currently up |
+| `make agent` | Start the services now, and at every login |
+| `make agent-uninstall` | Stop starting them at login, for good |
+
+`make stop` leaves the agent installed, so the services return at the next
+login; `make agent` brings them back sooner. Postgres is left running either
+way — Homebrew owns its login agent and other things on the machine may be using
+it, so stopping it is `brew services stop postgresql@18` and deliberately not
+Alap's business.
 
 <details>
 <summary><b>Working on the code instead</b></summary>
@@ -150,10 +160,15 @@ make dev        # postgres + sidecar + zero-cache, holds the terminal
 make app        # rebuild and launch build/Alap.app
 ```
 
-`make dev` is unnecessary if the login agent is installed — it would only fight
-it for ports 3000 and 4848. Use one or the other.
+Use `make dev` **or** the login agent, never both — they want the same ports.
+With the agent running, `make dev` says so and exits instead of starting a
+second copy, because the collision is otherwise hard to read: the sidecar fails
+immediately on :3000, while zero-cache gets as far as checking schemas and
+opening a replication slot before dying on :4849 — a port nothing here
+configures, because zero-cache picks it itself.
 
-`make install` re-copies `.env`, so re-run it after changing credentials.
+`make install` copies `.env` rather than linking it, so re-run it after changing
+credentials.
 
 </details>
 
@@ -326,6 +341,12 @@ on disk, because the same images had been forwarded down a thread.
 </details>
 
 ## Testing
+
+```bash
+make test       # all three suites
+```
+
+Or individually:
 
 ```bash
 cmake --build engine/build && ctest --test-dir engine/build   # 197
