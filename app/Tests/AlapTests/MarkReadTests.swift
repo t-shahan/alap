@@ -84,13 +84,24 @@ struct MarkReadTests {
     // both wrong and, at 500 rows, unrecoverable.
     let (store, bridge) = store(unread: ["t1", "t2", "t3", "t4"])
 
-    // Spaced in TIME, at roughly the macOS key-repeat rate. Assigning them
-    // back to back instead would prove nothing: consecutive synchronous
-    // assignments cancel each other whatever the dwell is, so the test would
-    // pass with no dwell at all. It is the gap the dwell has to outlast.
+    // A LONG dwell and a tiny gap, rather than the suite's short dwell and a
+    // quarter of it.
+    //
+    // Spacing in time is the point — assigning back to back would prove
+    // nothing, since consecutive synchronous assignments cancel each other
+    // whatever the dwell is, and the test would pass with no dwell at all. But
+    // the ratio has to survive a loaded machine. At the suite's 60ms dwell and
+    // a 15ms gap there were four gaps of headroom, and `Task.sleep` guarantees
+    // only a MINIMUM: one contended resume overshot 60ms, t2's dwell elapsed,
+    // and CI marked it read. That is exactly the flake this file's own header
+    // comment describes, in a form it did not cover.
+    //
+    // 400ms against 2ms is two hundred gaps of headroom and still finishes in
+    // under half a second.
+    store.markReadDwell = .milliseconds(400)
     for id in ["t1", "t2", "t3", "t4"] {
       store.selectedThreadID = id
-      try await Task.sleep(for: Self.dwell / 4)
+      try await Task.sleep(for: .milliseconds(2))
     }
     await waitFor { !markedIDs(bridge).isEmpty }
     await settle()
